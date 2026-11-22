@@ -31,7 +31,9 @@ async def test_spread_scan_with_hyperliquid(state) -> None:
     rt = _runtime(state)
     try:
         server, _ = build_server(rt)
-        env = await call(server, "funding_spread_scan", venues=["binanceusdm", "hyperliquid"], bases=["BTC"], entry_apr=0.0)
+        env = await call(
+            server, "funding_spread_scan", venues=["binanceusdm", "hyperliquid"], bases=["BTC"], entry_apr=0.0, include_details=True
+        )
         assert env["ok"], env["missing"]
         assert any("Backtest" in w for w in env["warnings"])
         (row,) = env["data"]["rows"]
@@ -67,7 +69,9 @@ async def test_spread_scan_hyperliquid_down_still_returns(state) -> None:
         assert env["ok"] is False
         assert any(m["field"].endswith(":hyperliquid") for m in env["missing"])
         # with a third venue the scan still answers from the working pair
-        env3 = await call(server, "funding_spread_scan", venues=["binanceusdm", "bybit", "hyperliquid"], bases=["BTC"])
+        env3 = await call(
+            server, "funding_spread_scan", venues=["binanceusdm", "bybit", "hyperliquid"], bases=["BTC"], include_details=True
+        )
         assert env3["ok"], env3["missing"]
         assert any(m["field"].endswith(":hyperliquid") for m in env3["missing"])
         assert set(env3["data"]["rows"][0]["venues"]) == {"binanceusdm", "bybit"}

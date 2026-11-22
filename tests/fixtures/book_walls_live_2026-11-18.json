@@ -1,0 +1,19 @@
+{
+  "_source": "Live capture 2026-11-18 from the Contabo server (scripts not kept): Binance USD-M GET /fapi/v1/depth?symbol=ETHUSDT&limit=1000, wss://fstream.binance.com/public/stream?streams=ethusdt@depth@100ms (the depth diffs are NOT on /market/), wss://fstream.binance.com/market/stream?streams=ethusdt@aggTrade, Bybit wss://stream.bybit.com/v5/public/linear topics orderbook.1000.ETHUSDT + publicTrade.ETHUSDT. Level lists trimmed to 4 per side; Bybit trade list to 1 row.",
+  "binance_rest_depth": {"lastUpdateId": 12155391035403, "E": 1795012196843, "T": 1795012196839, "bids": [["1793.00", "44.057"], ["1792.99", "0.129"], ["1792.98", "0.149"], ["1792.97", "0.100"]], "asks": [["1793.01", "282.962"], ["1793.02", "0.859"], ["1793.03", "1.708"], ["1793.04", "0.025"]]},
+  "binance_depth": [
+    {"stream": "ethusdt@depth@100ms", "data": {"e": "depthUpdate", "E": 1795012197771, "T": 1795012197770, "s": "ETHUSDT", "ps": "ETHUSDT", "U": 12155391125705, "u": 12155391131808, "pu": 12155391125622, "b": [["1283.00", "1.333"], ["1288.00", "179.204"], ["1613.70", "3.009"], ["1744.34", "51.353"]], "a": [["1793.01", "320.780"], ["1793.02", "0.923"], ["1793.23", "3.754"], ["1793.48", "3.646"]], "st": 1}},
+    {"stream": "ethusdt@depth@100ms", "data": {"e": "depthUpdate", "E": 1795012197873, "T": 1795012197872, "s": "ETHUSDT", "ps": "ETHUSDT", "U": 12155391131856, "u": 12155391149159, "pu": 12155391131808, "b": [["200.00", "38.146"], ["1282.99", "0.713"], ["1283.00", "1.395"], ["1288.00", "178.429"]], "a": [["1793.00", "429.686"], ["1793.01", "30.244"], ["1793.02", "0.077"], ["1793.03", "0.572"]], "st": 1}}
+  ],
+  "binance_agg_trade": [
+    {"stream": "ethusdt@aggTrade", "data": {"e": "aggTrade", "E": 1795012205298, "a": 3161507923, "s": "ETHUSDT", "p": "1792.41", "q": "0.013", "nq": "0.013", "f": 9016294701, "l": 9016294701, "T": 1795012205201, "m": true, "st": 1}},
+    {"stream": "ethusdt@aggTrade", "data": {"e": "aggTrade", "E": 1795012205418, "a": 3161507924, "s": "ETHUSDT", "p": "1792.43", "q": "1.019", "nq": "1.019", "f": 9016294702, "l": 9016294703, "T": 1795012205298, "m": false, "st": 1}}
+  ],
+  "bybit": [
+    {"topic": "orderbook.1000.ETHUSDT", "type": "snapshot", "ts": 1795012211512, "data": {"s": "ETHUSDT", "b": [["1793.43", "0.07"], ["1793.42", "0.01"], ["1793.41", "0.01"], ["1793.35", "0.01"]], "a": [["1793.44", "39.06"], ["1793.45", "1.52"], ["1793.47", "0.01"], ["1793.48", "0.01"]], "u": 3053380, "seq": 475672562285}, "cts": 1795012211509},
+    {"topic": "orderbook.1000.ETHUSDT", "type": "delta", "ts": 1795012211713, "data": {"s": "ETHUSDT", "b": [["1793.43", "0"], ["1793.42", "0"], ["1793.41", "0"], ["1793.35", "0"]], "a": [["1793.24", "44.13"], ["1793.25", "0.01"], ["1793.28", "0.01"], ["1793.29", "4.14"]], "u": 3053381, "seq": 475672567467}, "cts": 1795012211709},
+    {"success": true, "ret_msg": "", "conn_id": "dbqr63be0ju9btq2rbe0-2xazb", "req_id": "", "op": "subscribe"},
+    {"topic": "publicTrade.ETHUSDT", "type": "snapshot", "ts": 1795012213319, "data": [{"T": 1795012213317, "s": "ETHUSDT", "S": "Buy", "v": "1.39", "p": "1793.92", "L": "ZeroPlusTick", "i": "c47999fc-4118-5e5b-b19e-1b7ae19b451e", "BT": false, "RPI": false, "seq": 475672588724}]}
+  ],
+  "_coverage_2026-11-18": "Price span of the visible book from the mid (live, same day): Binance REST limit=1000 BTC +-0.20 %, ETH +-0.6 %; Bybit orderbook.200 BTC +-0.045 %, ETH +-0.12 %; Bybit orderbook.1000 BTC +-0.3-0.4 %, ETH +-0.9-1.0 %. Median size of the top-50 levels: BTC 0.003-0.03 coins, ETH 2-6 coins; largest levels BTC 15-115, ETH 600-5000."
+}

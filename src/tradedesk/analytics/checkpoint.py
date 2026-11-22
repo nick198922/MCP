@@ -1400,10 +1400,8 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     ``paper_state`` (the assistant_paper state file, parsed, or None), ``idea_cards`` (``forward_cards`` output),
     ``plans`` (trade_plan rows without R / outcome, ``tags`` parsed), ``ladder`` (dated Bybit ladder snapshots for
     carry (ye), see ``carry_capacity``), ``errors`` (strings from the loader)."""
-    out: list[dict[str, Any]] = []
     trades = inputs.get("demo_trades") or []
-    for spec in DEMO:
-        out += demo_forward(spec, trades, now_ms)
+    out = demo_forwards(trades, now_ms)
     carry = inputs.get("carry") or {}
     for s in ("A", "B"):
         c = carry.get(s) or {}
@@ -1427,8 +1425,25 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     out += condor_forward(inputs.get("condor_t0"), inputs.get("condor_rows") or [], now_ms)
     out.append(assistant_paper_forward(inputs.get("rec_paper") or [], inputs.get("paper_state"), now_ms))
     out.append(idea_plans_forward(inputs.get("idea_cards") or [], inputs.get("plans") or [], now_ms))
-    demo_no = [r for r in out if r["group"] == "demo" and not r["key"].endswith(":fill") and r["verdict"] == NO]
-    notes = list(inputs.get("errors") or [])
+    notes = list(inputs.get("errors") or []) + demo_notes(out, trades, now_ms)
+    return {"now_ms": now_ms, "forwards": out, "notes": notes, "s12_stop_rule": s12_stop_rule(trades, now_ms)}
+
+
+def demo_forwards(trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
+    """The demo rows of the report: ``demo_forward`` of every setup of ``DEMO``, in that order (limit setups add their
+    fill-share row after their R row)."""
+    out: list[dict[str, Any]] = []
+    for spec in DEMO:
+        out += demo_forward(spec, trades, now_ms)
+    return out
+
+
+def demo_notes(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[str]:
+    """The report's notes on the demo as a whole, in the report's order: three or more setups with «ні» on one side of
+    their band (a systemic cause), the stuck ``open`` trades (``stuck_demo``) and the closed trades whose P&L disagrees
+    with the prices (``demo_pnl_check``). ``rows``: the report's rows (only the demo R rows are read)."""
+    demo_no = [r for r in rows if r["group"] == "demo" and not r["key"].endswith(":fill") and r["verdict"] == NO]
+    notes: list[str] = []
     for side in ("нижче", "вище"):
         k = sum(1 for r in demo_no if r["side"] == side)
         if k >= 3:
@@ -1447,7 +1462,43 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
             + ", ".join(f"{t['setup']} {t['symbol']} ({t['recorded']:+.2f} проти {t['expected']:+.2f} USD)" for t in bad_pnl)
             + "; P&L у БД не збігається з (вихід − вхід)·qty − комісії, схоже на часткове закриття: ціну й причину виходу перевірити"
         )
-    return {"now_ms": now_ms, "forwards": out, "notes": notes, "s12_stop_rule": s12_stop_rule(trades, now_ms)}
+    return notes
+
+
+def orphaned_note(trades: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
+    """Item 326: demo trades the trader set aside as ``orphaned`` (filled, then neither the position nor its close found
+    on the venue for a day; ``execution/demo_trader.py``, ``_orphan``) and filled by ``now_ms`` (a row without its fill
+    time is dated by its signal bar). They are in no closed sample and, no longer ``open``, not among the stuck trades
+    either, so without this note the demo n would be short without a word. None when there is none."""
+
+    def t0(t: Mapping[str, Any]) -> float | None:
+        for k in ("opened_ts", "signal_ts"):
+            if isinstance(v := t.get(k), (int, float)) and not isinstance(v, bool):
+                return float(v)
+        return None
+
+    rows = sorted(
+        (t for t in trades if t.get("status") == "orphaned" and (o := t0(t)) is not None and o <= now_ms),
+        key=lambda t: (t0(t) or 0.0, str(t.get("link_id"))),
+    )
+    if not rows:
+        return None
+    named = ", ".join(f"{t.get('setup') or '?'} {t.get('symbol') or t.get('link_id')}" for t in rows)
+    return (
+        f"демо-угоди orphaned (заповнені, а ні позиції, ні закриття на біржі не знайдено): {len(rows)} — {named}; "
+        "вони не входять у закриті вибірки й не рахуються завислими, тож n демо неповне: закриття перевірити вручну"
+    )
+
+
+def demo_block(trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+    """The demo part of ``scripts/checkpoint_report.py`` at ``now_ms`` (the ``demo_status`` MCP tool): the demo rows
+    (``demo_forwards``), the demo notes in the report's order (``demo_notes``, then ``orphaned_note``) and the S12 stop
+    rule (``s12_stop_rule``). The same functions as the report, so the same numbers on the same rows."""
+    rows = demo_forwards(trades, now_ms)
+    notes = demo_notes(rows, trades, now_ms)
+    if note := orphaned_note(trades, now_ms):
+        notes.append(note)
+    return {"rows": rows, "notes": notes, "s12_stop_rule": s12_stop_rule(trades, now_ms)}
 
 
 # ---------------------------------------------------------------------------------------------------------- text

@@ -53,7 +53,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import common_helpers as cmn  # noqa: E402
 
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost  # noqa: E402
-from tradedesk.analytics.checkpoint import COUNTS_ONLY, build, condor_final_ms, forward_cards, render  # noqa: E402
+from tradedesk.analytics.checkpoint import (  # noqa: E402
+    COUNTS_ONLY,
+    build,
+    condor_final_ms,
+    forward_cards,
+    orphaned_note,  # pure, shared with the demo_status MCP tool (item 409)
+    render,
+)
 from tradedesk.analytics.condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, cost_fridays  # noqa: E402
 from tradedesk.analytics.pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g  # noqa: E402
 from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
@@ -289,31 +296,6 @@ def journal_row(
         f"(останній запис не старший за {STALE_S // 86_400} доби) або хоч один план idea: (рядок вище)"
     )
     return row
-
-
-def orphaned_note(trades: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
-    """Item 326: demo trades the trader set aside as ``orphaned`` (filled, then neither the position nor its close found
-    on the venue for a day; ``execution/demo_trader.py``, ``_orphan``) and filled by ``now_ms`` (a row without its fill
-    time is dated by its signal bar). They are in no closed sample and, no longer ``open``, not among the stuck trades
-    either, so without this note the demo n would be short without a word. None when there is none."""
-
-    def t0(t: Mapping[str, Any]) -> float | None:
-        for k in ("opened_ts", "signal_ts"):
-            if isinstance(v := t.get(k), (int, float)) and not isinstance(v, bool):
-                return float(v)
-        return None
-
-    rows = sorted(
-        (t for t in trades if t.get("status") == "orphaned" and (o := t0(t)) is not None and o <= now_ms),
-        key=lambda t: (t0(t) or 0.0, str(t.get("link_id"))),
-    )
-    if not rows:
-        return None
-    named = ", ".join(f"{t.get('setup') or '?'} {t.get('symbol') or t.get('link_id')}" for t in rows)
-    return (
-        f"демо-угоди orphaned (заповнені, а ні позиції, ні закриття на біржі не знайдено): {len(rows)} — {named}; "
-        "вони не входять у закриті вибірки й не рахуються завислими, тож n демо неповне: закриття перевірити вручну"
-    )
 
 
 def build_report(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:

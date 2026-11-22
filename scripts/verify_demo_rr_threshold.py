@@ -4,7 +4,7 @@
 Read-only: takes the ``--json`` file of ``scripts/demo_vs_backtest.py`` (schema 2, the daily timer writes
 /var/lib/tradedesk-mcp/demo-vs-backtest/latest.json), no network, no store. Compares the shadow plans of the refusals
 'reward/risk N after fees < 1.5' with those of the filled demo trades ('taken'); pre-registration and verdict in
-docs/verification/2026-10-29-demo-rr-threshold.md. Prints compact tables; the full output goes to
+docs/verification/2026-10-29-demo-rr-threshold.md (repeat with wild cluster bootstrap: 2026-11-20-...-repeat.md). Prints compact tables; the full output goes to
 ``--cache-dir``/result.json.
 
     uv run python scripts/verify_demo_rr_threshold.py
@@ -29,6 +29,8 @@ from tradedesk.analytics.per_asset import cluster_robust_q  # noqa: E402
 
 DEFAULT_IN = Path("/var/lib/tradedesk-mcp/demo-vs-backtest/latest.json")
 DEFAULT_CACHE = Path.home() / ".cache" / "tradedesk-agents" / "demo-rr-threshold"
+# last decision of the 29.10 sample (2026-10-29 04:02:02 UTC): later rows were not seen by the first analysis
+NEW_AFTER_MS = 1_793_246_522_217
 HOLD_MS = {"4h": 7 * d.DAY_MS, "1d": 30 * d.DAY_MS}  # execution.demo_trader.MAX_HOLD_MS (read, not imported)
 Row = Mapping[str, Any]
 
@@ -96,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--in", dest="inp", type=Path, default=DEFAULT_IN)
     ap.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
+    ap.add_argument("--new-after-ms", type=int, default=NEW_AFTER_MS, help="confirmation subsample: decisions after this")
+    ap.add_argument("--smoke", action="store_true", help="counts and fields only, no outcome metric (pre-registration step)")
     a = ap.parse_args(argv)
     data = json.loads(a.inp.read_text())
     now = int(data["generated_ms"])
@@ -118,6 +122,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"refused R:R rows {len(rr_all)} | unique signals {len(rr_first)} | later taken {len(later_taken)} | primary {len(rr)}")
     print(f"period {_iso(t0)} .. {_iso(t1)} UTC ({days:.1f} days); taken rows {len(taken_all)}, unique {len(taken)}")
     print(f"status primary: { ({s: sum(1 for r in rr if r.get('status') == s) for s in ('resolved', 'open', 'no_plan')}) }")
+    other_rr = {}
+    for r in rows_all:
+        reason = str(r.get("reason") or "")
+        if r.get("group") == "refused" and "reward/risk" in reason and reason != d.RR_REASON:
+            other_rr[reason] = other_rr.get(reason, 0) + 1
+    rs_p = _resolved(rr)
+    new_rr = [r for r in rr if int(r["decided_ts"]) > a.new_after_ms]
+    print(
+        f"other reward/risk refusal reasons: {other_rr or 'none'} | day clusters {len({d.day_key(int(r['decided_ts'])) for r in rs_p})}"
+        f" | week clusters {len({d.week_key(int(r['decided_ts'])) for r in rs_p})} | symbols {len({str(r['symbol']) for r in rs_p})}"
+        f" | new rows after {_iso(a.new_after_ms)}: {len(new_rr)} ({len(_resolved(new_rr))} resolved)"
+    )
+    if a.smoke:
+        missing = sorted({k for r in rr for k in ("r", "r_plan", "decided_ts", "symbol", "link_id", "status", "example") if k not in r})
+        print(f"smoke: fields missing in primary rows: {missing or 'none'}; no outcome metric printed")
+        print(f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB")
+        return 0
     oc = {k: sum(1 for r in rr if r.get("outcome") == k) for k in ("target", "stop", "expired", "not_filled")}
     oc_t = {k: sum(1 for r in taken if r.get("outcome") == k) for k in ("target", "stop", "expired", "not_filled")}
     print(f"outcomes primary {oc} | taken {oc_t}")
@@ -159,6 +180,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     for eff in (0.20, 0.30):
         k = None if sed is None else (d.Z_MDE * sed / eff) ** 2
         print(f"  diff {eff:.2f} R: MDE now {_f(d.mde(sed))}; samples x{k:.1f} needed (both groups)" if k else "")
+
+    print("\nRobustness (20.11 repeat): wild cluster bootstrap, Webb weights, WCR p / WCU percentile-t CI; week clusters")
+    rt = _resolved(taken)
+    vt = [float(r["r"]) for r in rt]
+    day_p = [d.day_key(int(r["decided_ts"])) for r in rs_p]
+    week_p = [d.week_key(int(r["decided_ts"])) for r in rs_p]
+    vp_r = [float(r["r"]) for r in rs_p]
+    rob: dict[str, Any] = {
+        "h1_wild_day": d.wild_cluster(vp_r, day_p),
+        "h1_wild_week": d.wild_cluster(vp_r, week_p),
+        "h1_cr1_week": d.mean_ci(vp_r, week_p),
+        "h2_wild_day": d.wild_cluster(vp_r, day_p, vt, [d.day_key(int(r["decided_ts"])) for r in rt]),
+        "h2_wild_week": d.wild_cluster(vp_r, week_p, vt, [d.week_key(int(r["decided_ts"])) for r in rt]),
+        "h2_cr1_week": d.diff_ci(vp_r, week_p, vt, [d.week_key(int(r["decided_ts"])) for r in rt]),
+    }
+    res["robustness"] = rob
+    for k in ("h1_wild_day", "h1_wild_week", "h2_wild_day", "h2_wild_week"):
+        x = rob[k]
+        print(
+            f"  {k:<13} est {_f(x['est'])} [{_f(x['lo'])}; {_f(x['hi'])}] G={x['g']} p_two={_f(x['p_two'])} p_gt={_f(x['p_gt'])} p_lt={_f(x['p_lt'])}"
+        )
+    print(f"  h1_cr1_week   {_ci(rob['h1_cr1_week'])}")
+    c2 = rob["h2_cr1_week"]
+    print(f"  h2_cr1_week   {_f(c2['diff'])} [{_f(c2['lo'])}; {_f(c2['hi'])}] G={c2['g']}")
+
+    print(f"\nNew data only (decided after {_iso(a.new_after_ms)} UTC, not seen on 29.10)")
+    cn = three_cis(new_rr)
+    rn = _resolved(new_rr)
+    cn["wild_day"] = d.wild_cluster([float(r["r"]) for r in rn], [d.day_key(int(r["decided_ts"])) for r in rn])
+    res["new_data"] = cn
+    print(f"  n={len(new_rr)} n_r={cn['iid']['n']} win={_f(cn['win_share'], 3)}")
+    print(f"     iid {_ci(cn['iid'])} | day {_ci(cn['day'])} | symbol {_ci(cn['symbol'])}")
+    wn = cn["wild_day"]
+    print(f"     wild day {_f(wn['est'])} [{_f(wn['lo'])}; {_f(wn['hi'])}] G={wn['g']} p_gt={_f(wn['p_gt'])}")
+
+    dec = d.decision(w, rob["h1_wild_day"], dd["widest"].get("diff"), cn["iid"]["mean"], d.mde(se))
+    res["decision"] = dec
+    print(f"\nPre-registered decision: {dec['verdict']} ({dec['why']}); H1b (upper < +0.20 R) {dec['h1b']}")
 
     res["by_bucket"] = table(rr, lambda r: d.rr_bucket(r.get("rr")), "By reward/risk bucket (primary)")
     res["by_setup"] = table(rr, lambda r: str(r.get("setup")), "By setup (primary)")

@@ -15,6 +15,9 @@ from ._util import MAX_BAR_PRICE, MAX_BAR_VOLUME, READ_ONLY, bar_rows, json_num,
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
 MarketType = Literal["spot", "swap", "future", "option", "any"]
+MARKETS_COMPACT_ROWS = 10  # market_markets full rows in the default (compact) answer
+OHLCV_COMPACT_ROWS = 10  # market_ohlcv: the latest candles in the default (compact) answer
+TICKERS_COMPACT_ROWS = 10  # market_tickers full rows (top by quote volume) in the default (compact) answer
 
 
 def _level_ok(lv: Any) -> bool:
@@ -29,14 +32,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary: "
-            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d. "
+            "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary over every fetched "
+            "candle: period return, annualised close-to-close realised volatility, window high / low and first / last "
+            "candle time. timeframe like 1m,5m,1h,4h,1d. "
+            "By default the answer is compact: `rows` holds only the latest 10 candles (the summary still covers all "
+            "`limit` of them); include_series=true returns every candle. "
             "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are in the symbol's quote "
-            "currency; volume is passed through as the venue reports it via ccxt (not converted to USD). "
+            "currency; volume is ccxt's unified bar volume, in base-asset units (e.g. BTC for BTC/USDT:USDT; ccxt's "
+            "parse_ohlcv picks the base-volume column on binance/bybit/okx perps), though another venue may report "
+            "contracts or quote volume; never converted to USD. "
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
             "present only with at least 10 closes. A candle with a timestamp, price or volume that is not a finite number "
-            "in range is dropped (named in `warnings`)."
+            "in range is dropped (named in `warnings`). "
+            "When to pick it: the latest live candles (up to 1000, one request) on any ccxt venue; for longer series "
+            "stored by our collector use ohlcv_history; for Hyperliquid coins (prices in USDC) use hyperliquid_candles."
         ),
     )
     async def market_ohlcv(
@@ -47,6 +57,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             int,
             Field(ge=2, le=1000, description="Most recent candles to fetch in one request; a venue with a lower cap returns fewer."),
         ] = 200,
+        include_series: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every fetched candle in `rows`; false (default) = a compact answer: the latest 10 candles "
+                    "only. `summary` is computed over every fetched candle either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -76,6 +95,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             mean = sum(lr) / len(lr)
             var = sum((x - mean) ** 2 for x in lr) / (len(lr) - 1)
             summary["realized_vol_annualized"] = r(math.sqrt(var) * math.sqrt(365 * 86400 / tf_sec), 4)
+        # window extent, so the compact answer (latest candles only) still tells the range of the whole fetch
+        summary.update(high=max(c[2] for c in rows), low=min(c[3] for c in rows), first_ts_ms=rows[0][0], last_ts_ms=rows[-1][0])
+        if not include_series and len(rows) > OHLCV_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: the latest {OHLCV_COMPACT_ROWS} of {len(rows)} candles in `rows` (summary covers all); "
+                "include_series=true for every candle"
+            )
+            rows = rows[-OHLCV_COMPACT_ROWS:]
         return b.build({"columns": ["ts_ms", "open", "high", "low", "close", "volume"], "rows": rows, "summary": summary})
 
     @server.tool(
@@ -141,8 +168,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "ask are present. Prices are in the symbol's quote currency. One symbol (a string or a one-item list) is "
             "fetched with fetch_ticker, which also works on venues without batch tickers; several symbols, or none for the "
             "venue's full default set, with one fetch_tickers call (some venues reject that: the error is in `missing`). "
-            "Rows are sorted by 24h quote volume (desc) and cut to `limit`; `count` is the number before the cut; "
-            "`top_movers` = the 3 largest 24h moves by |percentage|. For one symbol read data.tickers[0]."
+            "Rows are sorted by 24h quote volume (desc) and cut to `limit`; `count` is the number before the cut, "
+            "`returned` the number after it; `top_movers` = the 3 largest 24h moves by |percentage| among all `count` "
+            "rows. By default the answer is compact: `symbols` lists every returned ticker (in volume order) and "
+            "`tickers` holds full rows for the top 10 by quote volume only; include_details=true returns a full row for "
+            "every returned ticker (no `symbols`). Rows are the same either way. For one symbol read data.tickers[0]."
         ),
     )
     async def market_tickers(
@@ -155,6 +185,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ),
         ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="Max rows kept after sorting by quote volume.")] = 50,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return a full row for every returned ticker in `tickers`; false (default) = a compact answer: the "
+                    "symbols of every returned ticker in `symbols`, full rows for the top 10 by quote volume only."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         wanted = list(dict.fromkeys([symbols] if isinstance(symbols, str) else symbols or []))
@@ -200,20 +239,33 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda x: json_num(x.get("quoteVolume")) or 0.0, reverse=True)
         with_pct = [x for x in rows if isinstance(x.get("percentage"), (int, float))]
         top_movers = sorted(with_pct, key=lambda x: abs(x["percentage"]), reverse=True)[:3]
-        data = {
-            "count": len(rows),
-            "returned": min(limit, len(rows)),
-            "tickers": rows[:limit],
-            "top_movers": [{"symbol": x["symbol"], "percentage": x["percentage"], "last": x["last"]} for x in top_movers],
-        }
-        return b.build(data)
+        shown = rows[:limit]
+        movers = [{"symbol": x["symbol"], "percentage": x["percentage"], "last": x["last"]} for x in top_movers]
+        if include_details:
+            return b.build({"count": len(rows), "returned": len(shown), "tickers": shown, "top_movers": movers})
+        if len(shown) > TICKERS_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: full rows for the top {TICKERS_COMPACT_ROWS} of {len(shown)} returned tickers (by quote "
+                "volume), every returned symbol in `symbols`; include_details=true for every row"
+            )
+        return b.build(
+            {
+                "count": len(rows),
+                "returned": len(shown),
+                "symbols": [x["symbol"] for x in shown],
+                "tickers": shown[:TICKERS_COMPACT_ROWS],
+                "top_movers": movers,
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,
         description=(
             "Search tradable markets on one exchange (ccxt load_markets). Filter by substring (`query`, case-insensitive on symbol/id/base/quote), "
             "`market_type` (spot/swap/future/option/any), and `active_only`. Returns slim rows: symbol, type, base, quote, settle, linear/inverse, "
-            "contractSize, active, plus expiry/strike/optionType when the venue lists them. Markets rarely change (cached ~1h)."
+            "contractSize, active, plus expiry/strike/optionType when the venue lists them. Markets rarely change (cached ~1h). "
+            "By default the answer is compact: `symbols` lists every returned match (up to `limit`, sorted by symbol) and "
+            "`markets` holds full rows for the first 10 of them; `include_details=true` returns full rows for all."
         ),
     )
     async def market_markets(
@@ -224,8 +276,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = "any",
         active_only: Annotated[bool, Field(description="Skip markets the venue flags as inactive (delisted or suspended).")] = True,
         limit: Annotated[
-            int, Field(ge=1, le=1000, description="Max rows returned, sorted by symbol; a warning reports the full match count.")
+            int,
+            Field(
+                ge=1,
+                le=1000,
+                description="Max matches returned, sorted by symbol (as `symbols`, or as full rows with include_details); "
+                "a warning reports the full match count.",
+            ),
         ] = 100,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return a full row for every returned match in `markets`; false (default) = a compact answer: the "
+                    "symbols of every returned match in `symbols`, full rows for the first 10 only. Rows are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         mk = await b.guard("markets", f"ccxt:{exchange}", rt.exchanges.markets(exchange))
@@ -269,7 +336,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
         picked.sort(key=lambda x: str(x["symbol"]))
         if len(picked) > limit:
             b.warn(f"matched {len(picked)} markets; returning first {limit}. Narrow `query` or raise `limit`.")
-        return b.build({"total_markets": len(mk), "matched": len(picked), "markets": picked[:limit]})
+        shown = picked[:limit]
+        if include_details:
+            return b.build({"total_markets": len(mk), "matched": len(picked), "markets": shown})
+        if len(shown) > MARKETS_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: full rows for the first {MARKETS_COMPACT_ROWS} of {len(shown)} returned markets, every "
+                "returned symbol in `symbols`; include_details=true for every row"
+            )
+        return b.build(
+            {
+                "total_markets": len(mk),
+                "matched": len(picked),
+                "symbols": [x["symbol"] for x in shown],
+                "markets": shown[:MARKETS_COMPACT_ROWS],
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,

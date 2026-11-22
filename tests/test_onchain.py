@@ -176,6 +176,7 @@ async def test_overview_changes_match_defillama_upstream():
         return httpx.Response(200, json={**LLAMA_UP[kind], "protocols": [{"name": "dropped"}]})
 
     rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={"defillama": httpx.MockTransport(handler)})
+    rt.now = lambda: NOW
     try:
         bodies = {"dexs": (await rt.defillama.dex_overview("Solana")).data, "fees": (await rt.defillama.fees_overview("Solana")).data}
     finally:
@@ -227,6 +228,60 @@ def test_canonical_tokens_never_flagged():
     assert likely_fake("USDC", 3e8, 2e6, chain="base", address=USDC_ETH)[0] is True  # right address, wrong chain
     # case-sensitive on Solana: a case-altered base58 string is a different token
     assert likely_fake("SOL", 2.3e9, 3.5e5, chain="solana", address=WSOL.lower())[0] is True
+
+
+# Live DexScreener response for wSOL, 2026-11-19 (10 of 30 pairs, upstream fields; see `_source` in the file).
+DEX_WSOL = json.loads((FIX / "dexscreener_tokens_wsol_2026-11-19.json").read_text())
+STABLES_SOL = {"USDC": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDT": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}
+UNKNOWN_SOL_ADDR = "5Sqq3NWD98JkcirdDBKRxZFsoZ8f1qqpFp6DSZkoTsHd"
+
+
+async def test_dex_pairs_live_wsol_pools_not_flagged():
+    srv = make_server(dex_handler=lambda req: httpx.Response(200, json=DEX_WSOL))
+    env = await call(srv, "dex_pairs", addresses=[WSOL], limit=20)
+    assert env["ok"] is True
+    d = env["data"]
+    assert d["pairs_total"] == 10 and d["likely_fake_count"] == 0
+    assert all(p["likely_fake"] is False and p["likely_fake_reason"] is None for p in d["pairs"])
+    assert all(p["chain"] == "solana" and (p["base_token"]["symbol"], p["base_token"]["address"]) == ("SOL", WSOL) for p in d["pairs"])
+    quotes = {p["quote_token"]["symbol"]: p["quote_token"]["address"] for p in d["pairs"]}
+    assert {k: quotes[k] for k in STABLES_SOL} == STABLES_SOL and "USD1" in quotes
+    assert d["pairs"][0]["liquidity_usd"] == pytest.approx(18393486.79) and d["pairs"][0]["dex"] == "orca"
+    assert not any("look like fake-ticker pools" in w for w in env["warnings"])  # the generic heuristic caveat stays
+
+
+def test_wsol_fixture_canonical_exemption_and_impostor():
+    from tradedesk.analytics.dex import MAX_TURNOVER, MIN_LIQUIDITY_USD
+
+    deep = [p for p in DEX_WSOL["pairs"] if p["liquidity"]["usd"] >= MIN_LIQUIDITY_USD]
+    assert len(deep) == 8
+    # On the live sample every deep wSOL pool turns over >= 5 % a day (orca EGZ7 is the thinnest, 5.1 %), so a SOL
+    # impostor with these exact numbers would NOT be flagged: the heuristic needs thin turnover, not just a new address.
+    turnovers = [p["volume"]["h24"] / p["liquidity"]["usd"] for p in deep]
+    assert min(turnovers) == pytest.approx(124074.49 / 2414497.8, abs=1e-9) and min(turnovers) > 5 * MAX_TURNOVER
+    for p in deep:
+        liq, vol = p["liquidity"]["usd"], p["volume"]["h24"]
+        assert likely_fake("SOL", liq, vol, chain="solana", address=UNKNOWN_SOL_ADDR)[0] is False
+        # Scam profile on the same pool: real liquidity, 24h volume cut to 0.5 % of it.
+        thin = 0.005 * liq
+        assert likely_fake(p["baseToken"]["symbol"], liq, thin, chain=p["chainId"], address=p["baseToken"]["address"])[0] is False
+        fake, reason = likely_fake(p["baseToken"]["symbol"], liq, thin, chain=p["chainId"], address=UNKNOWN_SOL_ADDR)
+        assert fake is True and "SOL" in reason
+        q = p["quoteToken"]
+        if q["symbol"] in STABLES_SOL:
+            assert likely_fake(q["symbol"], liq, thin, chain="solana", address=q["address"])[0] is False
+            assert likely_fake(q["symbol"], liq, thin, chain="solana", address=UNKNOWN_SOL_ADDR)[0] is True
+
+    # Through summarise_pairs: the live pools plus one spoof (copy of the thinnest deep pool, base moved to an unknown
+    # address, volume cut to the scam profile) -> only the spoof is flagged.
+    spoof = copy.deepcopy(next(p for p in deep if p["pairAddress"].startswith("EGZ7")))
+    spoof["pairAddress"] = "SpoofPair1111111111111111111111111111111111"
+    spoof["baseToken"]["address"] = UNKNOWN_SOL_ADDR
+    spoof["volume"]["h24"] = 0.005 * spoof["liquidity"]["usd"]
+    out = summarise_pairs([*DEX_WSOL["pairs"], spoof])
+    assert out["pairs_total"] == 11 and out["likely_fake_count"] == 1
+    flagged = [p for p in out["pairs"] if p["likely_fake"]]
+    assert flagged[0]["pair_address"] == spoof["pairAddress"] and flagged[0]["base_token"]["address"] == UNKNOWN_SOL_ADDR
 
 
 def _pair(base_sym, base_addr, quote_sym, quote_addr, liq=2.3e9, vol=3.5e5):

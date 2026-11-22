@@ -107,7 +107,7 @@ def _stored_bar_ok(x: dict[str, Any]) -> bool:
 
 def _stored_bars(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`rows` of ohlcv_hist without the bars another writer corrupted, with a warning (invariant 1). A text / blob price
-    raised ValueError out of range_detect / range_setup / market_regime, inf gave Infinity / NaN in the reply, and a
+    raised ValueError out of range_detect (ranges / setup views) / market_regime, inf gave Infinity / NaN in the reply, and a
     text / blob / 1e20 timestamp or a 1e308 price went into the ranges unchecked. Valid bars pass unchanged."""
     bars = [x for x in rows if _stored_bar_ok(x)]
     if len(bars) < len(rows):
@@ -180,7 +180,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(0.45 = 45 %). IV rank = (latest - min) / (max - min), 0..1. "
             "Percentile = fraction of past points strictly below latest, plus half the ties. Both are "
             "informative only — the lookback window matters more than tiny differences. Needs the "
-            "collector enabled and some stored history (otherwise ok=false)."
+            "collector enabled and some stored history (otherwise ok=false). "
+            "When to pick it: the rank of ONE listed expiry's ATM IV over our own stored history (up to the lookback); "
+            "for the 30-day constant-maturity DVOL percentile over up to 1000 days with no stored data, plus implied vs "
+            "realized vol, use deribit_vrp; for the raw DVOL series in percent and its 24h / 7d change, use deribit_dvol."
         ),
     )
     async def iv_rank(
@@ -363,7 +366,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "ohlcv_hist collector enabled (TRADEDESK_COLLECT_OHLCV_HIST_ENABLED=1 with a market "
             "list in TRADEDESK_COLLECT_OHLCV_HIST_MARKETS). Returns stored bars for the "
             "(venue, symbol, timeframe), optionally bounded by since/until (unix MILLISECONDS, "
-            "ccxt convention). Reports the inclusive date range of what's actually stored."
+            "ccxt convention). first_ts_ms / last_ts_ms are the inclusive range of the bars returned (after `limit` "
+            "and after skipping malformed stored bars), not of everything stored. "
+            "Units: bar ts is Unix epoch milliseconds (UTC) of the bar's open; open/high/low/close are in the symbol's "
+            "quote currency; volume is ccxt's unified bar volume as stored, in base-asset units (e.g. BTC for "
+            "BTC/USDT:USDT; ccxt's parse_ohlcv picks the base-volume column on binance/bybit/okx perps), though another venue "
+            "may report contracts or quote volume; never converted to USD. No return or "
+            "volatility summary. When to pick it: long stored series (more bars than one live request) for the markets "
+            "the collector records; for the latest live candles of any ccxt venue with a return / realised-vol summary "
+            "use market_ohlcv; for Hyperliquid coins use hyperliquid_candles."
         ),
     )
     async def ohlcv_history(
@@ -420,33 +431,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
             }
         )
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Detect horizontal ranges on OHLCV plus the two short-lived events the DoubleTop "
-            "'Ranges' lecture names: SWEEPS (candles whose wick pokes past a prior swing "
-            "level and closes back on the original side — a liquidity grab) and DEVIATIONS "
-            "(closes beyond the range boundary that are pulled back within `max_deviation_bars`). "
-            "Pulls bars from ohlcv_hist (default) or live ccxt (`source='live'`). "
-            "Interpretation hints: in a bull-range price works the LOWER boundary (sweeps / "
-            "deviations down), in a bear-range the UPPER boundary — combine with market_regime "
-            "to pick the side. Returns ranges with {top, bottom, mid, width_pct}, swing high/low "
-            "pivots, sweeps and per-range deviations."
-        ),
-    )
-    async def range_detect(
-        venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
-        symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
-        timeframe: Annotated[str, Field(description="OHLCV timeframe, e.g. '1h'.")] = "1h",
-        lookback_bars: RANGE_LOOKBACK = 500,
-        min_bars: Annotated[int, Field(ge=5, le=1000, description="Minimum bars in a range.")] = 20,
-        max_width_pct: Annotated[float, Field(gt=0, le=50, description="Max (high - low) / mid, in percent.")] = 10.0,
-        swing_lookback: Annotated[int, Field(ge=1, le=50, description="Pivot look-around for swing points.")] = 3,
-        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0, description="Min piercing wick as fraction of candle range.")] = 0.5,
-        max_deviation_bars: Annotated[int, Field(ge=1, le=20, description="How quickly a deviation must snap back.")] = 3,
-        source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "store",
+    # range_detect's three views (the former range_detect / range_setup / range_setup_scan tools, merged 2026-11-18): the
+    # bodies below are the old tool bodies, unchanged apart from taking the Builder.
+    async def _range_detect_view(
+        b: Builder,
+        venue: str,
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        min_bars: int,
+        max_width_pct: float,
+        swing_lookback: int,
+        sweep_wick_ratio: float,
+        max_deviation_bars: int,
+        source: str,
     ) -> dict[str, Any]:
-        b = Builder()
         bars: list[dict[str, Any]] = []
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
@@ -525,37 +524,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
             }
         )
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Translate the latest sweep inside the latest range into a tradable setup "
-            "(entry / stop / tp1 / tp2 / RR). Follows DoubleTop 'SFP trading' lecture rules: "
-            "stop = swept_level ± (stop_mult × overshoot_pct), where overshoot is how far the "
-            "wick poked past the level, and never closer than the wick extreme ± "
-            "stop_min_offset_pct; tp1 = range midpoint, tp2 = opposite boundary; `tradable` "
-            "is True when rr1 ≥ min_rr. `use_tight_stop=true` puts the stop right past the wick "
-            "extreme — the rule after 2-3 confirmed sweeps in a row. Entry is the sweep candle's "
-            "close; check `latest_sweep.bars_since_sweep` for staleness. Mechanical proposal, "
-            "not advice; the lecture confirms entries on 15m price action. A 2-year walk-forward "
-            "backtest found no significant edge for this mechanic; see `warnings`."
-        ),
-    )
-    async def range_setup(
-        venue: Annotated[str, Field(description="ccxt venue id.")],
-        symbol: Annotated[str, Field(description="ccxt symbol.")],
-        timeframe: Annotated[str, Field(description="Range timeframe (4h / 12h recommended by lecture).")] = "4h",
-        lookback_bars: RANGE_LOOKBACK = 300,
-        min_bars: RANGE_MIN_BARS = 20,
-        max_width_pct: RANGE_MAX_WIDTH = 15.0,
-        swing_lookback: SWING_LOOKBACK = 3,
-        sweep_wick_ratio: SWEEP_WICK_RATIO = 0.5,
-        stop_mult: STOP_MULT = 2.0,
-        stop_min_offset_pct: STOP_MIN_OFFSET = 0.1,
-        min_rr: MIN_RR = 2.0,
-        use_tight_stop: Annotated[bool, Field(description="After 2-3 confirmed sweeps: stop right at the swept level.")] = False,
-        source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "live",
+    async def _range_setup_view(
+        b: Builder,
+        venue: str,
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        min_bars: int,
+        max_width_pct: float,
+        swing_lookback: int,
+        sweep_wick_ratio: float,
+        stop_mult: float,
+        stop_min_offset_pct: float,
+        min_rr: float,
+        use_tight_stop: bool,
+        source: str,
     ) -> dict[str, Any]:
-        b = Builder()
         b.warn(SFP_EDGE_WARNING)
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
@@ -741,45 +725,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
         )
         return out
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Scan multiple symbols on one venue for tradable SFP setups (DoubleTop 'SFP trading' lecture). "
-            "For each symbol: fetch OHLCV via ccxt → detect ranges + sweeps → classify "
-            "accumulation / distribution / ambiguous → generate entry/stop/tp1/tp2/RR via the "
-            "same `range_setup` mechanic. Returns `setups` (filtered + sorted by rr1 desc), "
-            "`scanned` / `tradable` counts, and `rejected` (per-symbol reasons: no_range, "
-            "no_sweep_in_range, incoherent_sweep, insufficient_bars, fetch_failed, malformed_bars = the venue answered "
-            "but no bar had a finite timestamp and prices). "
-            "Filters: `only_tradable` keeps only rr1 ≥ min_rr; `exclude_ambiguous` drops ranges "
-            "whose classification is `ambiguous` (keep this on for high-conviction scans); "
-            "`max_sweep_age_bars` drops setups whose sweep closed more than N bars ago (stale). "
-            "`max_concurrency` throttles parallel ccxt fetches so we respect venue rate limits. "
-            "Entry is the sweep candle's close — a mechanical proposal, not advice; the lecture "
-            "confirms entries on 15m price action. A 2-year walk-forward backtest found no "
-            "significant edge for this mechanic; see `warnings`."
-        ),
-    )
-    async def range_setup_scan(
-        venue: Annotated[str, Field(description="ccxt venue id (binanceusdm, bybit, okx, hyperliquid, …).")],
-        symbols: Annotated[list[str], Field(description="ccxt symbols to scan (same venue). Max 50 per call.", max_length=50)],
-        timeframe: Annotated[str, Field(description="Range timeframe. DoubleTop recommends 4h / 12h.")] = "4h",
-        lookback_bars: RANGE_LOOKBACK = 300,
-        min_bars: RANGE_MIN_BARS = 20,
-        max_width_pct: RANGE_MAX_WIDTH = 15.0,
-        swing_lookback: SWING_LOOKBACK = 3,
-        sweep_wick_ratio: SWEEP_WICK_RATIO = 0.5,
-        stop_mult: STOP_MULT = 2.0,
-        stop_min_offset_pct: STOP_MIN_OFFSET = 0.1,
-        min_rr: MIN_RR = 2.0,
-        only_tradable: Annotated[bool, Field(description="Keep only setups with rr1 ≥ min_rr.")] = True,
-        exclude_ambiguous: Annotated[bool, Field(description="Drop ranges whose classification is ambiguous.")] = False,
-        max_sweep_age_bars: Annotated[
-            int, Field(ge=0, le=1000, description="Drop setups whose sweep is older than N bars (6 × 4h = 1 day).")
-        ] = 6,
-        max_concurrency: Annotated[int, Field(ge=1, le=16, description="Max concurrent OHLCV fetches.")] = 4,
+    async def _range_scan_view(
+        b: Builder,
+        venue: str,
+        symbols: list[str],
+        timeframe: str,
+        lookback_bars: int,
+        min_bars: int,
+        max_width_pct: float,
+        swing_lookback: int,
+        sweep_wick_ratio: float,
+        stop_mult: float,
+        stop_min_offset_pct: float,
+        min_rr: float,
+        only_tradable: bool,
+        exclude_ambiguous: bool,
+        max_sweep_age_bars: int,
+        max_concurrency: int,
     ) -> dict[str, Any]:
-        b = Builder()
         b.warn(SFP_EDGE_WARNING)
         if not symbols:
             b.miss("symbols", "tradedesk", "config", "empty symbol list")
@@ -840,6 +803,170 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "rejected": rejected,
             },
             ok=any_fetched,
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Horizontal ranges, sweeps and SFP setups on OHLCV (DoubleTop 'Ranges' and 'SFP trading' lectures), one "
+            "symbol or a scan. Prices are in the symbol's quote currency, *_pct fields and max_width_pct in percent "
+            "(2.5 = 2.5 %), timestamps unix ms, rr1 / rr2 = reward / risk ratios. Three views:\n"
+            "- view='ranges' (default): ranges with {top, bottom, mid, width_pct, n_bars, start_ts, end_ts, "
+            "classification accumulation / distribution / ambiguous}, swing high/low pivots, SWEEPS (a wick past a "
+            "prior swing level that closes back on the original side, a liquidity grab) and per-range DEVIATIONS "
+            "(closes beyond the boundary pulled back within `max_deviation_bars`). Hint: in a bull-range price works "
+            "the LOWER boundary, in a bear-range the UPPER one; combine with market_regime to pick the side. "
+            "Defaults: timeframe 1h, lookback_bars 500, max_width_pct 10, source='store' (ohlcv_hist).\n"
+            "- view='setup': the latest sweep inside the latest range as a setup: entry = the sweep candle's close; "
+            "stop = swept_level ± stop_mult × overshoot_pct (how far the wick poked past the level), never closer "
+            "than the wick extreme ± stop_min_offset_pct; tp1 = range mid, tp2 = opposite boundary; `tradable` = "
+            "rr1 ≥ min_rr; `use_tight_stop=true` puts the stop right past the wick extreme (the rule after 2-3 "
+            "same-side sweeps, see hints.consider_tight_stop). Check latest_sweep.bars_since_sweep for staleness. "
+            "No range / sweep / coherent setup answers ok=false. Defaults: timeframe 4h, lookback_bars 300, "
+            "max_width_pct 15, source='live' (ccxt).\n"
+            "- view='scan': the 'setup' mechanic over `symbols` (up to 50, one venue, live ccxt bars only): `setups` "
+            "sorted by rr1 desc, `scanned` / `tradable` counts, `rejected` with a reason per symbol (no_range, "
+            "no_sweep_in_range, incoherent_sweep, insufficient_bars, fetch_failed, malformed_bars = the venue "
+            "answered but no bar had a finite timestamp and prices, stale_sweep, ambiguous_classification, "
+            "rr_below_min). Filters: only_tradable, exclude_ambiguous, max_sweep_age_bars; max_concurrency caps "
+            "parallel fetches. Same defaults as 'setup'.\n"
+            "`symbol` is required for 'ranges' / 'setup', `symbols` for 'scan'; a parameter of another view is ignored. "
+            "Setups are mechanical proposals, not advice (the lecture confirms entries on 15m price action): "
+            "walk-forward backtests found no significant edge for this mechanic, see `warnings`."
+        ),
+    )
+    async def range_detect(
+        venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm' (bybit, okx, hyperliquid, ...).")],
+        symbol: Annotated[
+            str | None, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'. Required for view='ranges' and 'setup'.")
+        ] = None,
+        view: Annotated[
+            Literal["ranges", "setup", "scan"],
+            Field(
+                description=(
+                    "'ranges' (default): ranges, swings, sweeps, deviations. 'setup': entry / stop / tp1 / tp2 / RR "
+                    "from the latest sweep in the latest range. 'scan': setups over `symbols` (live bars)."
+                )
+            ),
+        ] = "ranges",
+        symbols: Annotated[
+            list[str] | None,
+            Field(description="view='scan' only: ccxt symbols to scan (same venue). Max 50 per call.", max_length=50),
+        ] = None,
+        timeframe: Annotated[
+            str | None,
+            Field(description="OHLCV timeframe, e.g. '1h'. Default '1h' for 'ranges', '4h' for 'setup' / 'scan' (lecture: 4h / 12h)."),
+        ] = None,
+        lookback_bars: Annotated[
+            int | None,
+            Field(
+                ge=20,
+                le=10_000,
+                description=(
+                    "Bars to analyse, the latest N (default 500 for 'ranges', 300 for 'setup' / 'scan'). Live: one ccxt "
+                    "request (venues cap a request, often at 1000-1500 bars); store: the newest N rows of ohlcv_hist."
+                ),
+            ),
+        ] = None,
+        min_bars: RANGE_MIN_BARS = 20,
+        max_width_pct: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                le=50,
+                description="Max range width (high - low) / mid, in percent (default 10 for 'ranges', 15 for 'setup' / 'scan').",
+            ),
+        ] = None,
+        swing_lookback: SWING_LOOKBACK = 3,
+        sweep_wick_ratio: SWEEP_WICK_RATIO = 0.5,
+        max_deviation_bars: Annotated[
+            int, Field(ge=1, le=20, description="view='ranges': how many bars a deviation has to snap back.")
+        ] = 3,
+        stop_mult: STOP_MULT = 2.0,
+        stop_min_offset_pct: STOP_MIN_OFFSET = 0.1,
+        min_rr: MIN_RR = 2.0,
+        use_tight_stop: Annotated[
+            bool, Field(description="view='setup': stop right past the wick extreme (after 2-3 same-side sweeps).")
+        ] = False,
+        only_tradable: Annotated[bool, Field(description="view='scan': keep only setups with rr1 ≥ min_rr.")] = True,
+        exclude_ambiguous: Annotated[bool, Field(description="view='scan': drop ranges whose classification is ambiguous.")] = False,
+        max_sweep_age_bars: Annotated[
+            int, Field(ge=0, le=1000, description="view='scan': drop setups whose sweep is older than N bars (6 × 4h = 1 day).")
+        ] = 6,
+        max_concurrency: Annotated[int, Field(ge=1, le=16, description="view='scan': max concurrent OHLCV fetches.")] = 4,
+        source: Annotated[
+            Literal["store", "live"] | None,
+            Field(
+                description=(
+                    "Where bars come from: 'store' (ohlcv_hist, filled by the collector) or 'live' (ccxt). Default "
+                    "'store' for 'ranges', 'live' for 'setup'; 'scan' always reads live bars."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        setup_like = view != "ranges"
+        tf = timeframe if timeframe is not None else ("4h" if setup_like else "1h")
+        lookback = lookback_bars if lookback_bars is not None else (300 if setup_like else 500)
+        width = max_width_pct if max_width_pct is not None else (15.0 if setup_like else 10.0)
+        if view == "scan":
+            if source == "store":
+                b.warn("view='scan' reads live ccxt bars only; source='store' ignored")
+            if symbols is None:
+                b.miss("symbols", "tradedesk", "invalid_input", "view='scan' needs `symbols` (a list of ccxt symbols, one venue)")
+                return b.build(None, ok=False)
+            return await _range_scan_view(
+                b,
+                venue,
+                symbols,
+                tf,
+                lookback,
+                min_bars,
+                width,
+                swing_lookback,
+                sweep_wick_ratio,
+                stop_mult,
+                stop_min_offset_pct,
+                min_rr,
+                only_tradable,
+                exclude_ambiguous,
+                max_sweep_age_bars,
+                max_concurrency,
+            )
+        if symbols is not None:
+            b.warn("symbols applies to view='scan' only; ignored here")
+        if symbol is None:
+            b.miss("symbol", "tradedesk", "invalid_input", f"view='{view}' needs `symbol` (a ccxt symbol, e.g. 'BTC/USDT:USDT')")
+            return b.build(None, ok=False)
+        if view == "setup":
+            return await _range_setup_view(
+                b,
+                venue,
+                symbol,
+                tf,
+                lookback,
+                min_bars,
+                width,
+                swing_lookback,
+                sweep_wick_ratio,
+                stop_mult,
+                stop_min_offset_pct,
+                min_rr,
+                use_tight_stop,
+                source or "live",
+            )
+        return await _range_detect_view(
+            b,
+            venue,
+            symbol,
+            tf,
+            lookback,
+            min_bars,
+            width,
+            swing_lookback,
+            sweep_wick_ratio,
+            max_deviation_bars,
+            source or "store",
         )
 
     @server.tool(

@@ -371,7 +371,7 @@ def _okx_error(event: Any) -> str | None:
 
 async def _ws_consume(
     url: str,
-    subscribe: dict[str, Any] | None,
+    subscribe: dict[str, Any] | list[dict[str, Any]] | None,
     parser,
     *,
     max_seconds: float,
@@ -383,8 +383,17 @@ async def _ws_consume(
     backoff_cap: float = BACKOFF_CAP,
     stable_seconds: float = STABLE_SECONDS,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
+    lifecycle: str | None = None,
+    label: str = "liquidation",
+    max_size: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Shared WS consumer for a bounded run window that survives disconnects.
+
+    ``lifecycle`` (a feed name) also yields ``{"kind": "_open", "feed": lifecycle}`` after each connection opens and
+    ``{"kind": "_drop", "feed": lifecycle, "error": ...}`` after each failure, not counted in ``rows``: a consumer that
+    keeps state built from the stream (a local order book, providers/orderbook_stream.py) must rebuild it.
+    ``label`` starts the failure log line (``"<label> stream <url> failed (N in a row): <error>"``); the default keeps
+    the liquidation line that scripts/liquidation_gaps_vs_log.py parses, other streams pass their own.
 
     ``parser`` receives each decoded message; it may return a single row or a list of rows (or None / empty for
     messages that aren't events). A dropped connection, a failed handshake or an error message (``error_of``) is
@@ -392,7 +401,9 @@ async def _ws_consume(
     window ends. The wait is capped at half the window, so every run makes at least one attempt. The run raises the
     last error only when no connection opened in the whole window, so the scheduler still counts a venue that is
     down as a failed run. Any other exception (a parser bug) is not a dropped link and propagates.
-    ``heartbeat`` is sent after ``heartbeat_seconds`` without a message.
+    ``heartbeat`` is sent after ``heartbeat_seconds`` without a message. ``subscribe`` is one message or a list sent
+    in order after each connect (Coinbase takes one channel per subscribe message). ``max_size`` raises websockets'
+    1 MiB cap on an incoming message (Coinbase sends the whole book as one); None keeps the default.
     """
     import asyncio  # noqa: PLC0415
 
@@ -407,6 +418,7 @@ async def _ws_consume(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_seconds
     cap = min(backoff_cap, max_seconds / 2)
+    frame = {} if max_size is None else {"max_size": max_size}
     opened = False
     last_exc: Exception | None = None
     while True:
@@ -416,9 +428,15 @@ async def _ws_consume(
         if delay > 0:
             await asyncio.sleep(delay)
         opened_at: float | None = None
+        dropped: str | None = None
         try:
             async with connect(
-                url, open_timeout=OPEN_TIMEOUT, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT, close_timeout=CLOSE_TIMEOUT
+                url,
+                open_timeout=OPEN_TIMEOUT,
+                ping_interval=PING_INTERVAL,
+                ping_timeout=PING_TIMEOUT,
+                close_timeout=CLOSE_TIMEOUT,
+                **frame,
             ) as ws:
                 opened, opened_at = True, loop.time()
                 st.connected, st.connects, st.last_connect_ts = True, st.connects + 1, st.stamp()
@@ -426,8 +444,10 @@ async def _ws_consume(
                 if st.consecutive_failures:
                     st.reconnects += 1
                     st.count("reconnects", st.last_connect_ts)
-                if subscribe is not None:
-                    await ws.send(json.dumps(subscribe))
+                if lifecycle is not None:
+                    yield {"kind": "_open", "feed": lifecycle}
+                for sub in subscribe if isinstance(subscribe, list) else [] if subscribe is None else [subscribe]:
+                    await ws.send(json.dumps(sub))
                 while True:
                     now = loop.time()
                     if st.consecutive_failures and now - opened_at >= stable_seconds:
@@ -472,15 +492,19 @@ async def _ws_consume(
             st.last_failure, st.last_failure_ts = f"{type(e).__name__}: {e}", st.stamp()
             st.count("failures", st.last_failure_ts)
             log.warning(
-                "liquidation stream %s failed (%d in a row): %s",
+                "%s stream %s failed (%d in a row): %s",
+                label,
                 url,
                 st.consecutive_failures,
                 st.last_failure,
                 extra={"stream": url, "error": st.last_failure},
             )
+            dropped = st.last_failure
         finally:
             st.connected = False
             st.close_segment()
+        if lifecycle is not None and dropped is not None:
+            yield {"kind": "_drop", "feed": lifecycle, "error": dropped}
     if not opened and last_exc is not None:
         raise last_exc
 

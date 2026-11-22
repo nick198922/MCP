@@ -154,11 +154,16 @@ async def test_system_health_shows_the_counts(state, monkeypatch):
         monkeypatch.setattr("tradedesk.collector.build_default_scheduler", lambda _rt: sched)
         srv, _ = build_server(rt)
         async with Client(srv) as c:
-            res = await c.call_tool("system_health", {})
+            compact = await c.call_tool("system_health", {})
+            res = await c.call_tool("system_health", {"include_details": True})
+        compact_data = compact.structured_content or json.loads(compact.content[0].text)
+        (short,) = [j for j in compact_data.get("result", compact_data)["data"]["collector"] if j["name"] == "drops"]
+        assert (short["last_rows_dropped"], short["rows_dropped_total"]) == (2, 6)  # the compact report keeps the counts
         data = res.structured_content or json.loads(res.content[0].text)
         data = data.get("result", data)
         (row,) = [j for j in data["data"]["collector"] if j["name"] == "drops"]
         assert (row["last_rows_dropped"], row["rows_dropped_total"]) == (2, 6)
+        # the full report (include_details=true; item 406 made the default compact) keeps every key
         old = {"name", "period_seconds", "runs", "successes", "failures", "last_run_ts", "last_duration_ms"}
         old |= {"last_rows_written", "last_error", "last_failure", "last_failure_ts", "stream"}
         assert old < set(row) and row["runs"] == 2 and row["last_rows_written"] == 10  # existing keys unchanged

@@ -336,9 +336,15 @@ if [[ $MODE == continue ]]; then
 The previous delivery was refused (by the launcher, or by CI on GitHub after it: scripts/pr_watch.py). Fix exactly this before you request delivery again:
 $(cat "$LOG_DIR/refusal.txt")"
   fi
+  # 18.11: btc_charlie's registration, approved by the critic in run 3, kept growing (label table, then code and
+  # data batches) through runs 4-5 and reached MAX_RUNS undelivered.
+  limit="
+
+Runs are limited. Once the critic has approved what is on this branch, write \`continue\` only when the rest fits in the runs left; work of several more runs (a label table, code, a stage 0, data batches) becomes the card's next step on a new branch, and this work ends with \`owner\`. Every run that requests delivery, this one too, writes all three: .agent/branch, .agent/commit-msg.txt and .agent/next."
+  ((RUNS >= MAX_RUNS)) && limit="$limit This is the last run on this work: never \`continue\`; finish what can be finished, then \`owner\`."
   PROMPT="$PROMPT
 
-CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$refused"
+CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$limit$refused"
 fi
 # Late in the weekly window the plan is kept for the owner's cards (step p of .claude/nightly.md), unless the owner's
 # boost runs (scripts/agents_boost.sh: an end time in $LOG_DIR/boost-until), which lifts this brake as it lifts the
@@ -416,6 +422,9 @@ ALLOWED=(
   "Bash(git -c core.quotepath=off --git-dir=/home/tradedesk/tradedesk-agents/.git --work-tree=/home/tradedesk/tradedesk-agents status:*)"
   "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git --work-tree=/home/tradedesk/tradedesk-agents diff:*)"
   "Bash(/usr/bin/python3 --version:*)"
+  # Read-only: grep with the pager off, remote/containing branch listings in the clone (no -d/-D/-m forms).
+  "Bash(git -c core.pager=cat grep:*)"
+  "Bash(git -C /home/tradedesk/tradedesk-agents branch -r:*)" "Bash(git -C /home/tradedesk/tradedesk-agents branch -a:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and
@@ -492,6 +501,18 @@ t = t if t.tzinfo else t.replace(tzinfo=d.timezone.utc)
 e = int(t.timestamp())
 print(e if time.time() < e <= time.time() + 86400 else "")' "$(head -1 .agent/not_before 2>/dev/null)" 2>/dev/null || true)"
   [[ -z "$NOT_BEFORE" ]] && NEXT=continue
+fi
+# On a work branch the name in .agent/branch is ignored (deliver keeps the work branch), yet without the file the
+# step counted as "not requested": on 18.11 run 5 of btc_charlie wrote `.agent/next` = owner and staged its summary,
+# but no .agent/branch, and approved work went to the owner as "stuck" instead of a ready PR. An explicit
+# .agent/next on a work branch is the request; the delivery checks (staged, unstaged, lint, tests) still apply.
+if [[ $MODE == continue && -n "$WORK_BR" && -n "$NEXT" && ! -f .agent/branch ]]; then
+  echo "$WORK_BR" >.agent/branch
+  echo ".agent/next is $NEXT but .agent/branch is missing: delivering on $WORK_BR"
+  if [[ ! -f .agent/commit-msg.txt ]]; then
+    printf 'Agents: %s\n\nRun %s of %s; .agent/commit-msg.txt was not written, see the run summary.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n' \
+      "$WORK_BR" "$RUNS" "$MAX_RUNS" >.agent/commit-msg.txt
+  fi
 fi
 if [[ $DRY -eq 0 ]]; then
   deliver "$SUMMARY" "$BRANCH_RE" "$WORK_BR" || echo "delivery refused: $NOTE"

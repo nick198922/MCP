@@ -896,8 +896,20 @@ class FakeEx:
                 r.pop("side", None)
         return rows
 
+    async def publicGetV5MarketTickers(self, params):  # noqa: N802 - ccxt implicit endpoint (Bybit v5 option tickers)
+        """Bybit's option tickers for BTC: the sample of 2026-10-23 (bybit_option_chain); other coins get an empty list."""
+        if self.id != "bybit":
+            raise ccxt.NotSupported(f"{self.id} has no endpoint publicGetV5MarketTickers")
+        body = json.loads(BYBIT_OPTION_TICKERS.read_text(encoding="utf-8"))
+        if params.get("category") != "option" or params.get("baseCoin") != "BTC":
+            body["result"]["list"] = []
+        return body
+
     async def close(self):
         pass
+
+
+BYBIT_OPTION_TICKERS = Path(__file__).parent / "fixtures" / "bybit_option_chain_btc_2026-10-23.json"
 
 
 @pytest.fixture

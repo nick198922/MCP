@@ -3,8 +3,8 @@
 The journal / positions parser has caught RecursionError since item 328, but the carry_paper parser (`tags`,
 `entry_flags`) and the generic JSON-column parser (trade_plan `rules` / `tags`, rec_paper `legs`, payload columns) did
 not: "[[[...]]]" 100k levels deep (any writer other than our tools) raised RecursionError out of json.loads, so
-carry_paper_status / carry_paper_close / carry_paper_open, plan_list, plan_review (and the hourly plan_resolve job)
-failed as a whole. Now such a cell reads as unparseable text does: [] for carry_paper, None for the generic columns.
+carry_paper_status / carry_paper_close / carry_paper_open (the last two removed 2026-11-18), plan_list, plan_review (and
+the hourly plan_resolve job) failed as a whole. Now such a cell reads as unparseable text does: [] for carry_paper, None for the generic columns.
 
 The in-memory store is reopened empty on every MCP connection, so each test makes all its calls in one session.
 """
@@ -145,12 +145,3 @@ async def test_carry_paper_status_survives_a_deeply_nested_json_cell(rt, col):
         assert env["data"]["trade"]["id"] == pid and env["data"]["trade"][col] == []
         env = await call("paper_carry_status", strategy="manual", include_closed=True)
         assert env["ok"] is True and env["data"]["open"] == []
-
-
-async def test_carry_paper_close_cancel_survives_deeply_nested_tags(rt):
-    pid = await _pair(rt)
-    await rt.store.conn.execute("UPDATE carry_paper SET tags = ? WHERE id = ?", (DEEP, pid))
-    await rt.store.conn.commit()
-    async with _session(rt) as call:
-        env = await call("carry_paper_close", id=pid, reason="manual", cancelled=True)
-        assert env["ok"] is True and env["data"]["status"] == "cancelled" and env["data"]["tags"] == []

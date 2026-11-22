@@ -81,12 +81,17 @@ BAD_BARS = {
     "ts_fraction": ("ts", (NOW_TS - 1800) * 1000 + 0.5),
 }  # fmt: skip
 
+# Keys are test ids: "range_detect:setup" is range_detect's view='setup' (the former range_setup, merged 2026-11-18).
 STORE_TOOLS = {
     "range_detect": {},
-    "range_setup": {"source": "store", "timeframe": "1h"},
+    "range_detect:setup": {"view": "setup", "source": "store", "timeframe": "1h"},
     "market_regime": {},
 }
 ARGS = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"}
+
+
+def _name(tool: str) -> str:
+    return tool.split(":")[0]
 
 
 def _skip_warnings(env: dict) -> list[str]:
@@ -102,10 +107,10 @@ async def test_store_bar_tools_skip_a_corrupt_bar(rt, tool, col, value):
     bad[COLS[col]] = value
     async with _session(rt) as call:
         await _rows(rt, BAR_SQL, good)
-        clean = await call(tool, **ARGS, **STORE_TOOLS[tool])
+        clean = await call(_name(tool), **ARGS, **STORE_TOOLS[tool])
         assert _skip_warnings(clean) == []
         await _rows(rt, BAR_SQL, [bad])
-        env = await call(tool, **ARGS, **STORE_TOOLS[tool])
+        env = await call(_name(tool), **ARGS, **STORE_TOOLS[tool])
         assert env["ok"] == clean["ok"] and env["data"] == clean["data"] and env["missing"] == clean["missing"], str(env)[:600]
         assert first_nonfinite(env["data"]) is None
         w = _skip_warnings(env)
@@ -121,7 +126,7 @@ async def test_store_bar_tools_all_corrupt_is_not_ok(rt, tool):
         rows.append(row)
     async with _session(rt) as call:
         await _rows(rt, BAR_SQL, rows)
-        env = await call(tool, **ARGS, **STORE_TOOLS[tool])
+        env = await call(_name(tool), **ARGS, **STORE_TOOLS[tool])
         assert env["ok"] is False and env["data"] is None
         assert any("only 0 bars" in m["detail"] for m in env["missing"]), env["missing"]
         assert any(w.startswith("30 stored bars skipped") for w in env["warnings"]), env["warnings"]
@@ -136,7 +141,7 @@ async def test_store_bar_tools_valid_bars_unchanged(rt, tool):
     async with _session(rt) as call:
         await _rows(rt, BAR_SQL, rows)
         await _rows(rt, BAR_SQL, [[*_bar(0)[:3], -5, 1.0, 2.0, 0.5, 1.5, 1.0]])
-        env = await call(tool, **ARGS, **STORE_TOOLS[tool])
+        env = await call(_name(tool), **ARGS, **STORE_TOOLS[tool])
         assert _skip_warnings(env) == []
         if tool == "market_regime":
             assert env["ok"] is True and env["data"]["count"] == N_BARS

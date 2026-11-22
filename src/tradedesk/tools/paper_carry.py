@@ -1,5 +1,6 @@
 """paper_carry_status: read-only view of the forward paper engine's books (collector/carry_paper_engine.py) and, with
-strategy='manual', of the pairs opened with carry_paper_open (tools/carry_paper.py; the former carry_paper_status)."""
+strategy='manual', of the pairs opened with the former carry_paper_open (tools/carry_paper.py; the former
+carry_paper_status)."""
 
 from __future__ import annotations
 
@@ -174,7 +175,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "notional and on capital (A capital = 1.5 x notional, B = 1.0 x), and cost realism: mean actual cost per executed leg "
             "side (taker fee + |VWAP - mid| / mid from the recorded book) vs the modelled fee + slippage. Paper results are not "
             "live fills and say nothing about profit at this sample size; read them against the registered criteria. "
-            "strategy='manual' is a third, separate book: the perp-perp pairs YOU opened with carry_paper_open, marked NOW with "
+            "strategy='manual' is a third, separate book: the perp-perp pairs opened by hand with the former carry_paper_open "
+            "(removed 2026-11-18, no new pairs are opened through MCP), marked NOW with "
             "live public data (funding, 4h / 15m bars, last prices). Per open pair: funding P&L (long leg pays, short leg "
             "receives, at each payment's leg price), price P&L, costs (entry + estimated exit fees and slippage), net P&L in USD "
             "and as a fraction of notional, held days, realized APR, the largest adverse move of each leg since entry, the "
@@ -194,7 +196,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             Literal["A", "B", "both", "manual"],
             Field(
                 description="Which book: A (engine cash-and-carry), B (engine perp-perp), both engine books, or manual (pairs "
-                "opened with carry_paper_open, marked with live data; the former carry_paper_status)."
+                "opened earlier with the former carry_paper_open, marked with live data; the former carry_paper_status)."
             ),
         ] = "both",
         include_closed: Annotated[

@@ -62,7 +62,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Structured FOMC trade plan for a crypto perp/option: event-study on past FOMC days, "
             "retracement ladder, multi-horizon scenario matrix, exit ladder, risks. Pulls event_study / "
-            "strategy_scenario_matrix / fib_retracement / touch_probability / market_regime. "
+            "strategy_scenario_matrix / touch_probability / market_regime. "
             "Pattern mirrors the DoubleTop FOMC write-up — descriptive stats + prebuilt levels, "
             "not a forecast."
         ),
@@ -94,7 +94,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         title="Trade plan / pre-trade checklist",
         description=(
             "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), contract "
-            "safety via contract_risk for on-chain EVM tokens (any fail = skip; unknown is not pass; n/a for CEX-only), thesis and "
+            "safety via contract_risk for on-chain EVM and Solana tokens (any fail = skip; unknown is not pass; n/a for CEX-only), thesis and "
             "source, regime, derivatives positioning, volatility vs stop distance, calendar (defined-risk alternatives on "
             "macro days: options or Polymarket vs touch_probability), "
             "position size from account and risk %, execution, "

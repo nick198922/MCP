@@ -23,7 +23,7 @@ def _checks(tool):
 def test_normal_tool_has_no_findings():
     assert tda.check_tool(_tool()) == []
     assert tda.check_tool(_tool(params={})) == []  # a tool without parameters
-    # the non-idempotent read-only variant (carry_paper_open) passes too
+    # the non-idempotent read-only variant (the former carry_paper_open, removed 2026-11-18) passes too
     assert tda.check_tool(_tool(annotations={**READ_ONLY, "idempotentHint": False})) == []
     gex = _tool(name="deribit_gamma_exposure", description="Dealer gamma by strike, USD. Heuristic: assumes dealers are short.")
     prob = _tool(
@@ -161,6 +161,29 @@ def test_audit_render_and_main(tmp_path, monkeypatch):
     out = tmp_path / "out/audit.md"
     assert tda.main(["--out", str(out)]) == 0
     assert out.read_text(encoding="utf-8") == text
+
+
+def test_unit_lines_checked_against_the_code():
+    """Item 403: the unit lines of three tools were compared with the code (19.11, no mismatch). Pinned here so an edit
+    that drops one of them fails: perps_open_interest (ccxt oi_usd estimated as openInterestAmount x ticker last, okx
+    reports contracts, Deribit oi_base is None), ohlcv_history (ccxt bar[5] stored as is: base units on the default
+    perps), positions_list (greeks as entered with positions_add, the units positions_risk assumes)."""
+    from tradedesk.providers.exchanges import PERP_EXCHANGES
+
+    desc = {t["name"]: t["description"] for t in tda.load_tools()}
+    oi = desc["perps_open_interest"]
+    for phrase in ("oi_base x last price", "CONTRACTS on okx", "null for Deribit", "named in `warnings`", "fraction 0-1"):
+        assert phrase in oi, phrase
+    assert all(ex in oi for ex in PERP_EXCHANGES)  # every default venue's oi_base unit is named
+    ohlcv = desc["ohlcv_history"]
+    for phrase in ("Unix epoch milliseconds", "quote currency", "base-asset units", "never converted to USD"):
+        assert phrase in ohlcv, phrase
+    greeks = ("delta in coins", "vega in USD per 1 vol point", "theta in USD per calendar day", "not converted or checked")
+    for phrase in greeks:
+        assert phrase in desc["positions_list"], phrase
+    # what positions_list hands back is what positions_add asked for
+    for phrase in greeks[:3]:
+        assert phrase in desc["positions_add"], phrase
 
 
 def test_registered_tools_load_and_pass():

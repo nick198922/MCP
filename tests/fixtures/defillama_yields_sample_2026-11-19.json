@@ -1,0 +1,77 @@
+{
+  "_note": "SYNTHETIC sample, NOT a real DefiLlama response. Built 2026-11-19 by the developer agent from the response shape DefiLlama documents for https://yields.llama.fi (api-docs.defillama.com, section 'yields': GET /pools -> {status, data: [pool rows]}, GET /chart/{pool} -> {status, data: [daily points]}), as known to the agent; the docs were NOT fetched. Pool ids are made-up UUIDs, projects and numbers are round values chosen for hand-checkable tests (APY fields in PERCENT, as DefiLlama sends them). Rows with null / missing fields and a non-object row test the parser. Shape and field names were then checked by live calls from the server on 2026-11-19 ~13:10 UTC (the same top-level keys and every pool field kept here present; all 15233 pool ids UUIDs; /chart rows also carry pricePerShare; an unknown pool id gives {status: success, data: []}). Responses not stored: DefiLlama terms forbid copying, see docs/changes/2026-11-05-stablecoin-supply.md.",
+  "pools": {
+    "status": "success",
+    "data": [
+      {
+        "chain": "Ethereum", "project": "lido", "symbol": "STETH", "tvlUsd": 24000000000, "apyBase": 2.9, "apyReward": null, "apy": 2.9,
+        "rewardTokens": null, "pool": "00000000-0000-4000-8000-000000000001", "apyPct1D": 0.01, "apyPct7D": -0.1, "apyPct30D": -0.2,
+        "stablecoin": false, "ilRisk": "no", "exposure": "single",
+        "predictions": {"predictedClass": "Stable/Up", "predictedProbability": 70, "binnedConfidence": 2},
+        "poolMeta": null, "mu": 4.1, "sigma": 0.05, "count": 1200, "outlier": false,
+        "underlyingTokens": ["0x0000000000000000000000000000000000000000"], "il7d": null, "apyBase7d": null, "apyMean30d": 3.0,
+        "volumeUsd1d": null, "volumeUsd7d": null, "apyBaseInception": null
+      },
+      {
+        "chain": "Ethereum", "project": "aave-v3", "symbol": "USDC", "tvlUsd": 3500000000, "apyBase": 4.1, "apyReward": 0.5, "apy": 4.6,
+        "rewardTokens": ["0x1111111111111111111111111111111111111111"], "pool": "00000000-0000-4000-8000-000000000002",
+        "apyPct1D": 0.1, "apyPct7D": -0.4, "apyPct30D": 1.2, "stablecoin": true, "ilRisk": "no", "exposure": "single",
+        "predictions": {"predictedClass": "Down", "predictedProbability": 60, "binnedConfidence": 1},
+        "poolMeta": null, "mu": 5.0, "sigma": 0.2, "count": 900, "outlier": false,
+        "underlyingTokens": ["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"], "il7d": null, "apyBase7d": 4.0, "apyMean30d": 4.3,
+        "volumeUsd1d": null, "volumeUsd7d": null, "apyBaseInception": null
+      },
+      {
+        "chain": "Arbitrum", "project": "uniswap-v3", "symbol": "WETH-USDC", "tvlUsd": 80000000, "apyBase": 18.0, "apyReward": null, "apy": 18.0,
+        "rewardTokens": null, "pool": "00000000-0000-4000-8000-000000000003", "apyPct1D": 1.5, "apyPct7D": 3.0, "apyPct30D": -4.0,
+        "stablecoin": false, "ilRisk": "yes", "exposure": "multi", "predictions": null,
+        "poolMeta": "0.05%", "mu": 20.0, "sigma": 1.1, "count": 700, "outlier": false,
+        "underlyingTokens": ["0x82af49447d8a07e3bd95bd0d56f35241523fbab1", "0xaf88d065e77c8cc2239327c5edb3a432268e5831"],
+        "il7d": -0.35, "apyBase7d": 17.5, "apyMean30d": 19.0, "volumeUsd1d": 120000000, "volumeUsd7d": 800000000, "apyBaseInception": null
+      },
+      {
+        "chain": "Base", "project": "newfarm", "symbol": "USDC-USDT", "tvlUsd": 2500000, "apyBase": 3.0, "apyReward": 950.0, "apy": 953.0,
+        "rewardTokens": ["0x2222222222222222222222222222222222222222"], "pool": "00000000-0000-4000-8000-000000000004",
+        "apyPct1D": null, "apyPct7D": null, "apyPct30D": null, "stablecoin": true, "ilRisk": "no", "exposure": "multi", "predictions": {},
+        "poolMeta": "Look​-alike\u0007 farm", "mu": null, "sigma": null, "count": 3, "outlier": true,
+        "underlyingTokens": ["0x3333333333333333333333333333333333333333", "0x4444444444444444444444444444444444444444"],
+        "il7d": null, "apyBase7d": null, "apyMean30d": null, "volumeUsd1d": null, "volumeUsd7d": null, "apyBaseInception": null
+      },
+      {
+        "chain": "Arbitrum", "project": "aave-v3", "symbol": "USDT", "tvlUsd": 400000, "apyBase": 5.5, "apyReward": null, "apy": 5.5,
+        "rewardTokens": null, "pool": "00000000-0000-4000-8000-000000000005", "apyPct1D": 0.0, "apyPct7D": 0.2, "apyPct30D": 0.5,
+        "stablecoin": true, "ilRisk": "no", "exposure": "single", "predictions": null,
+        "poolMeta": null, "mu": 5.2, "sigma": 0.1, "count": 600, "outlier": false,
+        "underlyingTokens": ["0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"], "il7d": null, "apyBase7d": null, "apyMean30d": 5.4,
+        "volumeUsd1d": null, "volumeUsd7d": null, "apyBaseInception": null
+      },
+      {
+        "chain": "Ethereum", "project": "broken-tvl", "symbol": "X", "tvlUsd": null, "apy": 1.0,
+        "pool": "00000000-0000-4000-8000-000000000006", "stablecoin": false, "count": 10
+      },
+      {
+        "chain": "Ethereum", "project": "no-id", "symbol": "Y", "tvlUsd": 5000000, "apy": 1.0, "pool": null, "stablecoin": false, "count": 10
+      },
+      "junk row"
+    ]
+  },
+  "chart_pool": "00000000-0000-4000-8000-000000000002",
+  "chart": {
+    "status": "success",
+    "data": [
+      {"timestamp": "2026-10-14T23:00:00.000Z", "tvlUsd": 3000000000, "apy": 5.0, "apyBase": 4.5, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-10-19T23:00:00.000Z", "tvlUsd": 2800000000, "apy": 6.0, "apyBase": 5.0, "apyReward": 1.0, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-10T23:00:00.000Z", "tvlUsd": null, "apy": null, "apyBase": null, "apyReward": null, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-11T23:00:00.000Z", "tvlUsd": 3200000000, "apy": 4.0, "apyBase": 3.5, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-12T23:00:00.000Z", "tvlUsd": 3300000000, "apy": 4.2, "apyBase": 3.7, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-13T23:00:00.000Z", "tvlUsd": 3300000000, "apy": 4.4, "apyBase": 3.9, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-14T23:00:00.000Z", "tvlUsd": 3400000000, "apy": 4.4, "apyBase": 3.9, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-15T23:00:00.000Z", "tvlUsd": 3400000000, "apy": 4.6, "apyBase": 4.1, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-16T23:00:00.000Z", "tvlUsd": 3450000000, "apy": 4.6, "apyBase": 4.1, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-17T23:00:00.000Z", "tvlUsd": 3500000000, "apy": 4.8, "apyBase": 4.3, "apyReward": 0.5, "il7d": null, "apyBase7d": null},
+      {"timestamp": "2026-11-17T01:00:00.000Z", "tvlUsd": 1, "apy": 99.0, "apyBase": 99.0, "apyReward": null, "il7d": null, "apyBase7d": null},
+      {"timestamp": "not a date", "tvlUsd": 1, "apy": 1.0},
+      {"timestamp": "2026-11-18T23:00:00.000Z", "tvlUsd": 3500000000, "apy": 4.6, "apyBase": 4.1, "apyReward": 0.5, "il7d": null, "apyBase7d": 4.0}
+    ]
+  }
+}

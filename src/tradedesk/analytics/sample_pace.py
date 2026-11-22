@@ -8,6 +8,7 @@ weeks, an exact Poisson interval for the demo's own rate, and the date / probabi
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 
 from tradedesk.analytics.trader_persistence import mean_ci
@@ -15,7 +16,73 @@ from tradedesk.analytics.trader_persistence import mean_ci
 DAY_MS = 86_400_000
 WEEK_MS = 7 * DAY_MS
 
-__all__ = ["DAY_MS", "WEEK_MS", "weekly_counts", "weekly_rate", "poisson_sf", "poisson_ci", "days_to_reach", "prob_reach"]
+__all__ = [
+    "DAY_MS",
+    "WEEK_MS",
+    "weekly_counts",
+    "weekly_rate",
+    "poisson_sf",
+    "poisson_ci",
+    "days_to_reach",
+    "prob_reach",
+    "reason_category",
+    "signal_decisions",
+]
+
+# (category, regex on one guard / demo violation string), first match wins; texts of ``execution/guard.py`` and
+# ``demo_trader._setup_cap`` / ``_bar_cap`` / ``_select_and_enter`` (IDEA-20261030-demo-setups-depth, «S40, S28, S17»).
+_REASONS: tuple[tuple[str, str], ...] = (
+    ("stop_wide", r"^stop .*from the entry >"),
+    ("rr_low", r"^reward/risk "),
+    ("score_low", r"^score -?\d+ < \d+"),
+    ("at_level", r"already at the resting level"),
+    ("levels", r"^levels:"),
+    ("positions_max", r"open positions = max"),
+    ("setup_slots", r"slots are taken|trades at risk today unknown"),
+    ("bar_cap", r"cap \d+ per bar|entries on this .* bar"),
+    ("day_caps", r"trades at risk today = max|entries today = max|orders in the last hour = max"),
+    ("risk_caps", r"^open risk |^margin |^maintenance |^notional |^open size |^risk .* USD >|^realised loss today"),
+    ("already_in", r"^already in "),
+    ("decided", r"already decided"),
+    ("universe", r"not in today's universe"),
+    ("size_zero", r"^size is zero"),
+    ("rank", r"^lower rank$"),
+)
+
+
+def reason_category(text: str) -> str:
+    """Category of one violation string of the demo's guard (``other`` if no pattern matches)."""
+    for cat, pat in _REASONS:
+        if re.search(pat, text):
+            return cat
+    return "other"
+
+
+def signal_decisions(rows: Sequence[dict], until_ms: int) -> dict[str, str]:
+    """Final decision of each evaluated signal (``link_id``) from ``exec_audit`` rows with ``ts < until_ms``.
+
+    Rows: dicts with ``ts`` (ms), ``kind`` and ``link_id``; ``payload`` a dict with ``violations`` (list of str) for the
+    kinds ``refused`` / ``skipped``. A signal with a ``signal`` row gets: ``entered`` if any ``sent`` row exists;
+    otherwise the category of the first violation of its first ``refused`` / ``skipped`` row (``decided`` dropped when
+    the row has another violation); ``no_decision`` if it has neither. Rows at or after ``until_ms`` are ignored, so
+    the decisions as of a time do not depend on later rows."""
+    seen: dict[str, str] = {}
+    first: dict[str, str] = {}
+    sent: set[str] = set()
+    for r in sorted((r for r in rows if int(r["ts"]) < until_ms), key=lambda r: int(r["ts"])):
+        lid, kind = r.get("link_id"), r.get("kind")
+        if not lid:
+            continue
+        if kind == "signal":
+            seen.setdefault(lid, "no_decision")
+        elif kind == "sent":
+            sent.add(lid)
+        elif kind in ("refused", "skipped") and lid not in first:
+            vs = [str(v) for v in (r.get("payload") or {}).get("violations") or []]
+            cats = [reason_category(v) for v in vs]
+            keep = [c for c in cats if c != "decided"] or cats or ["other"]
+            first[lid] = keep[0]
+    return {lid: "entered" if lid in sent else first.get(lid, "no_decision") for lid in seen}
 
 
 def weekly_counts(t_ms: Sequence[int], start_ms: int, n_weeks: int) -> list[int]:

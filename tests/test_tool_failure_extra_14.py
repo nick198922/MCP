@@ -41,7 +41,7 @@ _DB = itertools.count()
 
 
 def _rt(tmp_path, ex: type = FakeEx, transports: dict | None = None) -> Runtime:
-    """A runtime with its own store file: carry_paper_open writes a pair, the reference run must not see it."""
+    """A runtime with its own store file (carry_paper_open, removed 2026-11-18, wrote a pair the reference run must not see)."""
     rt = Runtime(
         Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / f"extra14_{next(_DB)}.sqlite")),
         transports=transports or make_transports(State()),
@@ -97,17 +97,24 @@ def _bar_ex(mode: tuple) -> type:
     return BarEx
 
 
+# Keys are test ids: "tool" or "tool:view" (range_detect's setup / scan views, the former range_setup /
+# range_setup_scan, merged 2026-11-18); `_tool` gives the registered name.
 BAR_TOOLS = {
     "market_ohlcv": {"exchange": "binanceusdm", "symbol": SYM},
     "chart_markup": {"exchange": "binanceusdm", "symbol": SYM},
     "deribit_vrp": {},
     "range_detect": {"venue": "binanceusdm", "symbol": SYM, "source": "live"},
-    "range_setup": {"venue": "binanceusdm", "symbol": SYM},
-    "range_setup_scan": {"venue": "binanceusdm", "symbols": [SYM]},
+    "range_detect:setup": {"venue": "binanceusdm", "symbol": SYM, "view": "setup"},
+    "range_detect:scan": {"venue": "binanceusdm", "symbols": [SYM], "view": "scan"},
     "market_regime": {"venue": "binanceusdm", "symbol": SYM, "source": "live"},
-    "strategy_backtest_momentum": {"exchange": "binanceusdm", "symbol": SYM},
     "funding_spread_scan": {},
 }
+
+
+def _tool(key: str) -> str:
+    return key.split(":")[0]
+
+
 BAD_BARS = {
     **{f"close_{k}": ("cell", "close", v) for k, v in (("none", None), ("text", "abc"), ("nan", NAN), ("inf", INF))},
     **{f"close_{k}": ("cell", "close", v) for k, v in (("neg_inf", -INF), ("1e308", HUGE), ("big_int", BIG), ("negative", -5.0))},
@@ -125,8 +132,8 @@ BAD_BARS = {
 @pytest.mark.parametrize("tool", BAR_TOOLS)
 @pytest.mark.parametrize("mode", BAD_BARS.values(), ids=BAD_BARS.keys())
 async def test_a_corrupt_live_bar_is_dropped_with_a_warning(tmp_path, tool, mode):
-    ref = await _env(_rt(tmp_path, _bar_ex(("drop",))), tool, BAR_TOOLS[tool])
-    env = await _env(_rt(tmp_path, _bar_ex(mode)), tool, BAR_TOOLS[tool])
+    ref = await _env(_rt(tmp_path, _bar_ex(("drop",))), _tool(tool), BAR_TOOLS[tool])
+    env = await _env(_rt(tmp_path, _bar_ex(mode)), _tool(tool), BAR_TOOLS[tool])
     _same(env, ref)
     assert any("malformed" in w and "dropped" in w for w in env["warnings"]), env["warnings"]
 
@@ -134,17 +141,17 @@ async def test_a_corrupt_live_bar_is_dropped_with_a_warning(tmp_path, tool, mode
 @pytest.mark.parametrize("tool", BAR_TOOLS)
 @pytest.mark.parametrize("value", ["abc", NAN, INF, HUGE], ids=["text", "nan", "inf", "1e308"])
 async def test_all_live_bars_corrupt(tmp_path, tool, value):
-    clean = await _env(_rt(tmp_path), tool, BAR_TOOLS[tool])
-    env = await _env(_rt(tmp_path, _bar_ex(("all", value))), tool, BAR_TOOLS[tool])
+    clean = await _env(_rt(tmp_path), _tool(tool), BAR_TOOLS[tool])
+    env = await _env(_rt(tmp_path, _bar_ex(("all", value))), _tool(tool), BAR_TOOLS[tool])
     if tool == "funding_spread_scan":  # bars only feed the range_7d flag: the scan stands, without it
         ccxt_rows = [i for i, x in enumerate(clean["data"]["rows"]) if x["short_venue"] != "hyperliquid"]
         assert env["ok"] is clean["ok"] is True and ccxt_rows
         assert all(clean["data"]["rows"][i]["range_7d"] is not None and env["data"]["rows"][i]["range_7d"] is None for i in ccxt_rows)
         assert any("range_7d" in w for w in env["warnings"])
     else:  # before: ok=true on all-NaN closes (market_regime, strategy_backtest_momentum), NaN / Infinity, or raised
-        # range_setup is ok=false on the clean FakeEx series too (no setup), so the check is on the corrupt answer only
+        # view='setup' is ok=false on the clean FakeEx series too (no setup), so the check is on the corrupt answer only
         assert env["ok"] is False and env["missing"], str(env)[:600]
-    if tool == "range_setup_scan":
+    if tool == "range_detect:scan":
         assert env["data"]["rejected"] == [{"symbol": SYM, "reason": "malformed_bars"}]
 
 
@@ -320,14 +327,13 @@ FUNDING_TOOLS = {
     "perps_funding_history": {"base": "BTC"},
     "funding_carry_scan": {},
     "funding_spread_scan": {},
-    "carry_paper_open": {"base": "BTC", "long_venue": "binanceusdm", "short_venue": "bybit"},
 }
 
 
 @pytest.mark.parametrize("tool", FUNDING_TOOLS)
 @pytest.mark.parametrize("value", [HUGE, -HUGE, 2.0], ids=["1e308", "neg_1e308", "200pct"])
 async def test_a_funding_rate_beyond_100_pct_is_dropped(tmp_path, tool, value):
-    # 1e308 raised out of perps_funding_history and gave Infinity / NaN in the scans and carry_paper_open.
+    # 1e308 raised out of perps_funding_history and gave Infinity / NaN in the scans (and the removed carry_paper_open).
     ref = await _env(_rt(tmp_path, _funding_ex(("drop",))), tool, FUNDING_TOOLS[tool])
     env = await _env(_rt(tmp_path, _funding_ex(("cell", "rate", value))), tool, FUNDING_TOOLS[tool])
     _same(env, ref)

@@ -69,6 +69,49 @@ def _seed_row_ok(x: Any) -> bool:
     return all(isinstance(x.get(k), str) and x.get(k) for k in ("kind", "label"))
 
 
+async def events_seed_load(rt: Runtime) -> dict[str, Any]:
+    """Load the bundled events seed (FOMC / CPI / NFP 2024-2027, US election day 2026-11-03 as kind 'election' at a
+    nominal 12:00 UTC) into the local store; idempotent on (ts, kind, label). Returns the envelope. Not an MCP tool since
+    2026-11-18 (a one-off action): run ``uv run python scripts/events_seed_load.py``. 2026 Fed dates are projected."""
+    b = Builder()
+    if not await store_ready(b, rt, "events"):
+        return b.build(None, ok=False)
+    try:
+        try:
+            with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
+                seed = json.load(f)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        # A seed that is not {"events": [...]} raised AttributeError / TypeError; rows that cannot be stored are skipped.
+        raw = seed.get("events") if isinstance(seed, dict) else None
+        if not isinstance(raw, list) or not raw:
+            b.miss("seed", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `events` list")
+            return b.build(None, ok=False)
+        rows = [x for x in raw if _seed_row_ok(x)]
+        if len(rows) < len(raw):
+            b.warn(f"{len(raw) - len(rows)} seed rows skipped: not an object with an in-range ts, text kind / label, strict JSON meta")
+        if not rows:
+            b.miss("seed", "tradedesk", "data_unavailable", f"all {len(raw)} seed rows are malformed")
+            return b.build(None, ok=False)
+        before = await rt.store.event_count()
+        inserted = await rt.store.events_insert_many(rows)
+        total = await rt.store.event_count()
+        b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
+        return b.build(
+            {
+                "candidates": len(rows),
+                "inserted": inserted,
+                "already_present": len(rows) - inserted,
+                "events_before": before,
+                "events_after": total,
+                "meta": seed.get("_meta"),
+            }
+        )
+    except STORE_ERRORS as e:
+        return store_failed(b, e)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -148,7 +191,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List events from the local calendar. Filter by `kind`, `impact`, and a UTC date "
-            "window (`since_date` / `until_date` as 'YYYY-MM-DD'). Ordered oldest-first."
+            "window (`since_date` / `until_date` as 'YYYY-MM-DD'). Ordered oldest-first. "
+            "Units: ts is Unix SECONDS (UTC; the ts_ms of events_add is milliseconds, stored as seconds); the window covers "
+            "since_date 00:00 to until_date 23:59 UTC; `limit` keeps the OLDEST events of the window, so narrow "
+            "since_date to see the latest ones. Rows: id, ts, kind, label, impact (low / medium / high), meta (JSON). "
+            "The calendar holds only what was added locally; an empty list is not proof that no event happened."
         ),
     )
     async def events_list(
@@ -197,54 +244,6 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Load the bundled historical events seed (FOMC / CPI / NFP 2024-2027, plus US election "
-            "day 2026-11-03 as kind 'election' with a nominal 12:00 UTC time) into the "
-            "local store. Idempotent — rows with the same (ts, kind, label) are ignored. 2026 "
-            "Fed dates in the seed are PROJECTED; verify against the official Fed/BLS calendars."
-        ),
-    )
-    async def events_seed_load() -> dict[str, Any]:
-        b = Builder()
-        if not await store_ready(b, rt, "events"):
-            return b.build(None, ok=False)
-        try:
-            try:
-                with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
-                    seed = json.load(f)
-            except (FileNotFoundError, ValueError, OSError) as e:
-                b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
-                return b.build(None, ok=False)
-            # A seed that is not {"events": [...]} raised AttributeError / TypeError; rows that cannot be stored are skipped.
-            raw = seed.get("events") if isinstance(seed, dict) else None
-            if not isinstance(raw, list) or not raw:
-                b.miss("seed", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `events` list")
-                return b.build(None, ok=False)
-            rows = [x for x in raw if _seed_row_ok(x)]
-            if len(rows) < len(raw):
-                b.warn(f"{len(raw) - len(rows)} seed rows skipped: not an object with an in-range ts, text kind / label, strict JSON meta")
-            if not rows:
-                b.miss("seed", "tradedesk", "data_unavailable", f"all {len(raw)} seed rows are malformed")
-                return b.build(None, ok=False)
-            before = await rt.store.event_count()
-            inserted = await rt.store.events_insert_many(rows)
-            total = await rt.store.event_count()
-            b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
-            return b.build(
-                {
-                    "candidates": len(rows),
-                    "inserted": inserted,
-                    "already_present": len(rows) - inserted,
-                    "events_before": before,
-                    "events_after": total,
-                    "meta": seed.get("_meta"),
-                }
-            )
-        except STORE_ERRORS as e:
-            return store_failed(b, e)
-
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
             "Event-study: for every stored event of `event_kind`, measure one scalar over the "
             "window [event_ts − before_minutes, event_ts + after_minutes] using the chosen "
             "`measure` and return distribution stats across the sample. "
@@ -256,7 +255,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "close(t0) (0.01 = 1 %); 'volatility' is a decimal, the per-bar stdev of log-returns times "
             "sqrt(bars in the window), NOT annualised; 'direction' values are 0/1 and hit_rate is a "
             "fraction 0-1. mean/median/p25/p75/min/max are in the measure's own unit. "
-            "Reports n_sample and small_sample_flag=true when n<20. "
+            "Reports n_sample and small_sample_flag=true when n<20; when no event has a complete bar window "
+            "(n_sample=0) the answer is ok=false with the per-event list kept. "
             "Hit rates and medians are DESCRIPTIVE statistics on a finite sample — they are not "
             "forecasts; always eyeball n_sample and the regime window before trading on them."
         ),
@@ -334,7 +334,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
             res = _event_study(bars, ev_ts_ms, before_minutes=before_minutes, after_minutes=after_minutes, measure=measure)
             stats = res["stats"]
-            if stats["small_sample_flag"]:
+            # No event with a complete bar window answered ok=true with every statistic null before item 396.
+            evaluated = res["n_events_evaluated"] > 0
+            if not evaluated:
+                b.miss(
+                    "ohlcv_hist",
+                    "store",
+                    "data_unavailable",
+                    f"no event of {len(ev_ts_ms)} has complete stored bars around it (t0 and a bar after it in the window)",
+                )
+            elif stats["small_sample_flag"]:
                 b.warn(f"small sample: n_sample={stats['n_sample']}; stats are noisy")
 
             # Round where sensible, keep hit_rate / returns in decimal form.
@@ -359,7 +368,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         }
                         for pe in res["per_event"]
                     ],
-                }
+                },
+                ok=evaluated,
             )
         except STORE_ERRORS as e:
             return store_failed(b, e)

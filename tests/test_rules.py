@@ -14,6 +14,7 @@ from tradedesk.rules.metrics import MetricContext, build_metrics
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import Store
+from tradedesk.tools.rules import rules_presets_load
 
 # ---------- pure DSL ----------
 
@@ -244,16 +245,18 @@ async def test_rule_insert_duplicate_rolls_back(tmp_path):
 
 
 async def test_rules_presets_load_installs_bundled(state, tmp_path):
+    # rules_presets_load is a function for scripts/rules_presets_load.py since 2026-11-18 (no longer an MCP tool)
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
-        env = await _call(srv, "rules_presets_load")
+        env = await rules_presets_load(rt)
+        assert env["ok"] is True
         d = env["data"]
         assert d["candidates"] >= 6
         assert d["inserted"] == d["candidates"]
         assert d["failed"] == []
         # Idempotent — second call skips everything.
-        again = await _call(srv, "rules_presets_load")
+        again = await rules_presets_load(rt)
         assert again["data"]["inserted"] == 0
         listed = (await _call(srv, "rules_list"))["data"]["rules"]
         assert sorted(again["data"]["already_present"]) == sorted(r["name"] for r in listed)
@@ -265,15 +268,46 @@ async def test_rules_presets_load_subset_and_force_enable(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
-        env = await _call(
-            srv,
-            "rules_presets_load",
-            only=["preset_eth_funding_hot"],
-            enable_disabled=True,
-        )
+        env = await rules_presets_load(rt, only=["preset_eth_funding_hot"], enable_disabled=True)
         d = env["data"]
         assert d["candidates"] == 1 and d["inserted"] == 1
         rows = (await _call(srv, "rules_list"))["data"]["rules"]
         assert rows[0]["name"] == "preset_eth_funding_hot" and rows[0]["enabled"] is True
     finally:
         await rt.aclose()
+
+
+def test_rules_presets_load_script(tmp_path, capsys):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "rules_presets_load.py"
+    spec = importlib.util.spec_from_file_location("rules_presets_load_script", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    db = str(tmp_path / "presets.sqlite")
+    assert mod.main(["--db", db, "--only", "preset_eth_funding_hot", "--enable-disabled"]) == 0
+    out = capsys.readouterr()
+    env = json.loads(out.out)
+    assert env["ok"] is True and (env["data"]["candidates"], env["data"]["inserted"]) == (1, 1)
+    assert "NOT backtested" in out.err
+    assert mod.main(["--db", db]) == 0
+    again = json.loads(capsys.readouterr().out)
+    assert again["data"]["already_present"] == ["preset_eth_funding_hot"] and again["data"]["inserted"] >= 5
+    assert mod.main(["--db", ""]) == 1  # no store: the envelope says so, exit 1
+    assert json.loads(capsys.readouterr().out)["missing"][0]["field"] == "store"
+
+
+def test_rules_presets_load_script_default_db_is_the_service_db(monkeypatch):
+    # the service (and the alerts job) read TRADEDESK_DB_PATH from /etc/tradedesk-mcp.env, the shell has none
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "rules_presets_load.py"
+    spec = importlib.util.spec_from_file_location("rules_presets_load_script_default", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.delenv("TRADEDESK_DB_PATH", raising=False)
+    assert mod.parse_args([]).db == "/var/lib/tradedesk-mcp/tradedesk.sqlite"
+    monkeypatch.setenv("TRADEDESK_DB_PATH", "/tmp/x.sqlite")
+    assert mod.parse_args([]).db == "/tmp/x.sqlite"

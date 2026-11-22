@@ -32,14 +32,17 @@ from ._util import (
 # Numeric columns of a stored position; another writer can leave a string, a blob or inf in any of them.
 POSITION_NUMS = ("opened_ts", "closed_ts", "size", "entry", "mark", "delta", "gamma", "vega", "theta")
 
+# d_spot_pct is a decimal fraction (0.05 = +5 %); d_vol_points is in IV percentage points (5.0 = IV +5 points, e.g.
+# 50 % -> 55 %), because vega is USD per 1 vol point (analytics/options.py divides by 100). It used to be ±0.05, which
+# shifted IV by only 0.05 points while the description promised ±5 (item 387).
 DEFAULT_SCENARIOS: list[dict[str, float]] = [
     {"d_spot_pct": -0.10, "d_vol_points": 0.0},
     {"d_spot_pct": -0.05, "d_vol_points": 0.0},
-    {"d_spot_pct": 0.00, "d_vol_points": 0.05},
-    {"d_spot_pct": 0.00, "d_vol_points": -0.05},
+    {"d_spot_pct": 0.00, "d_vol_points": 5.0},
+    {"d_spot_pct": 0.00, "d_vol_points": -5.0},
     {"d_spot_pct": 0.05, "d_vol_points": 0.0},
     {"d_spot_pct": 0.10, "d_vol_points": 0.0},
-    {"d_spot_pct": -0.10, "d_vol_points": 0.05},  # crash-with-vol-up (classic)
+    {"d_spot_pct": -0.10, "d_vol_points": 5.0},  # crash-with-vol-up (classic)
 ]
 
 
@@ -50,9 +53,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Add a position to the local portfolio (manual). Per-contract greeks "
             "(delta/gamma/vega/theta) are optional but strongly recommended — without them the "
             "risk tool can't produce useful numbers. `side` = long/short; `size` is always > 0 and "
-            "the sign comes from `side`. Greeks must be in a consistent set of units; Deribit's "
-            "convention works well (delta in coin per $, vega in USD per 1 vol-point, theta in "
-            "USD per day, gamma in coin per $^2)."
+            "the sign comes from `side`. Greeks must be in a consistent set of units; Deribit's / our "
+            "Black-76 convention, which positions_risk assumes: delta in coins (USD per $1 spot move), "
+            "gamma = change of delta per $1 spot move, vega in USD per 1 vol point (1 percentage point "
+            "of IV), theta in USD per calendar day."
         ),
     )
     async def positions_add(
@@ -65,9 +69,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ],
         entry: Annotated[float | None, Field(gt=0, description="Entry price in quote currency.")] = None,
         mark: Annotated[float | None, Field(gt=0, description="Latest mark (USD per contract/coin).")] = None,
-        delta: Annotated[float | None, Field(description="Per-contract delta.")] = None,
-        gamma: Annotated[float | None, Field(description="Per-contract gamma (coin per $^2, Deribit convention).")] = None,
-        vega: Annotated[float | None, Field(description="Per-contract vega (USD per 1 vol-point).")] = None,
+        delta: Annotated[float | None, Field(description="Per-contract delta in coins (USD per $1 spot move).")] = None,
+        gamma: Annotated[float | None, Field(description="Per-contract gamma: change of delta (coins) per 1 USD spot move.")] = None,
+        vega: Annotated[float | None, Field(description="Per-contract vega (USD per 1 vol point, i.e. 1 percentage point of IV).")] = None,
         theta: Annotated[float | None, Field(description="Per-contract theta (USD per day).")] = None,
         tags: Annotated[list[str] | None, Field(description="Free-form tags for filtering.")] = None,
         note: Annotated[str | None, Field(description="Optional note.")] = None,
@@ -105,8 +109,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "List tracked positions, newest-first. Filter by status (open / closed), instrument "
-            "or tag (substring match on the stored JSON array)."
+            "List tracked positions, newest-first (by opened_ts). Filter by status (open / closed), instrument "
+            "(exact match) or tag (one whole stored tag, not a substring; ASCII letters case-insensitive, other "
+            "characters exact, so non-ASCII tags such as Cyrillic match and `%` / `_` are literal characters). "
+            "Rows are the manually added positions of the local store (positions_add), not synced from an exchange. "
+            "Units as stored: opened_ts / closed_ts in Unix seconds (UTC); size in contracts or coins (always > 0, the "
+            "sign is `side`); entry in quote currency; mark in USD per contract / coin; per-contract greeks in the units "
+            "they were entered with, not converted or checked (Deribit / our Black-76 convention, which positions_risk "
+            "assumes: delta in coins, i.e. USD per $1 spot move; gamma = change of delta per $1 spot move; vega in USD "
+            "per 1 vol point; theta in USD per calendar day). For net greeks and scenario PnL use positions_risk."
         ),
     )
     async def positions_list(
@@ -192,10 +203,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Net greeks for the OPEN portfolio plus scenario PnL. Scenarios approximate "
             "PnL = Σ sign·size·(δ·dSpot + ½γ·dSpot² + vega·dVol + θ·days). The default scenario "
-            "set covers ±5 % / ±10 % spot, ±5 vol-points and the classic crash-plus-vol scenario. "
+            "set covers ±5 % / ±10 % spot, ±5 vol points and the classic crash-plus-vol scenario "
+            "(-10 % spot, +5 vol points). Units: d_spot_pct is a decimal fraction (0.05 = +5 %); "
+            "d_vol_points is in IV percentage points (5.0 = IV +5 points, e.g. 50 % -> 55 %; NOT a decimal), "
+            "matching vega in USD per 1 vol point; days in calendar days; pnl_usd in USD. Greeks are taken "
+            "as stored (delta in coins, gamma = change of delta per $1, theta in USD per day). "
             "`reference_spot` lets you override the spot used to convert dSpot_pct → dSpot (USD); "
             "when omitted, the first position's `mark` is used. Pass `scenarios` to replace the "
-            "defaults with your own list."
+            "defaults with your own list. A second-order approximation: it does not re-price options."
         ),
     )
     async def positions_risk(
@@ -204,7 +219,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         reference_spot: Annotated[
             float | None, Field(gt=0, description="Spot to convert dSpot_pct → USD; defaults to the first mark.")
         ] = None,
-        scenarios: Annotated[list[dict[str, float]] | None, Field(description="List of {d_spot_pct, d_vol_points, days?}.")] = None,
+        scenarios: Annotated[
+            list[dict[str, float]] | None,
+            Field(
+                description=(
+                    "List of {d_spot_pct, d_vol_points, days?}: d_spot_pct a decimal (0.05 = +5 %), d_vol_points in IV "
+                    "percentage points (5.0 = +5 points), days in calendar days."
+                )
+            ),
+        ] = None,
         days: Annotated[float, Field(ge=0, description="Scenario time (days) if a scenario does not supply its own.")] = 0.0,
     ) -> dict[str, Any]:
         b = Builder()

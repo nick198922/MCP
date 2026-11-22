@@ -73,9 +73,13 @@ BODIES: dict[str, Any] = {
     "forexfactory": [],
     "dexscreener": {"pairs": None},
     "goplus": {"code": 1, "message": "OK", "result": {ADDR: {"is_honeypot": "0"}}},
+    "honeypot_is": {"simulationSuccess": True, "honeypotResult": {"isHoneypot": False}},
     "defillama": [],
     "defillama:stablecoins": {"peggedAssets": []},
+    "defillama:yields": {"status": "success", "data": []},
     "pendle": {"markets": []},
+    "mempool": {"fastestFee": 1},
+    "etherscan": {"status": "1", "message": "OK", "result": "1"},
     "wikimedia": {"items": []},
     "wikimedia:enwiki": {"query": {"pages": [{"pageid": 1, "ns": 0, "title": "Bitcoin"}]}},
     "coinalyze": [],
@@ -105,8 +109,15 @@ CALLS: dict[str, list[Call]] = {
     "forexfactory": [lambda rt: rt.forexfactory.this_week()],
     "dexscreener": [lambda rt: rt.dexscreener.token_pairs([ADDR])],
     "goplus": [lambda rt: rt.goplus.token_security("1", ADDR)],
-    "defillama": [lambda rt: rt.defillama.chain_tvl("Ethereum"), lambda rt: rt.defillama.stablecoin_assets()],
+    "honeypot_is": [lambda rt: rt.honeypot_is.token_check("1", ADDR)],
+    "defillama": [
+        lambda rt: rt.defillama.chain_tvl("Ethereum"),
+        lambda rt: rt.defillama.stablecoin_assets(),
+        lambda rt: rt.defillama.yield_pools(),
+    ],
     "pendle": [lambda rt: rt.pendle.markets()],
+    "mempool": [lambda rt: rt.mempool.fees_recommended()],
+    "etherscan": [lambda rt: rt.etherscan.native_balance(1, ADDR)],
     "wikimedia": [lambda rt: rt.wikimedia.pageviews_daily("Bitcoin", "20261001", "20261002"), lambda rt: rt.wikimedia.page("Bitcoin")],
     "coinalyze": [lambda rt: rt.coinalyze.funding_rate_history("BTCUSDT_PERP.A", "daily", 1791504000, 1791590400)],
     "polymarket": [
@@ -175,7 +186,12 @@ async def test_every_provider_survives_runtime_aclose():
     made: list[ClosableEx] = []
     leaks: list[str] = []
     settings = Settings(
-        http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, coinalyze_api_key="lifecycle-test", graph_api_key="lifecycle-test"
+        http_retries=0,
+        http_retry_backoff=0.0,
+        cache_scale=0.0,
+        coinalyze_api_key="lifecycle-test",
+        graph_api_key="lifecycle-test",
+        etherscan_api_key="lifecycle-test",
     )
     # The GoPlus limit (0.2 req/s, burst 2) made the third session wait 5 s; the test checks clients, not pacing.
     with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):

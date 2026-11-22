@@ -513,7 +513,7 @@ async def test_scan_without_binance_candles_leaves_open_touch_markets_unpriced(s
 async def test_tool_lists_gaps_after_costs_and_depth_filter(state):
     rt = await _rt(state)
     try:
-        env = await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=200)
+        env = await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=200, include_details=True)  # per-side edges
         assert env["ok"] is True and any("RISK-NEUTRAL" in w for w in env["warnings"])
         assert any("USDT" in w and "basis" in w for w in env["warnings"])
         d = env["data"]
@@ -527,7 +527,7 @@ async def test_tool_lists_gaps_after_costs_and_depth_filter(state):
         assert m1["net_edge"] == pytest.approx(max(m1["edge_yes"], m1["edge_no"]))
         assert m1["gap_mid"] == pytest.approx(p - 0.225, abs=2e-4) and m1["half_spread_yes"] == pytest.approx(0.015)
         # fees: the ETH market (rate 0.07) is charged 0.07 * ask * (1 - ask)
-        full = (await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=200, include_nonstandard=True))["data"]
+        full = (await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=200, include_nonstandard=True, include_details=True))["data"]
         m3 = next(m for m in full["markets"] if m["market_id"] == "m3")  # ETH 3000 lies outside the quoted strikes
         assert m3["model_covered"] is False and "m3" not in ids
         assert m3["edge_yes"] == pytest.approx(m3["model_prob"] - 0.34 - 0.07 * 0.34 * 0.66, abs=2e-4)
@@ -544,7 +544,7 @@ async def test_tool_lists_gaps_after_costs_and_depth_filter(state):
 async def test_tool_touched_levels_are_not_shown_as_a_no_edge_and_unpriced_ones_are_left_out(state):
     rt = await _rt(state, now=NOW_IN, ex=path_ex(_bars(START_TOUCH, NOW_IN_TS)))
     try:
-        env = await _call(rt, max_days=30, min_net_edge=-1, include_nonstandard=True)
+        env = await _call(rt, max_days=30, min_net_edge=-1, include_nonstandard=True, include_details=True)
         by_id = {m["market_id"]: m for m in env["data"]["markets"]}
         assert "m2w" not in by_id  # wrong side of the forward: no probability
         for mid in ("m2c", "m2d"):
@@ -561,7 +561,7 @@ async def test_tool_touched_levels_are_not_shown_as_a_no_edge_and_unpriced_ones_
 async def test_tool_ranks_only_standard_covered_markets_unless_asked(state):
     rt = await _rt(state, now=NOW_IN, ex=path_ex(_bars(START_TOUCH, NOW_IN_TS)))
     try:
-        default = (await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=0))["data"]
+        default = (await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=0, include_details=True))["data"]
         listed = default["markets"]
         assert listed and all(m["rules_standard"] and m["model_covered"] is not False for m in listed)
         assert default["excluded_nonstandard_or_uncovered"] >= 2  # m2 (text) and the dips below the quoted strikes
@@ -570,6 +570,18 @@ async def test_tool_ranks_only_standard_covered_markets_unless_asked(state):
         assert everything["excluded_nonstandard_or_uncovered"] == 0
         assert {"m2", "m2b"} <= {m["market_id"] for m in everything["markets"]}
         assert len(everything["markets"]) > len(listed)
+        # the compact rows carry `flags` in place of the full row's model_note / rules_standard / model_covered
+        rows = (await _call(rt, max_days=30, min_net_edge=-1, min_depth_usd=0, include_nonstandard=True, include_details=True))["data"]
+        full = {m["market_id"]: m for m in rows["markets"]}
+        flags = {m["market_id"]: m["flags"] for m in everything["markets"]}
+        assert not any({"model_note", "rules_standard", "model_covered"} & set(m) for m in everything["markets"])
+        for mid, f in flags.items():
+            x = full[mid]
+            want = [] if x["model_note"] == "ok" else [x["model_note"]]
+            want += ["rules_nonstandard"] * (not x["rules_standard"]) + ["strike_outside_quotes"] * (x["model_covered"] is False)
+            assert f == want, mid
+        assert "rules_nonstandard" in flags["m2"] and "touched" in flags["m2c"]
+        assert any("strike_outside_quotes" in f for f in flags.values()) and any(f == [] for f in flags.values())
     finally:
         await rt.aclose()
 

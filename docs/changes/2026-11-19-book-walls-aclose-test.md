@@ -1,0 +1,1 @@
+- Колектор стін: тест на збій `aclose()` потоку (`test_job_still_writes_walls_and_journal_when_closing_the_stream_fails`): виняток закриття логується, журнал годин усе одно дописується. Код не змінено, захист був з 19.11.

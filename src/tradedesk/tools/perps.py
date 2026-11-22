@@ -14,9 +14,10 @@ from ..analytics.funding_spread import normalize_asset
 from ..analytics.instruments import expiry_token, parse_future_name
 from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
-from ..core.envelope import Builder
+from ..core.envelope import Builder, Evidence
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
+from . import coinalyze as cz
 from ._util import MAX_FUNDING_RATE, READ_ONLY, bar_rows, finite_float, hl_bar_row, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
@@ -57,6 +58,38 @@ INCLUDE_SERIES = Annotated[bool, Field(description="Also return each venue's raw
 _PERIOD_SECONDS = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 _PERIOD_BINANCE = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d"}
 _PERIOD_BYBIT = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1d"}
+
+# source="coinalyze" (the former coinalyze_* history tools, merged 2026-11-18): Coinalyze-only parameters.
+SOURCE = Annotated[
+    Literal["exchanges", "coinalyze"],
+    Field(
+        description=(
+            "'exchanges' (default): the venues' own public APIs, recent history side by side. 'coinalyze': Coinalyze "
+            "history (needs the COINALYZE_API_KEY setting), daily back years or hourly for a recent window, with its "
+            "own row format (see the tool description)."
+        )
+    ),
+]
+CZ_INTERVAL = Annotated[
+    Literal["daily", "hourly"],
+    Field(description="source='coinalyze' only: bucket size, UTC-aligned; hourly is capped at 30 days. Ignored by source='exchanges'."),
+]
+CZ_DAYS = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=365,
+        description="source='coinalyze' only: look-back window in days (hourly is capped at 30). Ignored by source='exchanges' (period, limit).",
+    ),
+]
+CZ_MARGIN = Annotated[
+    Literal["usdt", "usd"],
+    Field(
+        description="source='coinalyze' only: 'usdt' = USDT-margined perps (default), 'usd' = coin-margined perps. Ignored by source='exchanges'."
+    ),
+]
+_CZ_ONLY = "{param} applies to source='coinalyze' only; ignored here."
+_EX_ONLY = "{param} applies to source='exchanges' only; ignored here."
 
 
 def _series_stats(values: list[float], step_seconds: int) -> dict[str, Any]:
@@ -120,6 +153,44 @@ def _warn_partial(b: Builder) -> None:
     names = list(dict.fromkeys(m.provider.removeprefix("ccxt:") for m in b.missing))
     if names:
         b.warn(f"partial: {', '.join(names)} unavailable, see missing; the cross-venue comparison is incomplete")
+
+
+SPREAD_COMPACT_ROWS = 10  # funding_spread_scan rows in the default (compact) answer
+CARRY_COMPACT_ROWS = 10  # funding_carry_scan rows in the default (compact) answer
+
+
+def _merge_evidence(b: Builder) -> None:
+    """One evidence item per (provider, call) instead of one per fetch: a 20-base funding_spread_scan makes ~60
+    per-symbol history / OHLCV fetches (~15 000 characters of evidence). The merged item keeps the provider, the call,
+    the args shared by every fetch, the number of fetches and symbols, the earliest fetch time (`fetched_at`) and the
+    latest one (`args.last_fetched_at`), the slowest latency, and cached=true only if every fetch was cached."""
+    groups: dict[tuple[str, str], list[Evidence]] = {}
+    for e in b.evidence:
+        groups.setdefault((e.provider, e.tool), []).append(e)
+    merged: list[Evidence] = []
+    for (provider, tool), items in groups.items():
+        if len(items) == 1:
+            merged.append(items[0])
+            continue
+        first = items[0].args
+        args: dict[str, Any] = {k: v for k, v in first.items() if all(k in x.args and x.args[k] == v for x in items[1:])}
+        args["fetches"] = len(items)
+        symbols = {str(x.args["symbol"]) for x in items if "symbol" in x.args}
+        if symbols:
+            args["symbols"] = len(symbols)
+        args["last_fetched_at"] = max(x.fetched_at for x in items)
+        latencies = [x.latency_ms for x in items if x.latency_ms is not None]
+        merged.append(
+            Evidence(
+                provider=provider,
+                tool=tool,
+                args=args,
+                fetched_at=min(x.fetched_at for x in items),
+                latency_ms=max(latencies) if latencies else None,
+                cached=all(x.cached for x in items),
+            )
+        )
+    b.evidence = merged
 
 
 def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
@@ -392,13 +463,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Historical perp funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid). "
+            "Historical perp funding. source='exchanges' (default): across venues (Binance USDT-M, Bybit, OKX via ccxt; "
+            "Hyperliquid), up to 180 days back. "
             "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
             "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= sum of actual payments over the covered span, annualised; robust to interval changes), z-score and percentile of the latest "
             "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
             "Rates are decimals per funding interval (0.0001 = 0.01 %); annualised values and carry APR are simple decimals "
             "(0.10 = 10 %/year). "
-            "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
+            "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows. "
+            "source='coinalyze': funding-rate history (OHLC per interval) of the perp on **Binance only** from Coinalyze "
+            "(symbol suffix '.A' is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY "
+            "setting); days_back in whole days up to 365, `interval` daily (back years) or hourly (a limited recent "
+            "window, capped at 30 days), `margin`; exchanges / include_hyperliquid / include_series are ignored. Units: "
+            "decimal fractions per funding interval (0.0001 = 0.01 % per settlement, usually 8 h on Binance, some symbols "
+            "4 h or 1 h); NOT annualised, no carry APR. Coinalyze sends percent; we divide by 100. For daily bars use close "
+            "(= last settlement of the UTC day) and high (= largest settlement), both checked against Binance payments "
+            "2026-10-18; open and low may carry the previous day's last rate, so they are not this day's settlements. "
+            "Stats over the closes: latest, mean, stdev, min, max, z-score of the latest, change. The mean of daily "
+            "closes is neither the average rate of the day nor the sum of its payments: do not compute carry from it. "
+            "Hourly bars are unverified (in hours without a settlement Coinalyze may repeat the last rate, send a "
+            "predicted one or skip the bar). Descriptive data, not a signal."
         ),
     )
     async def perps_funding_history(
@@ -409,15 +493,36 @@ def register(server: MCPServer, rt: Runtime) -> None:
             float,
             Field(
                 gt=0,
-                le=180,
-                description="History window in days back from now. Venues may keep less (OKX about 3 months); a warning flags short coverage.",
+                le=365,
+                description=(
+                    "History window in days back from now. source='exchanges': up to 180; venues may keep less (OKX about "
+                    "3 months), a warning flags short coverage. source='coinalyze': whole days, 1 to 365 (hourly capped at 30)."
+                ),
             ),
         ] = 30.0,
         include_series: Annotated[
             bool, Field(description="Also return each venue's raw rows [ts_ms, rate per interval as a decimal]; false = stats only.")
         ] = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        margin: CZ_MARGIN = "usdt",
     ) -> dict[str, Any]:
         b = Builder()
+        if source == "coinalyze":
+            if exchanges is not None:
+                b.warn(_EX_ONLY.format(param="exchanges"))
+            if days_back < 1 or days_back != int(days_back):
+                b.miss("days_back", "tradedesk", "invalid_argument", "source='coinalyze' takes whole days from 1 to 365")
+                return b.build(None, ok=False)
+            return await cz.funding_history(b, rt, base, interval, int(days_back), margin)
+        if days_back > 180:
+            b.miss(
+                "days_back",
+                "tradedesk",
+                "invalid_argument",
+                "source='exchanges' keeps up to 180 days; longer daily history: source='coinalyze'",
+            )
+            return b.build(None, ok=False)
         base = base.upper()
         symbol = f"{base}/USDT:USDT"
         venues = [e.lower() for e in (exchanges or PERP_EXCHANGES)]
@@ -503,7 +608,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Without `bases` the venue's `candidates` perps with the highest current funding are scanned, by default "
             "only crypto perps (TradFi perps skipped) that also have a spot market. "
             "All rates and APRs are decimals (0.10 = 10 %), on position notional; capital needed is higher "
-            "(spot leg + perp margin). Carry is not risk-free: see `warnings`."
+            "(spot leg + perp margin). By default the answer is compact: `summary` over every scanned symbol, the "
+            "top 10 `rows` by trailing APR and evidence merged per provider call; `include_details=true` returns every "
+            "row and one evidence item per fetch (same numbers). Carry is not risk-free: see `warnings`."
         ),
     )
     async def funding_carry_scan(
@@ -537,6 +644,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
             bool, Field(description="When picking candidates, keep only bases with a spot market on `spot_venue` (cash-and-carry).")
         ] = True,
         max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel funding-history requests.")] = 4,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every scanned row and one evidence item per fetch; false (default) = a compact answer: the "
+                    "top 10 rows by trailing APR, evidence merged per provider call. `summary` and the row numbers are "
+                    "the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(CARRY_WARNING)
@@ -623,20 +740,28 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda x: x["trailing_apr"] if x["trailing_apr"] is not None else float("-inf"), reverse=True)
         trailing = sorted(x["trailing_apr"] for x in rows if x["trailing_apr"] is not None)
         above = [x["base"] for x in rows if x["status"] == "above_entry"]
+        summary = {
+            "scanned": len(rows),
+            "above_entry": above,
+            "above_entry_with_spot": [
+                x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
+            ],
+            "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
+            "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
+        }
+        if not include_details:
+            b.warn(
+                f"compact answer: top {min(len(rows), CARRY_COMPACT_ROWS)} of {len(rows)} rows by trailing APR, evidence "
+                "merged per provider call; include_details=true for the full scan"
+            )
+            rows = rows[:CARRY_COMPACT_ROWS]
+            _merge_evidence(b)
         return b.build(
             {
                 "venue": venue,
                 "lookback_days": lookback_days,
                 "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "roundtrip_fee": roundtrip_fee},
-                "summary": {
-                    "scanned": len(rows),
-                    "above_entry": above,
-                    "above_entry_with_spot": [
-                        x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
-                    ],
-                    "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
-                    "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
-                },
+                "summary": summary,
                 "rows": rows,
             }
         )
@@ -657,7 +782,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "kPEPE-style names are matched to 1000PEPE-style CEX tickers by multiplier, other naming differences stay unmatched; "
             "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price, reversal or incomplete_history flag. "
             "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
-            "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
+            "are scanned. Rates and APRs are decimals on notional. By default the answer is compact: `summary` over every "
+            "scanned base, the top 10 `rows` by trailing spread without the per-venue `venues` breakdown, and evidence "
+            "merged per provider call; `include_details=true` returns every row with `venues` and one evidence item per "
+            "fetch (same numbers). See `warnings` before acting."
         ),
     )
     async def funding_spread_scan(
@@ -682,6 +810,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = 0.02,
         crypto_only: Annotated[bool, Field(description="Skip TradFi perps flagged by the venue when picking candidates.")] = True,
         max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel requests.")] = 4,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every scanned row with its per-venue breakdown `venues` (trailing / 30d / current APR, "
+                    "current rate, interval hours, cap, mark, coverage days) and one evidence item per fetch; false "
+                    "(default) = a compact answer: the top 10 rows by trailing spread without `venues`, evidence merged "
+                    "per provider call. `summary` and the row numbers are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(SPREAD_WARNING)
@@ -833,17 +972,25 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         rows.sort(key=lambda x: x["trailing_spread_apr"] if x["trailing_spread_apr"] is not None else float("-inf"), reverse=True)
         spreads = sorted(x["trailing_spread_apr"] for x in rows if x["trailing_spread_apr"] is not None)
+        summary = {
+            "scanned": len(rows),
+            "tradable_now": [x["base"] for x in rows if x["tradable_now"]],
+            "above_entry": [x["base"] for x in rows if x["status"] == "above_entry"],
+            "median_trailing_spread_apr": r(spreads[len(spreads) // 2], 4) if spreads else None,
+        }
+        if not include_details:
+            b.warn(
+                f"compact answer: top {min(len(rows), SPREAD_COMPACT_ROWS)} of {len(rows)} rows by trailing spread, without "
+                "the per-venue `venues` breakdown, evidence merged per provider call; include_details=true for the full scan"
+            )
+            rows = [{k: v for k, v in x.items() if k != "venues"} for x in rows[:SPREAD_COMPACT_ROWS]]
+            _merge_evidence(b)
         return b.build(
             {
                 "venues": vs,
                 "lookback_days": lookback_days,
                 "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "slippage": slippage, "max_entry_gap": max_entry_gap},
-                "summary": {
-                    "scanned": len(rows),
-                    "tradable_now": [x["base"] for x in rows if x["tradable_now"]],
-                    "above_entry": [x["base"] for x in rows if x["status"] == "above_entry"],
-                    "median_trailing_spread_apr": r(spreads[len(spreads) // 2], 4) if spreads else None,
-                },
+                "summary": summary,
                 "rows": rows,
             }
         )
@@ -851,10 +998,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Retail long/short account ratio history on Binance USDT-M and Bybit (public /futures/data and /v5/market/account-ratio). "
+            "Retail long/short account ratio history. source='exchanges' (default): Binance USDT-M and Bybit (public /futures/data and /v5/market/account-ratio). "
             "Both report **account fractions** (not notional-weighted), summing to ~1.0. Per venue returns the raw series plus latest/mean/min/max/24h-change/z-score. "
             "Cross-venue: who is most long right now, and absolute divergence between venues (large divergence = disagreement between retail cohorts). "
-            "`period` is one of 5m/15m/30m/1h/4h/1d; `limit` up to 500. Set `include_series=true` to see all rows."
+            "`period` is one of 5m/15m/30m/1h/4h/1d; `limit` up to 500. Set `include_series=true` to see all rows. "
+            "source='coinalyze': long/short account-ratio history of the perp on **Binance only** from Coinalyze (symbol "
+            "suffix '.A' is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY "
+            "setting); uses interval (daily back years, hourly a limited recent window capped at 30 days) / days / "
+            "margin, ignores period / limit / include_series. Rows: ratio = long accounts / short accounts, long_share "
+            "and short_share as fractions in [0, 1] (Coinalyze sends percent; we divide by 100). Counts accounts, not "
+            "notional: a crowd of small longs can face a few large shorts. Matches Binance globalLongShortAccountRatio "
+            "(checked 2026-10-18), including its timestamps one to one: a row at t is most likely Binance's snapshot "
+            "taken at t (known at t, not at the end of the bar; inferred, not independently verified), unlike the "
+            "OI/funding OHLC rows whose t is the interval start; mind lookahead in backtests. Stats: ratio latest, mean, "
+            "stdev, min, max, z-score of the latest; latest and mean long_share. Descriptive data, not a signal."
         ),
     )
     async def perps_long_short_ratio(
@@ -862,7 +1019,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         period: PERIOD = "1h",
         limit: SERIES_LIMIT = 48,
         include_series: INCLUDE_SERIES = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        days: CZ_DAYS = 30,
+        margin: CZ_MARGIN = "usdt",
     ) -> dict[str, Any]:
+        if source == "coinalyze":
+            return await cz.long_short_history(Builder(), rt, base, interval, days, margin)
         b = Builder()
         base = base.upper()
         symbol = f"{base}USDT"
@@ -949,9 +1112,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Open-interest history on Binance USDT-M and Bybit (public /futures/data/openInterestHist and /v5/market/open-interest). "
+            "Open-interest history. source='exchanges' (default): Binance USDT-M and Bybit (public /futures/data/openInterestHist and /v5/market/open-interest). "
             "Binance reports both sum open interest in the base asset and in USD; Bybit reports the base-asset total only (USD estimate omitted). "
-            "Per venue: current OI (base and USD when available), mean, 24h change, z-score of latest vs the window. `period` is 5m/15m/30m/1h/4h/1d; `limit` ≤500."
+            "Per venue: current OI (base and USD when available), mean, 24h change, z-score of latest vs the window. `period` is 5m/15m/30m/1h/4h/1d; `limit` ≤500. "
+            "source='coinalyze': OI history (OHLC per interval) from Coinalyze (needs the COINALYZE_API_KEY setting); uses "
+            "interval (daily back years, hourly a limited recent window capped at 30 days) / days / margin / in_usd / "
+            "exchanges, ignores period / limit / include_series. On Binance by default or summed over the selected "
+            "exchanges: 'binance' (Coinalyze code '.A') and/or 'bybit' ('.6', USDT-margined only); no other codes are "
+            "accepted. Each code is one exchange, not an all-exchanges aggregate; the response lists the exchanges used, "
+            "and an exchange that fails or has no data goes to `missing` while the rest is summed (only intervals present "
+            "on every used exchange are summed; summed high/low are sums of per-exchange extremes, i.e. bounds). Rows: "
+            "open/high/low/close OI; stats over the closes: latest, mean, stdev, min, max, z-score of the latest, change "
+            "and change_pct (fraction, 0.05 = +5 %) from the first to the last close. Units: USD by default, or "
+            "base-asset coins with in_usd=false. USD in Coinalyze = coins x the close of the interval (its own "
+            "conversion, checked on daily liquidations), so on crash days USD values are shifted against the coin "
+            "counts; exact USD liquidation sums come from liquidations_summary. Timestamps are interval starts (Binance "
+            "openInterestHist stamps the interval end, so its daily series sits one day later). For live OI per venue "
+            "use perps_open_interest. Descriptive data, not a signal."
         ),
     )
     async def perps_oi_history(
@@ -959,8 +1136,30 @@ def register(server: MCPServer, rt: Runtime) -> None:
         period: PERIOD = "1h",
         limit: SERIES_LIMIT = 48,
         include_series: INCLUDE_SERIES = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        days: CZ_DAYS = 30,
+        margin: CZ_MARGIN = "usdt",
+        in_usd: Annotated[
+            bool,
+            Field(description="source='coinalyze' only: OI in USD (true; coins x the interval close) or in base-asset coins (false)."),
+        ] = True,
+        exchanges: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "source='coinalyze' only: exchanges to sum, by name or Coinalyze code: 'binance' / '.A' (default when "
+                    "omitted) and 'bybit' / '.6' (USDT-margined only). Any other value is rejected (no request is made). "
+                    "Ignored, with a warning, by source='exchanges' (it always shows Binance and Bybit side by side)."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        if source == "coinalyze":
+            return await cz.oi_history(b, rt, base, interval, days, margin, in_usd, exchanges)
+        if exchanges is not None:
+            b.warn(_CZ_ONLY.format(param="exchanges"))
         base = base.upper()
         symbol = f"{base}USDT"
         step = _PERIOD_SECONDS[period]
@@ -1034,7 +1233,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Open interest for a base asset across venues in USD where available "
-            "(ccxt exchanges, Hyperliquid, Deribit for BTC/ETH). Use to see where leverage sits."
+            "(ccxt exchanges, Hyperliquid, Deribit for BTC/ETH). Use to see where leverage sits. "
+            "A point-in-time snapshot; for OI over time use perps_oi_history. Units: oi_base is ccxt openInterestAmount "
+            "for the {base}/USDT:USDT perp passed through as the venue reports it: base-asset coins on binanceusdm and "
+            "bybit, but CONTRACTS on okx (BTC-USDT-SWAP = 0.01 BTC each), so do not compare oi_base across venues; "
+            "Hyperliquid open interest in coins; null for Deribit. oi_usd in USD (when a ccxt venue reports no USD "
+            "value it is estimated as oi_base x last price, named in `warnings`, which is only right where oi_base is "
+            "in coins; Hyperliquid = coins x mark; Deribit = the perpetual's USD open interest); total_oi_usd "
+            "sums the venues with a USD figure; share is a fraction 0-1 of that total. A venue without a USD figure is "
+            "named in `warnings` and left out of the total; a failing venue goes to `missing`."
         ),
     )
     async def perps_open_interest(base: BASE = "BTC", exchanges: CCXT_VENUES = None) -> dict[str, Any]:
@@ -1120,7 +1327,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
             "present only with at least 10 closes. A candle with a time, price or volume that is not a finite number in "
-            "range is dropped (named in `warnings`)."
+            "range is dropped (named in `warnings`). "
+            "When to pick it: a Hyperliquid coin (including coins listed only there) over an `hours_back` window; for "
+            "other venues' live candles use market_ohlcv; for long series stored by our collector use ohlcv_history."
         ),
     )
     async def hyperliquid_candles(
@@ -1288,14 +1497,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns the raw series plus "
+            "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns "
             "mean/stdev/min/max/7d-mean/30d-mean of the per-hour rate, annualised carry (sum of payments over the covered span), the latest rate's z-score and percentile "
-            "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour)."
+            "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour). "
+            "By default stats only (a compact answer); set `include_series=true` for the raw hourly payments as "
+            "`entries` [{ts_ms, rate}] (about 33k characters for 30 days)."
         ),
     )
     async def hyperliquid_funding_history(
         coin: HL_COIN,
         days_back: Annotated[float, Field(gt=0, le=180, description="History window in days back from now (up to 180).")] = 30.0,
+        include_series: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also return the raw hourly payments as `entries` [{ts_ms, rate per hour as a decimal}]; false (default) = stats only."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         now_ms = int(rt.now().timestamp() * 1000)
@@ -1314,7 +1533,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)
         stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
-        return b.build({"coin": coin, "days_requested": days_back, "stats": stats, "entries": entries})
+        data = {"coin": coin, "days_requested": days_back, "stats": stats}
+        return b.build({**data, "entries": entries} if include_series else data)
 
     @server.tool(
         annotations=READ_ONLY,

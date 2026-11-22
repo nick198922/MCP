@@ -348,7 +348,11 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     async with Client(server) as c:
         plan: dict[str, tuple[str, dict[str, Any]]] = {
             "tickers": ("market_tickers", {"exchange": VENUE, "symbols": TICKER_SYMBOLS}),
-            "ohlc": ("market_ohlcv", {"exchange": SPOT_VENUE, "symbol": "BTC/USDT", "timeframe": "1d", "limit": 120}),
+            # the dashboard's BTC chart and the brief read every candle: the full series, not the compact default
+            "ohlc": (
+                "market_ohlcv",
+                {"exchange": SPOT_VENUE, "symbol": "BTC/USDT", "timeframe": "1d", "limit": 120, "include_series": True},
+            ),
             "fng": ("sentiment_fear_greed", {"days": 30}),
             "dvol": ("deribit_dvol", {"currency": "BTC", "hours_back": 192, "resolution": 3600}),
             # 1000 days: by-DVOL-level stats need 365 d of lookback plus 30 d per trade
@@ -364,8 +368,9 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "flow_btc": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             "flow_eth": ("market_flow", {"base": "ETH", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             # the brief's «Режим циклу» line and state-change message (IDEA-20261028-btc-cycle-regime-gauge): today's
-            # state and 30 days of states (yesterday vs the day before, and how often it changed)
-            "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS}),
+            # state and 30 days of states (yesterday vs the day before, and how often it changed): every day, not the
+            # compact default of the latest 10
+            "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS, "include_details": True}),
             # the brief's one descriptive liquidity line (total stablecoin supply, 7 / 30 d change); not a signal
             "stablecoins": ("stablecoin_supply", {}),
         }

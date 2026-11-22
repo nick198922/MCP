@@ -1,0 +1,2 @@
+- Жива перевірка `yield_pools`, `yield_pool_history` і `btc_fees` через MCP служби: усі три `ok`, без `missing`.
+- Пункт 5 картки `onchain-parity` (DefiLlama пули) закрито; коду не змінено.

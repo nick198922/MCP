@@ -1,0 +1,474 @@
+{
+ "_source": "Real answers of the public mempool.space API (no key), GET https://mempool.space + {\"fees_recommended\": \"/api/v1/fees/recommended\", \"mempool\": \"/api/mempool\", \"tip_height\": \"/api/blocks/tip/height\", \"blocks\": \"/api/v1/blocks\", \"hashrate_3d\": \"/api/v1/mining/hashrate/3d\", \"address\": \"/api/address/bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh\"}, fetched 2026-11-19T06:35:11+00:00 from the tradedesk server through tradedesk.core.http.Http. Only change: /api/v1/blocks returned 15 blocks, the first 2 are kept.",
+ "fees_recommended": {
+  "fastestFee": 1,
+  "halfHourFee": 1,
+  "hourFee": 1,
+  "economyFee": 1,
+  "minimumFee": 1
+ },
+ "mempool": {
+  "count": 72496,
+  "vsize": 31672781,
+  "total_fee": 3881601,
+  "fee_histogram": [
+   [
+    1.016679,
+    58908
+   ],
+   [
+    1.0,
+    105847
+   ],
+   [
+    0.19259259,
+    59350
+   ],
+   [
+    0.16000164,
+    107392
+   ],
+   [
+    0.16,
+    113625
+   ],
+   [
+    0.14025943,
+    72947
+   ],
+   [
+    0.1402553,
+    67919
+   ],
+   [
+    0.13461539,
+    66152
+   ],
+   [
+    0.13065326,
+    98617
+   ],
+   [
+    0.128,
+    121516
+   ],
+   [
+    0.12765957,
+    94752
+   ],
+   [
+    0.12230216,
+    83994
+   ],
+   [
+    0.120001815,
+    16329013
+   ],
+   [
+    0.12,
+    3708750
+   ],
+   [
+    0.11510792,
+    94132
+   ],
+   [
+    0.113190114,
+    53618
+   ],
+   [
+    0.112118535,
+    53151
+   ],
+   [
+    0.112,
+    296839
+   ],
+   [
+    0.110034205,
+    52020
+   ],
+   [
+    0.10483871,
+    162242
+   ],
+   [
+    0.104,
+    2833852
+   ],
+   [
+    0.1037037,
+    884790
+   ],
+   [
+    0.10218978,
+    178154
+   ],
+   [
+    0.10160471,
+    50116
+   ],
+   [
+    0.10144927,
+    95087
+   ],
+   [
+    0.10106383,
+    1793181
+   ],
+   [
+    0.10095859,
+    50496
+   ],
+   [
+    0.10087711,
+    101028
+   ],
+   [
+    0.1007752,
+    126904
+   ],
+   [
+    0.10062893,
+    50175
+   ],
+   [
+    0.100336954,
+    52495
+   ],
+   [
+    0.10020249,
+    66528
+   ],
+   [
+    0.10018843,
+    88932
+   ],
+   [
+    0.10018695,
+    67933
+   ],
+   [
+    0.100185394,
+    67964
+   ],
+   [
+    0.1001832,
+    67137
+   ],
+   [
+    0.10018097,
+    67967
+   ],
+   [
+    0.10017949,
+    67968
+   ],
+   [
+    0.10017655,
+    68529
+   ],
+   [
+    0.100175075,
+    67971
+   ],
+   [
+    0.10010726,
+    51707
+   ],
+   [
+    0.10007932,
+    86381
+   ],
+   [
+    0.10005631,
+    74956
+   ],
+   [
+    0.1000478,
+    100021
+   ],
+   [
+    0.10004488,
+    120825
+   ],
+   [
+    0.10003673,
+    59247
+   ],
+   [
+    0.10002792,
+    51895
+   ],
+   [
+    0.100024134,
+    95296
+   ],
+   [
+    0.10002018,
+    73004
+   ],
+   [
+    0.10001947,
+    71226
+   ],
+   [
+    0.10001939,
+    51580
+   ],
+   [
+    0.100016765,
+    101083
+   ],
+   [
+    0.10001484,
+    67360
+   ],
+   [
+    0.10000532,
+    93985
+   ],
+   [
+    0.10000524,
+    95475
+   ],
+   [
+    0.10000518,
+    96475
+   ],
+   [
+    0.10000511,
+    97855
+   ],
+   [
+    0.10000506,
+    98835
+   ],
+   [
+    0.10000427,
+    93666
+   ],
+   [
+    0.100004196,
+    95316
+   ],
+   [
+    0.10000329,
+    91207
+   ],
+   [
+    0.100003205,
+    93587
+   ],
+   [
+    0.1000032,
+    93747
+   ],
+   [
+    0.100003034,
+    98797
+   ],
+   [
+    0.10000303,
+    99197
+   ],
+   [
+    0.10000301,
+    99497
+   ],
+   [
+    0.10000215,
+    93008
+   ],
+   [
+    0.10000211,
+    94788
+   ],
+   [
+    0.10000206,
+    97278
+   ],
+   [
+    0.10000204,
+    97818
+   ],
+   [
+    0.10000101,
+    99129
+   ],
+   [
+    0.0,
+    290549
+   ]
+  ]
+ },
+ "tip_height": 976542,
+ "blocks": [
+  {
+   "id": "00000000000000000001fbdd0ca10edda11103fa43a2595550bf61526422baf7",
+   "height": 976542,
+   "version": 604233728,
+   "timestamp": 1795070079,
+   "bits": 386012787,
+   "nonce": 47009180,
+   "difficulty": 134823837323272.7,
+   "merkle_root": "7667dac78c72e7c42b2b70d5e6cb6a36a8f4210d8c17f519c866d759511d208d",
+   "tx_count": 3035,
+   "size": 1613193,
+   "weight": 3992697,
+   "previousblockhash": "0000000000000000000098962d4d7d01328df14142a7da929d91a867ed3f09c1",
+   "mediantime": 1795066533,
+   "stale": false,
+   "extras": {
+    "reward": 314961979,
+    "coinbaseRaw": "039ee60e050d8a4d98002f466f756e6472792055534120506f6f6c202364726f70676f6c642f7d0547a50000000000000000",
+    "orphans": [],
+    "medianFee": 2.0009142630549315,
+    "feeRange": [
+     0.3575883575883576,
+     1.00355871886121,
+     1.0865384615384615,
+     2.0078125,
+     2.986442262739598,
+     5.026737967914438,
+     201.91749644381224
+    ],
+    "totalFees": 2461979,
+    "avgFee": 811,
+    "avgFeeRate": 2,
+    "utxoSetChange": -842,
+    "avgTxSize": 531.4300000000001,
+    "totalInputs": 8789,
+    "totalOutputs": 7947,
+    "totalOutputAmt": 521753846268,
+    "segwitTotalTxs": 2573,
+    "segwitTotalSize": 1454842,
+    "segwitTotalWeight": 3359401,
+    "feePercentiles": null,
+    "virtualSize": 998174.25,
+    "coinbaseAddress": "bc1qtm7ye0wm085hhv88japwkalmwkt3amec5z9c7a3unv05tfg6y2pstr3xfz",
+    "coinbaseAddresses": [
+     "bc1qtm7ye0wm085hhv88japwkalmwkt3amec5z9c7a3unv05tfg6y2pstr3xfz"
+    ],
+    "coinbaseSignature": "OP_0 OP_PUSHBYTES_32 5efc4cbddb79e97bb0e79742eb77fb75971eef38a08b8f763c9b1f45a51a2283",
+    "coinbaseSignatureAscii": "\u0003æ\u000e\u0005\rM\u0000/Foundry USA Pool #dropgold/}\u0005G¥\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+    "header": "00e00324c1093fed67a8919d92daa74241f18d32017d4d2d9698000000000000000000008d201d5159d766c819f5178c0d21f4a8366acbe6d5702b2bc4e7728cc7da67767f98fe6a731602179c4dcd02",
+    "utxoSetSize": null,
+    "totalInputAmt": null,
+    "pool": {
+     "id": 111,
+     "name": "Foundry USA",
+     "slug": "foundryusa",
+     "minerNames": null
+    },
+    "matchRate": 100,
+    "expectedFees": 2503815,
+    "expectedWeight": 3991648,
+    "firstSeen": null,
+    "coinbaseBip54": true,
+    "similarity": 0.9866876162194222
+   }
+  },
+  {
+   "id": "0000000000000000000098962d4d7d01328df14142a7da929d91a867ed3f09c1",
+   "height": 976541,
+   "version": 975183872,
+   "timestamp": 1795068938,
+   "bits": 386012787,
+   "nonce": 3859053712,
+   "difficulty": 134823837323272.7,
+   "merkle_root": "963579d9fa0eb3ee14509833239f7b049d6f103bddd74f023c8df20d4e608992",
+   "tx_count": 4330,
+   "size": 1640760,
+   "weight": 3993051,
+   "previousblockhash": "00000000000000000001a4c0699ef1e1c5938fb6cc08d7135a5f0db1cc77d6bc",
+   "mediantime": 1795066444,
+   "stale": false,
+   "extras": {
+    "reward": 313623558,
+    "coinbaseRaw": "039de60e05970c0a94002f466f756e6472792055534120506f6f6c202364726f70676f6c642f967c33280000950904000000",
+    "orphans": [],
+    "medianFee": 1.0024570024570025,
+    "feeRange": [
+     0.11976047904191617,
+     0.12495511669658887,
+     0.1276595744680851,
+     0.1310109175764647,
+     1.009009009009009,
+     1.3227513227513228,
+     106.37722419928825
+    ],
+    "totalFees": 1123558,
+    "avgFee": 259,
+    "avgFeeRate": 1,
+    "utxoSetChange": 2230,
+    "avgTxSize": 378.86,
+    "totalInputs": 7937,
+    "totalOutputs": 10167,
+    "totalOutputAmt": 413922472372,
+    "segwitTotalTxs": 4067,
+    "segwitTotalSize": 1537349,
+    "segwitTotalWeight": 3579515,
+    "feePercentiles": null,
+    "virtualSize": 998262.75,
+    "coinbaseAddress": "bc1qtm7ye0wm085hhv88japwkalmwkt3amec5z9c7a3unv05tfg6y2pstr3xfz",
+    "coinbaseAddresses": [
+     "bc1qtm7ye0wm085hhv88japwkalmwkt3amec5z9c7a3unv05tfg6y2pstr3xfz"
+    ],
+    "coinbaseSignature": "OP_0 OP_PUSHBYTES_32 5efc4cbddb79e97bb0e79742eb77fb75971eef38a08b8f763c9b1f45a51a2283",
+    "coinbaseSignatureAscii": "\u0003æ\u000e\u0005\f\n\u0000/Foundry USA Pool #dropgold/|3(\u0000\u0000\t\u0004\u0000\u0000\u0000",
+    "header": "0020203abcd677ccb10d5f5a13d708ccb68f93c5e1f19e69c0a4010000000000000000009289604e0df28d3c024fd7dd3b106f9d047b9f2333985014eeb30efad97935960a94fe6a73160217907c04e6",
+    "utxoSetSize": null,
+    "totalInputAmt": null,
+    "pool": {
+     "id": 111,
+     "name": "Foundry USA",
+     "slug": "foundryusa",
+     "minerNames": null
+    },
+    "matchRate": 100,
+    "expectedFees": 1141441,
+    "expectedWeight": 3991916,
+    "firstSeen": null,
+    "coinbaseBip54": true,
+    "similarity": 0.993471110892936
+   }
+  }
+ ],
+ "hashrate_3d": {
+  "hashrates": [
+   {
+    "timestamp": 1794873600,
+    "avgHashrate": 1.10230448392204e+21
+   },
+   {
+    "timestamp": 1794960000,
+    "avgHashrate": 1.009829456101236e+21
+   },
+   {
+    "timestamp": 1795046400,
+    "avgHashrate": 1.051070335988507e+21
+   }
+  ],
+  "difficulty": [],
+  "currentHashrate": 999306328418761700000,
+  "currentDifficulty": 134823837323272.7
+ },
+ "address": {
+  "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+  "chain_stats": {
+   "funded_txo_count": 1202,
+   "funded_txo_sum": 1681911109,
+   "spent_txo_count": 434,
+   "spent_txo_sum": 1287005839,
+   "tx_count": 1159
+  },
+  "mempool_stats": {
+   "funded_txo_count": 0,
+   "funded_txo_sum": 0,
+   "spent_txo_count": 0,
+   "spent_txo_sum": 0,
+   "tx_count": 0
+  }
+ }
+}

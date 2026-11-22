@@ -3,14 +3,20 @@
     python3 scripts/x_backfill.py Trader_XO btc_charlie docXBT KillaXBT       # since 2 years ago, with photos
     python3 scripts/x_backfill.py Trader_XO --since 2025-01-01 --interval 0.1 # after a top-up (20 requests/s)
     python3 scripts/x_backfill.py Trader_XO --md                              # only rebuild tweets.md / parts/
+    python3 scripts/x_backfill.py Trader_XO --stat                            # state + coverage: no key, no network
 
 Output (outside git, next to the Telegram channels): ~/private/library/courses/x-<handle>/
     tweets.json          every tweet (normalised fields below), sorted by time
     tweets.md            all texts in one file; parts/<YYYY-Qn>.md the same split by quarter, for reading in chunks
     photos/<id>-<n>.jpg  pictures of the tweets (mostly charts)
     state.json           finished calendar months (a stopped run skips them; the current month is always refetched)
+                         and the oldest tweet fetched per month (``oldest``; null = the month had no tweets)
 
-Search goes month by month (``from:<handle> since_time:… until_time:…``, newest first, 20 tweets a page). Replies are
+Search goes month by month (``from:<handle> since_time:… until_time:…``, newest first, 20 tweets a page). The API
+sometimes ends the paging (no cursor) long before the start of the month, so after paging stops the month goes on
+with a new window ``until_time = <oldest tweet fetched>`` until the oldest tweet reaches the month start or a window
+brings nothing new; only then is the month marked done. Months marked done by an older version of this script have no
+``oldest`` entry: they are reported as ``unverified`` (never refetched automatically: a refetch costs money). Replies are
 kept: a trader's own follow-ups («stopped out», «TP1 hit») are what makes an honest score possible. twitterapi.io bills
 $0.15 per 1000 tweets returned (at least 15 credits a request); --max-tweets stops the run before the bill grows. A new
 account without a top-up gets one request per 5 s (the default --interval).
@@ -29,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +49,9 @@ ROOT = Path.home() / "private" / "library" / "courses"
 USD_PER_TWEET = 0.15 / 1000
 USD_PER_REQUEST_MIN = 0.00015
 UA = "tradedesk-x-backfill/1.0"
+MONTH_START_TOLERANCE_S = 60  # an oldest tweet this close to the month start counts as reaching it
+MAX_WINDOWS_PER_MONTH = 100  # loop guard: follow-up windows per month before giving up (month stays not done)
+SUSPECT_GAP_DAYS = 1  # --stat flags a done month whose oldest tweet is later than its start by more than this
 
 Getter = Callable[[dict[str, str]], dict[str, Any]]
 
@@ -75,6 +84,16 @@ def parse_created(s: str) -> str:
         except (ValueError, AttributeError):
             continue
     return ""
+
+
+def created_epoch(tw: dict[str, Any]) -> int | None:
+    """Creation time of a raw API tweet in Unix seconds; None when the date is unreadable."""
+    iso = parse_created(tw.get("createdAt", ""))
+    return int(datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp()) if iso else None
+
+
+def _iso(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def media_urls(tw: dict[str, Any]) -> list[str]:
@@ -134,6 +153,47 @@ def fetch_window(get: Getter, handle: str, start: int, end: int, sleep: Callable
         sleep()
 
 
+def fetch_month(
+    get: Getter,
+    handle: str,
+    start: int,
+    end: int,
+    sleep: Callable[[], None],
+    max_windows: int = MAX_WINDOWS_PER_MONTH,
+) -> tuple[list[dict], int, int | None, bool]:
+    """All tweets of ``handle`` in [start, end): (raw tweets without duplicate ids, requests, oldest tweet time in Unix
+    seconds or None, complete).
+
+    Paging of one window may stop early (no cursor) while older tweets of the month remain, so each further window ends
+    at the oldest tweet fetched so far. Complete means the oldest tweet is within ``MONTH_START_TOLERANCE_S`` of
+    ``start`` or a window brought no new tweet. Not complete: the oldest time did not strictly decrease, no tweet had a
+    readable date, or ``max_windows`` ran out."""
+    out: list[dict] = []
+    ids: set[str] = set()
+    requests, oldest, until = 0, None, end
+    for i in range(max_windows):
+        if i:
+            sleep()
+        raw, n = fetch_window(get, handle, start, until, sleep)
+        requests += n
+        fresh = []
+        for t in raw:
+            if str(t["id"]) not in ids:
+                ids.add(str(t["id"]))
+                fresh.append(t)
+        if not fresh:
+            return out, requests, oldest, True
+        out.extend(fresh)
+        times = [e for e in map(created_epoch, fresh) if e is not None]
+        if not times or (oldest is not None and min(times) >= oldest):
+            return out, requests, oldest, False
+        oldest = min(times)
+        if oldest <= start + MONTH_START_TOLERANCE_S:
+            return out, requests, oldest, True
+        until = oldest  # a tweet sharing that exact second but not fetched yet may be lost if until_time is exclusive
+    return out, requests, oldest, False
+
+
 def http_getter(key: str, timeout: float = 60.0, tries: int = 5) -> Getter:
     def get(params: dict[str, str]) -> dict[str, Any]:
         url = f"{API}?{urllib.parse.urlencode(params)}"
@@ -169,12 +229,115 @@ def _write(p: Path, text: str) -> None:
     tmp.replace(p)
 
 
-def save(handle: str, tweets: dict[str, dict], done: list[str]) -> None:
+def load_state(handle: str) -> dict[str, Any]:
+    """``{"done_months": [...], "oldest": {month: iso | None}}``; a state.json without ``oldest`` (older script) reads
+    as an empty map."""
+    p = out_dir(handle) / "state.json"
+    raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return {"done_months": list(raw.get("done_months") or []), "oldest": dict(raw.get("oldest") or {})}
+
+
+def unverified_months(state: dict[str, Any]) -> list[str]:
+    """Months marked done without a recorded oldest tweet (done by an older version: may miss their first days)."""
+    return sorted(m for m in set(state["done_months"]) if m not in state["oldest"])
+
+
+def _day_ranges(days: list[int]) -> str:
+    """Sorted day numbers as ranges: ``[1, 2, 3, 7]`` -> ``"1-3, 7"``."""
+    out, i = [], 0
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and days[j + 1] == days[j] + 1:
+            j += 1
+        out.append(str(days[i]) if i == j else f"{days[i]}-{days[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def coverage_report(tweets: Iterable[dict[str, Any]], state: dict[str, Any], today: date) -> dict[str, Any]:
+    """Days without a stored tweet per calendar month (UTC), from stored data only: pure, ``today`` is passed in.
+
+    Covers every month from the earliest to the latest one seen in the tweets or ``state`` (none after ``today``). Per
+    month: window ``from``/``to`` (the current month ends with ``today``), stored ``tweets``, ``first``/``last`` tweet
+    time, ``empty_days`` with their ``empty_share`` and day numbers (``empty``, as ranges) and ``status``: ``done``
+    (window exhausted), ``unverified`` (marked done by an older version: may miss its first days) or ``open`` (current,
+    incomplete or never fetched). The totals ``days``/``empty_days``/``empty_share`` count from ``counted_from``, the
+    month of the first stored tweet: earlier months (often before the account posted at all) stay listed but would
+    inflate the share. ``suspect_months``: ``done`` months whose recorded ``oldest`` tweet is more than
+    ``SUSPECT_GAP_DAYS`` after the month start (``month``, ``oldest``, ``gap_days``): the API may have cut the paging
+    with no newer-than-before tweet, so the month's first days may be missing (or the trader simply did not post; the
+    first month of a ``--since`` run also starts late). ``unverified`` months have no ``oldest`` and are never suspect.
+    ``ignored_future``: tweets dated after ``today`` (clock skew), left out of every count. Caveats: a trader may not
+    post on some days, so empty days bound the holes from above; a month counts from the 1st even if the run began
+    later (``--since`` is not stored); undated tweets are left out."""
+    by_month: dict[str, list[str]] = defaultdict(list)
+    ignored_future = 0
+    for t in tweets:
+        iso = t.get("date") or ""
+        if len(iso) >= 10:
+            if iso[:10] > today.isoformat():
+                ignored_future += 1
+                continue
+            by_month[iso[:7]].append(iso)
+    cur = f"{today.year:04d}-{today.month:02d}"
+    done = set(state["done_months"])
+    labels = {m for m in set(by_month) | done | set(state["oldest"]) if m <= cur}
+    months: list[dict[str, Any]] = []
+    if labels:
+        y, m = int(min(labels)[:4]), int(min(labels)[5:7])
+        last = max(labels)
+        while (label := f"{y:04d}-{m:02d}") <= last:
+            start, nxt = date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1)
+            n_days = (min(nxt, today + timedelta(days=1)) - start).days
+            stamps = sorted(by_month.get(label, []))
+            posted = {int(s[8:10]) for s in stamps}
+            empty = [d for d in range(1, n_days + 1) if d not in posted]
+            months.append(
+                {
+                    "month": label,
+                    "from": start.isoformat(),
+                    "to": (start + timedelta(days=n_days - 1)).isoformat(),
+                    "status": ("done" if label in state["oldest"] else "unverified") if label in done else "open",
+                    "tweets": len(stamps),
+                    "first": stamps[0] if stamps else None,
+                    "last": stamps[-1] if stamps else None,
+                    "days": n_days,
+                    "empty_days": len(empty),
+                    "empty_share": round(len(empty) / n_days, 3),
+                    "empty": _day_ranges(empty),
+                }
+            )
+            y, m = nxt.year, nxt.month
+    first_month = min(by_month) if by_month else None
+    counted = [x for x in months if first_month and x["month"] >= first_month]
+    days = sum(x["days"] for x in counted)
+    empty_days = sum(x["empty_days"] for x in counted)
+    suspect = []
+    for x in months:
+        oldest = state["oldest"].get(x["month"]) if x["status"] == "done" else None
+        if oldest:
+            start_dt = datetime.fromisoformat(x["from"]).replace(tzinfo=UTC)
+            gap = (datetime.strptime(oldest, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) - start_dt).total_seconds() / 86400
+            if gap > SUSPECT_GAP_DAYS:
+                suspect.append({"month": x["month"], "oldest": oldest, "gap_days": round(gap, 1)})
+    return {
+        "counted_from": first_month,
+        "days": days,
+        "empty_days": empty_days,
+        "empty_share": round(empty_days / days, 3) if days else None,
+        "ignored_future": ignored_future,
+        "suspect_months": suspect,
+        "months": months,
+    }
+
+
+def save(handle: str, tweets: dict[str, dict], state: dict[str, Any]) -> None:
     d = out_dir(handle)
     d.mkdir(parents=True, exist_ok=True)
     ordered = sorted(tweets.values(), key=lambda t: (t["date"], t["id"]))
     _write(d / "tweets.json", json.dumps(ordered, ensure_ascii=False, indent=1))
-    _write(d / "state.json", json.dumps({"done_months": sorted(set(done))}, indent=1))
+    body = {"done_months": sorted(set(state["done_months"])), "oldest": dict(sorted(state["oldest"].items()))}
+    _write(d / "state.json", json.dumps(body, indent=1))
 
 
 def quarter(iso: str) -> str:
@@ -252,31 +415,60 @@ def backfill(
     max_tweets: int,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """Fetches the months not done yet; saves after each month. Stops at ``max_tweets`` new tweets (budget)."""
+    """Fetches the months not done yet; saves after each month. Stops at ``max_tweets`` new tweets (budget). A month is
+    marked done only when ``fetch_month`` reports it complete; an incomplete one is refetched on the next run."""
     tweets = load(handle)
-    state = out_dir(handle) / "state.json"
-    done = json.loads(state.read_text())["done_months"] if state.exists() else []
+    state = load_state(handle)
+    done = state["done_months"]
     this_month = f"{until.year:04d}-{until.month:02d}"
     new = requests = 0
     stopped = ""
+    incomplete: list[str] = []
     for label, start, end in month_windows(since, until):
         if label in done:
             continue
-        raw, n = fetch_window(get, handle, start, end, sleep)
+        raw, n, oldest, complete = fetch_month(get, handle, start, end, sleep)
         requests += n
         before = len(tweets)
         tweets.update({t["id"]: t for t in map(normalize, raw)})
         new += len(tweets) - before
+        state["oldest"][label] = _iso(oldest) if oldest is not None else None
         if label != this_month:
-            done.append(label)
-        save(handle, tweets, done)
-        log(f"@{handle} {label}: {len(raw)} tweets, {n} requests")
+            if complete:
+                done.append(label)
+            else:
+                incomplete.append(label)
+        save(handle, tweets, state)
+        tail = "" if complete else f", INCOMPLETE (oldest {state['oldest'][label]}): refetched next run"
+        log(f"@{handle} {label}: {len(raw)} tweets, {n} requests{tail}")
         sleep()
         if new >= max_tweets:
             stopped = f"stopped at --max-tweets {max_tweets}"
             break
     cost = max(new * USD_PER_TWEET, requests * USD_PER_REQUEST_MIN)
-    return {"handle": handle, "tweets": len(tweets), "new": new, "requests": requests, "usd_approx": round(cost, 2), "stopped": stopped}
+    return {
+        "handle": handle,
+        "tweets": len(tweets),
+        "new": new,
+        "requests": requests,
+        "usd_approx": round(cost, 2),
+        "stopped": stopped,
+        "incomplete": incomplete,
+        "unverified": unverified_months(state),
+    }
+
+
+def stat(handle: str, today: date | None = None) -> dict[str, Any]:
+    """What is stored for ``handle`` with its coverage report (local files only: no key, no network)."""
+    state = load_state(handle)
+    tweets = load(handle)
+    return {
+        "handle": handle,
+        "tweets": len(tweets),
+        "done_months": len(set(state["done_months"])),
+        "unverified": unverified_months(state),
+        "coverage": coverage_report(tweets.values(), state, today or datetime.now(UTC).date()),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -287,8 +479,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-tweets", type=int, default=60_000, help="new tweets per handle before stopping (budget guard)")
     ap.add_argument("--no-photos", action="store_true")
     ap.add_argument("--md", action="store_true", help="only rebuild tweets.md and parts/ from tweets.json")
+    ap.add_argument(
+        "--stat",
+        action="store_true",
+        help="only print stored counts, unverified and suspect months, empty days per month (no key, no network)",
+    )
     a = ap.parse_args(argv)
     handles = [h.lstrip("@").strip() for h in a.handles]
+    if a.stat:
+        for h in handles:
+            print(json.dumps(stat(h), ensure_ascii=False))
+        return 0
     if not a.md:
         key = load_env(KEY_FILE).get("TWITTERAPI_KEY", "")
         if not key:
@@ -307,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
         tweets = load(h)
         if not a.no_photos and not a.md:
             print(f"@{h}: {download_photos(h, tweets, fetch_bytes)} new pictures")
-            save(h, tweets, json.loads((out_dir(h) / "state.json").read_text())["done_months"])
+            save(h, tweets, load_state(h))
         render(h, tweets)
     return 0
 

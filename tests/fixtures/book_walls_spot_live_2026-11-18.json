@@ -1,0 +1,397 @@
+{
+ "_source": "live capture 2026-11-18 from the tradedesk server (public feeds, no key): Binance spot wss://stream.binance.com:9443 + GET api.binance.com/api/v3/depth (ETHUSDT); Coinbase Advanced Trade wss://advanced-trade-ws.coinbase.com (ETH-USD) and the Exchange feed's level2 refusal. Levels / updates / trades trimmed to 4 per side; binance_spot_depth_ids are the (U, u) of every diff of the capture, in order, around the REST snapshot's lastUpdateId.",
+ "_captured_utc": "2026-11-18T19:12:52Z",
+ "binance_spot_depth": [
+  {
+   "stream": "ethusdt@depth@1000ms",
+   "data": {
+    "e": "depthUpdate",
+    "E": 1795029174015,
+    "s": "ETHUSDT",
+    "U": 83554258017,
+    "u": 83554258341,
+    "b": [
+     [
+      "1761.05000000",
+      "32.84460000"
+     ],
+     [
+      "1761.03000000",
+      "0.00000000"
+     ],
+     [
+      "1761.02000000",
+      "0.19400000"
+     ],
+     [
+      "1761.01000000",
+      "0.48280000"
+     ]
+    ],
+    "a": [
+     [
+      "1761.06000000",
+      "4.95720000"
+     ],
+     [
+      "1761.07000000",
+      "0.00600000"
+     ],
+     [
+      "1761.08000000",
+      "0.44110000"
+     ],
+     [
+      "1761.09000000",
+      "0.00290000"
+     ]
+    ]
+   }
+  },
+  {
+   "stream": "ethusdt@depth@1000ms",
+   "data": {
+    "e": "depthUpdate",
+    "E": 1795029175015,
+    "s": "ETHUSDT",
+    "U": 83554258342,
+    "u": 83554258636,
+    "b": [
+     [
+      "1761.05000000",
+      "74.84200000"
+     ],
+     [
+      "1761.04000000",
+      "0.04000000"
+     ],
+     [
+      "1761.03000000",
+      "0.00000000"
+     ],
+     [
+      "1761.02000000",
+      "0.19400000"
+     ]
+    ],
+    "a": [
+     [
+      "1761.06000000",
+      "2.95460000"
+     ],
+     [
+      "1761.07000000",
+      "0.00600000"
+     ],
+     [
+      "1761.08000000",
+      "0.44110000"
+     ],
+     [
+      "1761.09000000",
+      "0.00290000"
+     ]
+    ]
+   }
+  }
+ ],
+ "binance_spot_depth_ids": [
+  [
+   83554258017,
+   83554258341
+  ],
+  [
+   83554258342,
+   83554258636
+  ],
+  [
+   83554258637,
+   83554258924
+  ],
+  [
+   83554258925,
+   83554259523
+  ],
+  [
+   83554259524,
+   83554259706
+  ],
+  [
+   83554259707,
+   83554259790
+  ],
+  [
+   83554259791,
+   83554260122
+  ]
+ ],
+ "binance_spot_rest_depth": {
+  "lastUpdateId": 83554258832,
+  "bids": [
+   [
+    "1761.05000000",
+    "78.14450000"
+   ],
+   [
+    "1761.04000000",
+    "0.04000000"
+   ],
+   [
+    "1761.02000000",
+    "0.19400000"
+   ],
+   [
+    "1761.01000000",
+    "0.48280000"
+   ]
+  ],
+  "asks": [
+   [
+    "1761.06000000",
+    "0.60690000"
+   ],
+   [
+    "1761.07000000",
+    "0.00600000"
+   ],
+   [
+    "1761.08000000",
+    "0.44110000"
+   ],
+   [
+    "1761.09000000",
+    "0.00290000"
+   ]
+  ]
+ },
+ "binance_spot_agg_trade": [
+  {
+   "stream": "ethusdt@aggTrade",
+   "data": {
+    "e": "aggTrade",
+    "E": 1795029174490,
+    "s": "ETHUSDT",
+    "a": 2124259259,
+    "p": "1761.06000000",
+    "q": "0.73750000",
+    "f": 4520881301,
+    "l": 4520881301,
+    "T": 1795029174489,
+    "m": false,
+    "M": true
+   }
+  },
+  {
+   "stream": "ethusdt@aggTrade",
+   "data": {
+    "e": "aggTrade",
+    "E": 1795029175816,
+    "s": "ETHUSDT",
+    "a": 2124259260,
+    "p": "1761.05000000",
+    "q": "0.06300000",
+    "f": 4520881302,
+    "l": 4520881302,
+    "T": 1795029175815,
+    "m": true,
+    "M": true
+   }
+  }
+ ],
+ "coinbase": {
+  "l2_data:snapshot": {
+   "channel": "l2_data",
+   "timestamp": "2026-11-18T19:13:06.400782747Z",
+   "sequence_num": 0,
+   "events": [
+    {
+     "type": "snapshot",
+     "product_id": "ETH-USD",
+     "updates": [
+      {
+       "side": "bid",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1758.9",
+       "new_quantity": "0.35903"
+      },
+      {
+       "side": "bid",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1758.85",
+       "new_quantity": "3.56428137"
+      },
+      {
+       "side": "bid",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1758.84",
+       "new_quantity": "5.11699572"
+      },
+      {
+       "side": "bid",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1758.8",
+       "new_quantity": "0.85332484"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1759.15",
+       "new_quantity": "0.85332484"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1759.19",
+       "new_quantity": "12.09142642"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1759.2",
+       "new_quantity": "10"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.227597Z",
+       "price_level": "1759.32",
+       "new_quantity": "0.85332484"
+      }
+     ]
+    }
+   ]
+  },
+  "l2_data:update": {
+   "channel": "l2_data",
+   "timestamp": "2026-11-18T19:13:06.417078097Z",
+   "sequence_num": 1,
+   "events": [
+    {
+     "type": "update",
+     "product_id": "ETH-USD",
+     "updates": [
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.231464Z",
+       "price_level": "1759.18",
+       "new_quantity": "9.62449157"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.231464Z",
+       "price_level": "1759.19",
+       "new_quantity": "6.12142642"
+      },
+      {
+       "side": "offer",
+       "event_time": "2026-11-18T19:13:06.231464Z",
+       "price_level": "1759.43",
+       "new_quantity": "4.78820446"
+      }
+     ]
+    }
+   ]
+  },
+  "subscriptions": {
+   "channel": "subscriptions",
+   "timestamp": "2026-11-18T19:13:06.418183622Z",
+   "sequence_num": 2,
+   "events": [
+    {
+     "subscriptions": {
+      "level2": [
+       "ETH-USD"
+      ]
+     }
+    }
+   ]
+  },
+  "market_trades:snapshot": {
+   "channel": "market_trades",
+   "timestamp": "2026-11-18T19:13:06.41837884Z",
+   "sequence_num": 3,
+   "events": [
+    {
+     "type": "snapshot",
+     "trades": [
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380486",
+       "price": "1759.02",
+       "size": "0.79525",
+       "time": "2026-11-18T19:13:05.918529Z",
+       "side": "SELL"
+      },
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380485",
+       "price": "1758.96",
+       "size": "0.792",
+       "time": "2026-11-18T19:13:05.832665Z",
+       "side": "BUY"
+      },
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380484",
+       "price": "1758.97",
+       "size": "0.00003411",
+       "time": "2026-11-18T19:13:05.832665Z",
+       "side": "BUY"
+      },
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380483",
+       "price": "1758.97",
+       "size": "0.00002842",
+       "time": "2026-11-18T19:13:05.832665Z",
+       "side": "BUY"
+      }
+     ]
+    }
+   ]
+  },
+  "heartbeats": {
+   "channel": "heartbeats",
+   "timestamp": "2026-11-18T19:13:06.662995134Z",
+   "sequence_num": 13,
+   "events": [
+    {
+     "current_time": "2026-11-18 19:13:06.659692151 +0000 UTC m=+11562.299930963",
+     "heartbeat_counter": 11562
+    }
+   ]
+  },
+  "market_trades:update": {
+   "channel": "market_trades",
+   "timestamp": "2026-11-18T19:13:07.067720574Z",
+   "sequence_num": 22,
+   "events": [
+    {
+     "type": "update",
+     "trades": [
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380488",
+       "price": "1759.15",
+       "size": "0.12457616",
+       "time": "2026-11-18T19:13:06.978795Z",
+       "side": "SELL"
+      },
+      {
+       "product_id": "ETH-USD",
+       "trade_id": "856380487",
+       "price": "1759.13",
+       "size": "0.792",
+       "time": "2026-11-18T19:13:06.978795Z",
+       "side": "SELL"
+      }
+     ]
+    }
+   ]
+  },
+  "exchange_level2_error": {
+   "type": "error",
+   "message": "Failed to subscribe",
+   "reason": "level2, level3, and full channels now require authentication. https://docs.cloud.coinbase.com/exchange/docs/websocket-auth"
+  }
+ }
+}

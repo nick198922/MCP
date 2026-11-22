@@ -159,6 +159,49 @@ async def test_positions_risk_runs_default_scenarios(state, tmp_path):
         await rt.aclose()
 
 
+async def test_positions_risk_default_vol_scenarios_are_five_vol_points(state, tmp_path):
+    # vega is USD per 1 vol point (analytics/options.py divides by 100), so the ±5 vol-point defaults must give
+    # PnL = vega * 5; they used to be ±0.05 and gave vega * 0.05 (item 387).
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        await _call(srv, "positions_add", instrument="BTC-30OCT26-82000-C", kind="option", side="long", size=2.0, mark=83000.0, vega=120.0)
+        risk = (await _call(srv, "positions_risk"))["data"]
+        vol = {s["d_vol_points"]: s["pnl_usd"] for s in risk["scenarios"] if s["d_spot_pct"] == 0.0}
+        assert vol == {5.0: pytest.approx(2 * 120.0 * 5), -5.0: pytest.approx(-2 * 120.0 * 5)}
+        crash = next(s for s in risk["scenarios"] if s["d_spot_pct"] == -0.10 and s["d_vol_points"] != 0.0)
+        assert crash["d_vol_points"] == 5.0 and crash["pnl_usd"] == pytest.approx(2 * 120.0 * 5)  # no delta / gamma stored
+    finally:
+        await rt.aclose()
+
+
+async def test_positions_risk_user_scenario_uses_vol_points_as_given(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        await _call(
+            srv,
+            "positions_add",
+            instrument="BTC-30OCT26-82000-C",
+            kind="option",
+            side="short",
+            size=3.0,
+            mark=83000.0,
+            delta=0.5,
+            vega=100.0,
+            theta=-40.0,
+        )
+        scen = [{"d_spot_pct": 0.02, "d_vol_points": -2.5, "days": 1.0}]
+        risk = (await _call(srv, "positions_risk", scenarios=scen, reference_spot=80000.0))["data"]
+        assert len(risk["scenarios"]) == 1
+        s = risk["scenarios"][0]
+        assert s["d_vol_points"] == -2.5 and s["days"] == 1.0
+        # short 3: -3 * (0.5 * 1600 + 100 * -2.5 + -40 * 1) = -3 * (800 - 250 - 40) = -1530
+        assert s["pnl_usd"] == pytest.approx(-3 * (0.5 * 0.02 * 80000.0 + 100.0 * -2.5 - 40.0 * 1.0))
+    finally:
+        await rt.aclose()
+
+
 async def test_positions_risk_no_open_positions(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)

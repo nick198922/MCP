@@ -19,6 +19,8 @@ from tradedesk.server import build_server
 FIX = Path(__file__).parent / "fixtures"
 SHIB_BODY = json.loads((FIX / "goplus_token_security_shib_2026-10-23.json").read_text())["response"]
 EMPTY_BODY = json.loads((FIX / "goplus_token_security_empty_2026-10-23.json").read_text())["response"]
+HP_LIVE = json.loads((FIX / "honeypot_is_2026-11-19.json").read_text())["responses"]  # honeypot.is, live 2026-11-19
+HP_SHIB = HP_LIVE["shib_ethereum"]
 SHIB = "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"
 SHIB_TOKEN = SHIB_BODY["result"][SHIB]
 NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -404,7 +406,8 @@ def test_address_and_chain_validation():
     assert cr.resolve_chain("ETH") == ("ethereum", "1")
     assert cr.resolve_chain("56") == ("bsc", "56")
     assert cr.resolve_chain("base") == ("base", "8453")
-    assert cr.resolve_chain("solana") is None and cr.resolve_chain(None) is None
+    assert cr.resolve_chain("tron") is None and cr.resolve_chain(None) is None
+    assert cr.resolve_chain("SOL") == ("solana", "solana")  # Solana: see test_contract_risk_solana.py
 
 
 # ---------- MCP tool ----------
@@ -419,7 +422,7 @@ async def call(server, name, **args):
     return data["result"] if set(data) == {"result"} else data
 
 
-def make_server(goplus_handler=None, dex_handler=None, seen=None):
+def make_server(goplus_handler=None, dex_handler=None, seen=None, hp_handler=None):
     def default_goplus(req):
         if seen is not None:
             seen.append(req)
@@ -428,6 +431,7 @@ def make_server(goplus_handler=None, dex_handler=None, seen=None):
     tr = {
         "goplus": httpx.MockTransport(goplus_handler or default_goplus),
         "dexscreener": httpx.MockTransport(dex_handler or (lambda req: httpx.Response(200, json=DEX_PAIRS))),
+        "honeypot_is": httpx.MockTransport(hp_handler or (lambda req: httpx.Response(200, json=copy.deepcopy(HP_SHIB)))),
     }
     rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr)
     rt.now = lambda: NOW
@@ -446,7 +450,7 @@ async def test_contract_risk_happy():
     c = by_name(d)
     assert c["liquidity_to_mcap"]["value"] == pytest.approx(0.0008)  # bsc pair ignored
     assert d["info"]["liquidity_usd"] == 4_000_000.0
-    assert {e["provider"] for e in env["evidence"]} == {"goplus", "dexscreener"}
+    assert {e["provider"] for e in env["evidence"]} == {"goplus", "dexscreener", "honeypot_is"}
     assert any("Heuristic" in w for w in env["warnings"])
     assert any("unknown is not pass" in w for w in env["warnings"])
 
@@ -481,6 +485,36 @@ async def test_contract_risk_empty_result_and_error_codes():
         make_server(goplus_handler=lambda req: httpx.Response(200, json=partial)), "contract_risk", chain="ethereum", address=SHIB
     )
     assert env["ok"] is True and any("partial" in w for w in env["warnings"])
+
+
+@pytest.mark.parametrize(
+    ("dex_handler", "expect"),
+    [
+        # The real PEPE/BONK cases (live 2026-11-20): a mistyped address has no pool on DexScreener either.
+        (lambda req: httpx.Response(200, json={"pairs": []}), "mistyped"),
+        (lambda req: httpx.Response(200, json={"pairs": DEX_PAIRS["pairs"][2:]}), "mistyped"),  # a pool on bsc only
+        (lambda req: httpx.Response(200, json=DEX_PAIRS), "lists 2 pool(s) for it on ethereum"),
+        (lambda req: httpx.Response(503, text="down"), "DexScreener did not answer"),
+    ],
+)
+async def test_contract_risk_no_goplus_data_explains_why(dex_handler, expect):
+    srv = make_server(goplus_handler=lambda req: httpx.Response(200, json=EMPTY_BODY), dex_handler=dex_handler)
+    env = await call(srv, "contract_risk", chain="ethereum", address=SHIB)
+    assert env["ok"] is False and env["data"] is None
+    assert any(m["provider"] == "goplus" and m["reason"] == "data_unavailable" for m in env["missing"])
+    hints = [w for w in env["warnings"] if "GoPlus has no data" in w]
+    assert len(hints) == 1 and expect in hints[0]
+    assert ("official source" if expect == "mistyped" else "not a pass") in hints[0]
+    if "lists 2 pool" in expect:
+        assert "honeypot.is" in hints[0]
+
+
+async def test_contract_risk_goplus_outage_gets_no_address_hint():
+    # A provider failure (HTTP 503) is not "GoPlus has no data": no hint about a mistyped address.
+    env = await call(
+        make_server(goplus_handler=lambda req: httpx.Response(503, text="down")), "contract_risk", chain="ethereum", address=SHIB
+    )
+    assert env["ok"] is False and not any("GoPlus has no data" in w for w in env["warnings"])
 
 
 async def test_goplus_error_codes_are_not_cached_and_hit_health():
@@ -544,6 +578,10 @@ async def test_contract_risk_invalid_arguments_make_no_request():
     srv = make_server(seen=seen)
     env = await call(srv, "contract_risk", chain="ethereum", address="0xnot-an-address")
     assert env["ok"] is False and env["missing"][0]["reason"] == "invalid_argument"
-    env = await call(srv, "contract_risk", chain="solana", address=SHIB)
+    env = await call(srv, "contract_risk", chain="tron", address=SHIB)
     assert env["ok"] is False and env["missing"][0]["field"] == "chain"
+    assert "solana" in env["missing"][0]["detail"]
+    # An EVM address is not a Solana mint (base58 has no '0' or 'x').
+    env = await call(srv, "contract_risk", chain="solana", address=SHIB)
+    assert env["ok"] is False and env["missing"][0]["field"] == "address"
     assert seen == []

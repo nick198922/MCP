@@ -164,7 +164,7 @@ async def test_positions_list_only_normalised_rows_is_ok(rt):
     async with _session(rt) as call:
         env = await call("positions_list")
         assert env["ok"] is True and sorted((p["id"], p["tags"]) for p in env["data"]["positions"]) == [(1, []), (2, ["hedge"])]
-        env = await call("positions_list", tag="hedge")  # the LIKE filter matches the bare string; shown as a list
+        env = await call("positions_list", tag="hedge")  # the tag filter reads a bare string as one tag; shown as a list
         assert env["ok"] is True and [(p["id"], p["tags"]) for p in env["data"]["positions"]] == [(2, ["hedge"])]
 
 

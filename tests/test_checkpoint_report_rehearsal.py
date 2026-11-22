@@ -195,7 +195,7 @@ def test_report_on_the_review_date_is_whole(tmp_path, monkeypatch, capsys, date,
     # every forward card of the repository (the loader itself: test_script_lists_every_forward_card_of_the_repo)
     cards = script.load_idea_cards()
     assert cards and all(f"- {c['slug']}: планів" in text for c in cards)
-    assert "- hl-oi-cap-state-forward: планів 1, «входити» 1, оцінено 0" in text
+    assert "- hl-oi-cap-state-forward:" not in text  # the card was rejected on 20.11 (gates G1/G2), it is no longer a forward
     # item 312: the cards' own journals; the seeded Polymarket snapshots end on 22.11, so by the review they are silent
     assert "- polymarket-vs-options-forward: журнал pm_gap_snapshot: годинних знімків від T0 2, з 2026-11-21 12:00" in text
     assert "polymarket-vs-options-forward (останній запис pm_gap_snapshot 2026-11-22 12:00 UTC)" in text
@@ -246,7 +246,7 @@ def test_report_on_23_november_shows_immature_forwards_as_early(tmp_path, monkey
     cards = script.load_idea_cards()
     assert cards and all(f"- {c['slug']}: планів" in text for c in cards)
     # date-dependent branches: the plan of 25.11, the state file of 29.11 are still in the future; Fridays 06, 13 and 20.11 have passed
-    assert "- hl-oi-cap-state-forward: планів 0, «входити» 0, оцінено 0" in text
+    assert "- hl-oi-cap-state-forward:" not in text  # rejected on 20.11, no longer a forward
     assert "файл стану новіший за дату звіту: його рішення не показано" in text
     assert "- п'ятниць з 8, що минули: 3" in text and "- валідних входів BTC: 2" in text
     assert "рано: рішення після 2026-12-31 10:00 UTC" in text

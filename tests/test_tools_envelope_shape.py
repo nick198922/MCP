@@ -3,7 +3,8 @@
 Complements tests/test_tools_never_raise.py and tests/test_tools_provider_outage.py, which check that failing providers
 still give an envelope. Here every registered tool is called through a real MCP client against the happy-path fakes of
 tests/conftest.py (Deribit / Hyperliquid / Binance / Bybit / Polymarket / CoinGecko / ... transports and FakeEx), plus
-Pendle, DefiLlama, GoPlus, DexScreener, Binance daily klines and Coinalyze (a test-only dummy key) served from the saved
+Pendle, DefiLlama, GoPlus, DexScreener, mempool.space, Etherscan, Binance daily klines and Coinalyze (Etherscan and Coinalyze with
+test-only dummy keys) served from the saved
 samples in tests/fixtures, the Polymarket events and books of tests/test_pm_gap.py, and a store seeded with funding /
 ATM-term / OHLCV history, an event, a position and a paper carry pair; providers without a fake answer 404, and nothing
 reaches the real network. Arguments and SKIP come from tests/test_tools_never_raise.py. For every answer with ok=true it
@@ -30,12 +31,17 @@ import httpx
 from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
+from test_bitcoin import ADDR as BTC_ADDR
+from test_bitcoin import serve as mempool_handler
 from test_coinalyze import SAMPLE as LIQ_SAMPLE
 from test_coinalyze_history import SAMPLES as COINALYZE_SAMPLES
 from test_contract_risk import DEX_PAIRS as SHIB_DEX_PAIRS
-from test_contract_risk import SHIB, SHIB_BODY
+from test_contract_risk import HP_SHIB, SHIB, SHIB_BODY
 from test_cycle_regime import FX as CYCLE_FX
 from test_cycle_regime import serve_daily
+from test_evm import HOLDER as EVM_HOLDER
+from test_evm import USDT as EVM_TOKEN
+from test_evm import serve as etherscan_handler
 from test_onchain import DEX as FART_DEX
 from test_onchain import FART, LLAMA
 from test_pendle import PENDLE, SUSDE_ETH
@@ -46,32 +52,45 @@ from test_stablecoin_supply import default_handler as stablecoins_handler
 from test_tools_never_raise import ARGS as NEVER_RAISE_ARGS
 from test_tools_never_raise import SKIP
 from test_tools_provider_outage import as_envelope
+from test_yields import POOL as YIELD_POOL
+from test_yields import serve as yields_handler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
 EXPIRY = "2026-11-27T08:00:00+00:00"  # a Deribit expiry of the conftest option book, seeded into atm_term below
 COINALYZE_TEST_KEY = "test-dummy-key"  # not a real key: the Coinalyze transport below is a fake
+ETHERSCAN_TEST_KEY = "test-dummy-etherscan-key"  # likewise for the Etherscan transport
 
 # events_add needs a time (ts_ms or date) to succeed; the outage tests only need it to reach the store. The rest point
 # the on-chain / Pendle / history / Polymarket tools at what the saved samples and the seeded store hold (the outage tests
-# only need any valid argument). The seeded store has carry pair 1, journal row 1 (written by carry_paper_close) and
-# position 1, so journal_close and positions_close take the rows journal_add / positions_add create (id 2).
+# only need any valid argument). The seeded store has position 1, so positions_close takes the row positions_add creates
+# (id 2); journal_close takes journal row 1, which journal_add creates (it was row 2 while carry_paper_close, removed
+# 2026-11-18, closed the seeded carry pair into the journal first).
 ARGS: dict[str, dict] = {
     **NEVER_RAISE_ARGS,
     "events_add": {**NEVER_RAISE_ARGS["events_add"], "date": "2026-11-05"},
+    "btc_address": {"address": BTC_ADDR},
     "chain_metrics": {"chain": "Solana"},
     "contract_risk": {"chain": "ethereum", "address": SHIB},
     "dex_pairs": {"addresses": [FART]},
+    # the full answer (per-venue `venues`, per-fetch evidence), a superset of the compact default: the non-finite /
+    # wrong-type tests that reuse ARGS (_clean_and_broken) then see every number the scan computes
+    "funding_spread_scan": {"include_details": True},
     "iv_rank": {"expiry": EXPIRY},
-    "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 2},
+    "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 1},
+    "onchain_address_txs": {"chain": "ethereum", "address": EVM_HOLDER},
+    "onchain_balance": {"chain": "ethereum", "address": EVM_HOLDER},
+    "onchain_contract_source": {"chain": "ethereum", "address": EVM_TOKEN},
+    "onchain_token_info": {"chain": "ethereum", "address": EVM_TOKEN},
     "pendle_market": {"market": SUSDE_ETH},
     "pendle_yield_curve": {"asset": "sUSDe"},
     "polymarket_options_gap": {"max_days": 30, "min_net_edge": -1},
     "positions_close": {"id": 2},
-    "range_setup": {**NEVER_RAISE_ARGS["range_setup"], "source": "store"},
     "skew_percentile": {"expiry": EXPIRY},
+    "yield_pool_history": {"pool": YIELD_POOL},
 }
 
 # Tools that answered ok=false on the conftest fakes (item 173) and answer ok=true here thanks to the fakes and the
@@ -88,6 +107,20 @@ EXTRA_OK: set[str] = {
     "contract_risk",
     "dex_pairs",
     "cycle_regime",
+    # mempool.space, real sample 2026-11-19
+    "btc_fees",
+    "btc_mempool",
+    "btc_latest_block",
+    "btc_difficulty_hashrate",
+    "btc_address",
+    # DefiLlama yields, synthetic sample 2026-11-19 of the documented shape (not live)
+    "yield_pools",
+    "yield_pool_history",
+    # Etherscan V2 with a test-only dummy key, documentation-derived sample 2026-11-19 (not live)
+    "onchain_balance",
+    "onchain_address_txs",
+    "onchain_token_info",
+    "onchain_contract_source",
     # the seeded store
     "funding_zscore",
     "iv_rank",
@@ -97,15 +130,10 @@ EXTRA_OK: set[str] = {
     "skew_percentile",
     # item 181: Coinalyze with a test-only dummy key (samples 2026-10-17 / 2026-10-18), Gamma events + CLOB books of
     # tests/test_pm_gap.py, and the store seeded with an event, a position, a paper carry pair and 4h bars with a sweep
-    "coinalyze_funding_history",
-    "coinalyze_long_short_history",
-    "coinalyze_oi_history",
     "liquidations_history",
     "polymarket_options_gap",
     "event_study",
     "positions_risk",
-    "carry_paper_close",
-    "range_setup",
 }
 
 ENVELOPE_TYPES: dict[str, type] = {"ok": bool, "evidence": list, "missing": list, "warnings": list, "as_of": str}
@@ -113,7 +141,6 @@ ENVELOPE_TYPES: dict[str, type] = {"ok": bool, "evidence": list, "missing": list
 # Tools that answer ok=true without any provider call, so an empty `evidence` is right for them.
 NO_NETWORK: set[str] = {
     # pure calculators
-    "fib_retracement",
     "odds_devig",
     "option_calc",
     "strategy_cash_and_carry",
@@ -124,9 +151,9 @@ NO_NETWORK: set[str] = {
     # the local store (SQLite), the bundled event seed and the in-process health registry
     "alerts_recent",
     "assistant_paper_status",
+    "demo_status",
     "events_add",
     "events_list",
-    "events_seed_load",
     "forecast_log_status",
     "journal_add",
     "journal_close",
@@ -143,7 +170,6 @@ NO_NETWORK: set[str] = {
     "rules_add",
     "rules_disable",
     "rules_list",
-    "rules_presets_load",
     "rules_test",
     "system_health",
     # history in the local store (seeded by _seed_store)
@@ -154,7 +180,6 @@ NO_NETWORK: set[str] = {
     "ohlcv_history",
     "positions_risk",
     "range_detect",
-    "range_setup",
     "skew_percentile",
 }
 
@@ -273,8 +298,12 @@ def _extra_fakes(fakes: dict) -> dict:
         "pendle": httpx.MockTransport(_pendle),
         "defillama": httpx.MockTransport(_defillama),
         "defillama:stablecoins": httpx.MockTransport(stablecoins_handler),
+        "defillama:yields": httpx.MockTransport(yields_handler),
         "goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=SHIB_BODY)),
+        "honeypot_is": httpx.MockTransport(lambda req: httpx.Response(200, json=HP_SHIB)),
         "dexscreener": httpx.MockTransport(_dexscreener),
+        "mempool": httpx.MockTransport(mempool_handler),
+        "etherscan": httpx.MockTransport(etherscan_handler),
         "binance_spot": _DailyKlines(fakes["binance_spot"]),
         "binance_futures": _DailyKlines(fakes["binance_futures"]),
         "coinalyze": httpx.MockTransport(_coinalyze),
@@ -299,7 +328,8 @@ async def _seed_store(rt: Runtime) -> None:
     """History the store-backed tools read (as tests/test_history.py and tests/test_regime.py seed it): hourly funding
     and ATM-term points before NOW, and 200 hourly BTC bars that swing inside a 4 % band. Item 181 adds an FOMC event
     inside those bars (event_study), an open option position with greeks (positions_risk), an open paper carry pair
-    (carry_paper_close, as tests/test_carry_paper.py inserts it) and 4h BTC bars with a sweep (range_setup)."""
+    (read by paper_carry_status(strategy='manual'); carry_paper_close, which closed it, was removed 2026-11-18) and 4h BTC
+    bars with a sweep (range_detect, view='setup')."""
     await rt.store.init()
     now_ts = int(NOW.timestamp())
     await rt.store.event_insert(ts=now_ts - 100 * 3600, kind="fomc", label="FOMC (envelope-shape seed)", impact="high")
@@ -336,17 +366,20 @@ async def _seed_store(rt: Runtime) -> None:
 
 def _runtime(tmp_path, calls: list[str]) -> Runtime:
     fakes = _extra_fakes(make_transports(State()))
-    rt = Runtime(
-        Settings(
-            http_retries=0,
-            http_retry_backoff=0.0,
-            cache_scale=0.0,
-            db_path=str(tmp_path / "envelope_shape.sqlite"),
-            coinalyze_api_key=COINALYZE_TEST_KEY,
-        ),
-        transports=_Transports({name: _CountingTransport(t, calls) for name, t in fakes.items()}),
-        exchange_factory=lambda ex_id: _CountingEx(ex_id, calls),
-    )
+    # Production rate limits (Deribit 8 req/s, CoinGecko, Hyperliquid) only paced the fakes in real time: ~1.3 s a sweep.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(
+            Settings(
+                http_retries=0,
+                http_retry_backoff=0.0,
+                cache_scale=0.0,
+                db_path=str(tmp_path / "envelope_shape.sqlite"),
+                coinalyze_api_key=COINALYZE_TEST_KEY,
+                etherscan_api_key=ETHERSCAN_TEST_KEY,
+            ),
+            transports=_Transports({name: _CountingTransport(t, calls) for name, t in fakes.items()}),
+            exchange_factory=lambda ex_id: _CountingEx(ex_id, calls),
+        )
     rt.now = lambda: NOW
     return rt
 
@@ -427,12 +460,49 @@ async def test_successful_answers_have_the_envelope_shape(tmp_path):
     assert report["listed"] >= len(EXPECTED_TOOLS)
     assert report["called"] == report["listed"] - len(SKIP)
     assert EXTRA_OK.isdisjoint(report["not_ok"]), f"no longer ok=true on the fakes: {sorted(EXTRA_OK & set(report['not_ok']))}"
-    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged.
-    assert report["ok"] >= 100, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
+    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged,
+    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18), 97 since the range_* merge,
+    # 91 of 91 since six tools were removed (2026-11-18, docs/changes/2026-11-18-mcp-remove-six.md).
+    # relative to the tool count, so removing a tool does not break the guard
+    assert report["ok"] >= len(EXPECTED_TOOLS) - 2, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
     new = {k: v for k, v in report["problems"].items() if k not in KNOWN}
     assert new == {}, "fix these tools (Builder.add / guard / warn), or list them in KNOWN and docs/BACKLOG.md"
     assert set(KNOWN) - set(report["problems"]) == set(), "these tools are fixed: remove them from KNOWN"
     assert report["no_network"] == NO_NETWORK, "update NO_NETWORK: the tools that answer ok=true without a provider call"
+
+
+async def test_coinalyze_source_answers_have_the_envelope_shape(tmp_path):
+    """source='coinalyze' of the three perps_* history tools (the former coinalyze_* tools in EXTRA_OK, merged
+    2026-11-18): the sweep above calls the default source only."""
+    calls: list[str] = []
+    srv, _ = build_server(_runtime(tmp_path, calls))
+    async with Client(srv) as c:
+        for name in ("perps_funding_history", "perps_long_short_ratio", "perps_oi_history"):
+            calls.clear()
+            env = as_envelope(await c.call_tool(name, {"source": "coinalyze", "base": "BTC"}))
+            assert env["ok"] is True, (name, env)
+            assert calls and all("coinalyze" in x for x in calls), (name, calls)
+            assert shape_problems(env, made_calls=True) == [], name
+
+
+async def test_range_detect_setup_and_scan_views_have_the_envelope_shape(tmp_path):
+    """range_detect's view='setup' (store, the 4h sweep bars of _seed_store) and view='scan' (live FakeEx), the former
+    range_setup (in EXTRA_OK / NO_NETWORK) and range_setup_scan, merged 2026-11-18: the sweep above calls view='ranges'."""
+    calls: list[str] = []
+    rt = _runtime(tmp_path, calls)
+    await _seed_store(rt)
+    srv, _ = build_server(rt)
+    base = {"venue": "binanceusdm"}
+    async with Client(srv) as c:
+        for args, network in (
+            ({"symbol": "BTC/USDT:USDT", "view": "setup", "source": "store"}, False),
+            ({"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"], "view": "scan"}, True),
+        ):
+            calls.clear()
+            env = as_envelope(await c.call_tool("range_detect", {**base, **args}))
+            assert env["ok"] is True, (args, env)
+            assert bool(calls) is network, (args, calls)
+            assert shape_problems(env, made_calls=network) == [], args
 
 
 async def test_the_check_catches_a_tool_without_evidence(tmp_path):

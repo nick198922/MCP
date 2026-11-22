@@ -8,10 +8,10 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 | DOUBLETOP | Рішення |
 |---|---|
-| `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими) |
+| `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими). З 19.11 типово — стислий звіт без втрат, крім назв інструментів: пропущено лише значення, що випливають з інших (нулі / null без збоїв, провайдери без жодного виклику — іменами в `health.unknown`, назви інструментів — числом `tool_count`); `collector[].stream` без змін; повний звіт — `include_details=true` або `probe=true` |
 | `whoami` | ⏭ автентифікація буде нашою (Фаза 6) |
 | `chain_trend_snapshot` (панелі TVL, DEX-обсяг, fees), `pair_discovery` | ✅ `chain_metrics` (DefiLlama: TVL, DEX-обсяг і fees за 24 год зі змінами 7д/30д та week-over-week, десяткові частки) і `dex_pairs` (DexScreener: числа числами, symbol без пробілів, сортування за ліквідністю, прапорець `likely_fake` для «SOL»-підробок). `trending_tokens` не відтворюємо: у DOUBLETOP це фейкові токени ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
-| `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🟡 `risk_hints_token` ≈ `contract_risk` (23.10: GoPlus token_security для 7 EVM-мереж + ліквідність / кап DexScreener; вердикти pass / fail / unknown за порогами курсу; Solana, honeypot.is і Etherscan — далі). Решта 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`); GoPlus 23.10 для PEPE теж дав порожній `result` |
+| `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🟡 `risk_hints_token` ≈ `contract_risk` (23.10: GoPlus token_security для 7 EVM-мереж + ліквідність / кап DexScreener; вердикти pass / fail / unknown за порогами курсу; 19.11 друге джерело honeypot.is, розбіжність = гірший вердикт; 19.11 Solana — GoPlus `solana/token_security`, 14 перевірок без симуляції продажу: `honeypot` завжди unknown, тож `overall` не буває pass; Etherscan — далі). Решта 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`); GoPlus 23.10 для PEPE теж дав порожній `result` |
 
 ## Біржі та деривативи
 
@@ -20,16 +20,16 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | DOUBLETOP | Наш аналог |
 |---|---|
 | ccxt `get-ticker` | ✅ `market_tickers` з одним символом (рядком або списком з одного; `fetch_ticker`, працює й на біржах без batch). Колишній `market_ticker`, злито 17.11 |
-| ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола) |
+| ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола, максимум / мінімум вікна). З 19.11 типово — зведення по всіх свічках і останні 10 свічок; усі свічки — `include_series=true` (`get-ohlcv` у DOUBLETOP віддає весь ряд одразу) |
 | — (власне, курс DoubleTop) | ✅ `chart_markup` — розмітка графіка: EMA-групи, VWAP, профіль об'єму, структура курсу (HL/HH, BOS/CHoCH/sweep) і внутрішня, ліквідність, FVG, OB/брейкери, premium/discount/OTE, азійська сесія; працює й для форекс-перпів BingX |
 | ccxt `get-orderbook` | ✅ `market_orderbook` (+ slippage під ваш розмір) |
-| ccxt `batch-get-tickers` | ✅ `market_tickers` з кількома символами або без них (сортування за quote volume, top-movers за 24h %) |
+| ccxt `batch-get-tickers` | ✅ `market_tickers` з кількома символами або без них (сортування за quote volume, top-movers за 24h %). З 19.11 типово — усі повернені символи в `symbols` і повні рядки top 10 за обсягом (≈ 3.7 тис. символів замість ≈ 11 тис. при `limit=50`); усі повні рядки — `include_details=true` |
 | ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |
 | ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
-| coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare`; довга історія Binance — ✅ `coinalyze_funding_history` (Coinalyze, `.A` = Binance; відсотки → десятковий дріб, звірено з виплатами Binance 2026-10-18 на зразку DoubleTop; живий виклик з нашим ключем ще не звірено) |
-| coinalyze `open_interest_history` | ✅ `perps_oi_history` (з бірж, коротка історія); довга історія Binance — ✅ `coinalyze_oi_history` (Coinalyze, `.A` = Binance; `exchanges` — сума Binance `.A` + Bybit `.6`; USD (монети × close інтервалу) або монети; мітка — початок інтервалу; живий виклик ще не звірено) |
+| coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare`; довга історія Binance — ✅ `perps_funding_history(source="coinalyze")` (колишній `coinalyze_funding_history`, злито 18.11; Coinalyze, `.A` = Binance; відсотки → десятковий дріб, звірено з виплатами Binance 2026-10-18 на зразку DoubleTop; живий виклик з нашим ключем ще не звірено) |
+| coinalyze `open_interest_history` | ✅ `perps_oi_history` (з бірж, коротка історія); довга історія Binance — ✅ `perps_oi_history(source="coinalyze")` (колишній `coinalyze_oi_history`, злито 18.11; Coinalyze, `.A` = Binance; `exchanges` — сума Binance `.A` + Bybit `.6`; USD (монети × close інтервалу) або монети; мітка — початок інтервалу; живий виклик ще не звірено) |
 | coinalyze `liquidation_history` | ✅ живі — `liquidations_summary` (WebSocket-збирач); історія — ✅ `liquidations_history` (Coinalyze, Binance (суфікс `.A` = Binance, не агрегат; звірка 2026-10-18) або сума Binance `.A` + Bybit `.6` через `exchanges` (звірка `.6` 2026-10-25); USD = монети × close дня, daily/hourly; потрібен `COINALYZE_API_KEY`; живу відповідь ще не звірено; у DoubleTop денна історія є щонайменше з 2024-01) |
-| coinalyze `long_short_ratio_history` | ✅ `perps_long_short_ratio` (Binance/Bybit); довга історія Binance — ✅ `coinalyze_long_short_history` (Coinalyze, `.A` = Binance, рахунки, частки 0–1; живий виклик ще не звірено) |
+| coinalyze `long_short_ratio_history` | ✅ `perps_long_short_ratio` (Binance/Bybit); довга історія Binance — ✅ `perps_long_short_ratio(source="coinalyze")` (колишній `coinalyze_long_short_history`, злито 18.11; Coinalyze, `.A` = Binance, рахунки, частки 0–1; живий виклик ще не звірено) |
 | hyperliquid `meta_and_asset_ctxs` | ✅ `hyperliquid_overview` (у DOUBLETOP ця відповідь обрізається й контексти з funding/OI не повертаються) |
 | hyperliquid `l2_book`, `candle_snapshot`, `funding_history`, `recent_trades` | ✅ `hyperliquid_book`, `hyperliquid_candles`, `hyperliquid_funding_history`, `hyperliquid_trades` |
 
@@ -43,17 +43,17 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | coinstats `wallet_balances` | 🔜 Фаза 5 |
 | fear_greed `get_fear_greed_index` | ✅ `sentiment_fear_greed` — крипто-індекс alternative.me, 1..365 днів, latest + zone, mean 7d/30d, min/max, change_7d/30d, zone_share. Деннa частотa; шо DOUBLETOP відважив — індекс фондового ринку США, у нас виключно крипто |
 | — (у DOUBLETOP макрокалендаря нема) | ✅ `macro_calendar` — ForexFactory, події з високим впливом (USD + ECB/BoJ/BoE), час UTC і Київ, прогноз/попереднє; дати поза вікном двох тижнів — із сіду (наближені) |
-| graph_polymarket (7) | ✅ `polymarket_search`, `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
+| graph_polymarket (7) | ✅ `polymarket_search` (з 19.11 типово — перші 10 ринків без `slug` і `token_id`; повні рядки — `include_details=true`), `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
 
 ## Ончейн, DeFi (Фаза 5, низький пріоритет)
 
 | DOUBLETOP | Рішення |
 |---|---|
-| defillama (7) | ✅ `chain_metrics` (TVL, DEX-обсяг, fees мережі); 🟡 `stablecoin_supply` (05.11: `stablecoins.llama.fi`, сума всіх стейблкоїнів і USDT / USDC у USD зі змінами 7д / 30д, десяткові частки; описовий, не сигнал; тест на синтетичному зразку документованої форми, форму й поля звірено живцем 05.11); потоки стейблкоїнів по мережах і пули — Фаза 5 |
+| defillama (7) | ✅ `chain_metrics` (TVL, DEX-обсяг, fees мережі); 🟡 `stablecoin_supply` (05.11: `stablecoins.llama.fi`, сума всіх стейблкоїнів і USDT / USDC у USD зі змінами 7д / 30д, десяткові частки; описовий, не сигнал; тест на синтетичному зразку документованої форми, форму й поля звірено живцем 05.11); 🟡 19.11: `yield_pools` (≈ `get_pools`: фільтри chain / project / min_tvl_usd / stablecoin_only, сортування за TVL, APY чи «найновіші», APY / apy_base / apy_reward десятковими частками) і `yield_pool_history` (≈ `get_chart__by_pool`: денний TVL і APY, зміни TVL 7д / 30д, середній APY 7д / 30д); тест на синтетичному зразку документованої форми, форму й поля звірено живцем 19.11 (обидва інструменти відповіли з сервера); ризик токенів пулу — `contract_risk`, окремого інструмента ризику не робили. 🔜 потоки стейблкоїнів по мережах; `get_protocols`, `get_tvl__by_protocol`, `get_v2_chains` — P3 |
 | dexscreener (2) | ✅ `dex_pairs` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
-| etherscan (8) | 🔜 Etherscan V2 (безкоштовний ключ). `getTokenInfo` і `tokenTopHolders` — лише платний Pro |
+| etherscan (8) | 🟡 19.11, Etherscan V2 (безкоштовний ключ), мережі ethereum, bsc, polygon, arbitrum, optimism, base, avalanche через параметр `chain`: `onchain_balance` (≈ `balanceNative` і `balanceERC20` в одному: без `token` — нативна монета, з `token` — ERC-20; сирі одиниці точним рядком + число з decimals), `onchain_address_txs` (≈ `normalTxsByAddress` і `erc20TxsByAddress`: `kind="normal"` / `"erc20"`, сторінки по ≤ 100 рядків, ≤ 10 000 на перелік), `onchain_token_info` (≈ `getTokenInfo` частково: назва, символ, decimals, total supply через `eth_call`; без ціни й холдерів — це Pro), `onchain_contract_source` (≈ `getContractSourceCode`: зведення verified / компілятор / proxy / файли, сам код лише уривком за запитом). Зразок — з документації, не живий; живу перевірку через MCP служби ще не зроблено. 🔜 `transaction` (`proxy/eth_getTransactionByHash`). ❌ `tokenTopHolders` — лише платний Pro (концентрацію топ-10 дає `contract_risk`) |
 | helius (5) | 🔜 безкоштовний тариф із ключем |
-| mempool (5) | 🔜 публічний API mempool.space |
+| mempool (5) | ✅ 19.11: `btc_fees` (≈ `fees_recommended`, sat/vB), `btc_mempool` (≈ `mempool_summary`, плюс смуги комісій і «блоків черги»), `btc_latest_block` (≈ `block_latest`, плюс висота вершини окремим запитом), `btc_difficulty_hashrate` (≈ `difficulty_hashrate`, EH/s і денні середні за 3 дні), `btc_address` (≈ `address_overview`, баланс у sats і BTC, підтверджене й мемпул окремо; адреса mainnet перевіряється за контрольною сумою до запиту). Публічний API без ключа, тест на реальному зразку 19.11; форму відповіді DOUBLETOP не звіряли (нема фікстури) |
 | pendle (6) | 🟡 `pendle_fixed_yields` (≈ `scan_fixed_yields`: фільтри за ліквідністю, APY, днями, stable, мережею) і `pendle_market` (один ринок + APY за ціною PT). 🟡 `pendle_yield_curve` (≈ `yield_curve`: точки за експірацією без інтерполяції, прапорець thin; паритет із DT не звірено — нема фікстури). 🟡 `pendle_expiry_calendar` (≈ `expiry_calendar`: групи за датою UTC, сумарна ліквідність/TVL; без `wallet`). ≈ `compare_pt_vs_underlying` покривається полем `implied_minus_underlying` у `pendle_fixed_yields`/`pendle_yield_curve`. 🔜 `liquidity_depth` (потрібне котирування свопу, інший ендпоінт). Корисно для funding-carry |
 
 ## Не переносимо
@@ -71,9 +71,9 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 - **Склад DOUBLETOP не змінився:** ті самі 74 назви, що в [каталозі від 10.10](reference/doubletop-catalog.md). Бекендів 17: 16 ok, `blockscout` down; канарка `free-crypto-news` падає з 29.08; 15 з 17 статусів готовності позначені `stale`.
 - **Чим ми в них користувались за 30 днів:** 472 виклики, з них 443 — `coingecko__execute` (вивантаження історії 02.11), 15 — Coinalyze, 4 — Polymarket, 2 — Pendle. Єдина справжня залежність — глибока історія платного CoinGecko.
 - **Корисне для поточних напрямів, чого в нас нема:** історія OI ринку Polymarket (`get_oi_history`, рядок 🔜 вище) і P&L трейдерів Polymarket як інструмент (у нас — лише знімки колектора `trader_snapshot`); ставки Boros у `pendle_briefing` (своп на funding) — для carry. Для опціонних ідей, демо-трейдера й X-трейдерів у DOUBLETOP немає нічого. Кандидати — [`BACKLOG.md`](BACKLOG.md), «З тижневого аудиту 2026-11-14».
-- **Де наш гірший:** ончейн (у них ≈ 25 інструментів, у нас 4 — свідомо, Фаза 5); Coinalyze працює лише всередині служби MCP, і чотири позначки «живий виклик ще не звірено» в таблиці нижче стоять з 18.10, як і звірка чисел шести пар; `market_markets` віддає 19 тис. символів одразу, їхній `get-markets` пагінований.
+- **Де наш гірший:** ончейн (у них ≈ 25 інструментів, у нас 13 після 19.11: 4 + 5 `btc_*` + 4 `onchain_*`); Coinalyze працює лише всередині служби MCP, і чотири позначки «живий виклик ще не звірено» в таблиці нижче стоять з 18.10, як і звірка чисел шести пар; `market_markets` не пагінований, як їхній `get-markets` (з 18.11 типово віддає ≈ 4.3 тис. символів: усі символи й 10 повних рядків; повні рядки — `include_details=true`, ≈ 19 тис.).
 - **Де наш кращий:** конверт з `evidence / missing / warnings`, єдині одиниці, повний `hyperliquid_overview`, нормалізований funding між біржами, опціони, квант-калькулятори, пам'ять, потоки, режим циклу.
-- **Наш сервер:** 104 інструменти (109 до злиттів 15.11: пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
+- **Наш сервер:** 91 інструмент (109 до злиттів і прибирання: 15.11 пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`; 17.11 `market_ticker` → `market_tickers`, `carry_paper_status` → `paper_carry_status`; 18.11 три `coinalyze_*` → `perps_*` з `source="coinalyze"`, `range_setup` / `range_setup_scan` → `range_detect` з `view="setup"` / `"scan"`; 18.11 прибрано шість: `carry_paper_open`, `carry_paper_close`, `fib_retracement`, `strategy_backtest_momentum`, `events_seed_load`, `rules_presets_load`, два останні тепер скрипти в `scripts/`; 19.11 додано п'ять `btc_*` з mempool.space, разом 96; 19.11 ще чотири `onchain_*` з Etherscan V2, разом 100); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
 
 ## Чого в DOUBLETOP не було, а в нас є або буде
 
@@ -83,7 +83,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику; Hyperliquid опційно, kPEPE зіставляється з 1000PEPE за множником), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
-Паперова перевірка carry перп-перп: `carry_paper_open` / `paper_carry_status(strategy="manual")` (колишній `carry_paper_status`) / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
+Паперова перевірка carry перп-перп вручну: `paper_carry_status(strategy="manual")` (колишній `carry_paper_status`) показує пари, відкриті раніше (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`). Інструменти відкриття й закриття `carry_paper_open` / `carry_paper_close` прибрано 18.11: ручний папір замінив рушій колектора (книги A і B). Ордерів немає.
 
 Паперовий журнал рекомендацій асистента: `assistant_paper_open` / `assistant_paper_status` (структура з живого ланцюга Deribit за марками ± 1 вп, розмір за депозитом і ризиком, розрахунок на delivery; таблиця `rec_paper` з міткою `hypothesis`, у `journal` не дзеркалиться). Аналога в DOUBLETOP немає. Ордерів немає.
 
@@ -99,7 +99,7 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Режим циклу (на кшталт денної панелі BTC у каналі QG): `cycle_regime` — стан останнього закритого дня (дно / накопичення / перегрів / ріст / падіння) за зафіксованими до даних порогами з денних закриттів Binance: просадка від 365-денного максимуму, funding7 (річний), базис7 перп/спот, RSI14, ціна до SMA365 і нахил SMA365; найближчий інший стан і що має змінитись; історія станів. У DOUBLETOP аналога не було. Контекст, не сигнал; перевірку на історії ще не зроблено ([IDEA-20261028-btc-cycle-regime-gauge](ideas/IDEA-20261028-btc-cycle-regime-gauge.md)).
 
-Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).
+Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution; `view="setup"` — SFP-сетап: entry/stop/TP/RR; `view="scan"` — сканер SFP-сетапів по списку тикерів; до 18.11 — окремі `range_setup` і `range_setup_scan`).
 
 ## Наші інструменти без відповідника
 
@@ -111,8 +111,11 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 |---|---|
 | — | ✅ `deribit_vol_surface` — поверхня волатильності BTC/ETH: на кожну експірацію форвард, ATM IV, risk reversal і butterfly 25Δ/10Δ, очікуваний рух 1σ, OI, put/call за OI; IV — десяткові; фільтри ліквідності до побудови усмішки, прапорець `thin_wing`. Відправна точка для опціонних питань |
 | — | ✅ `deribit_option_chain` — ланцюг однієї експірації: по страйку call і put (IV, delta, gamma, vega на 1 пункт вола, theta за день у USD, mark у USD, OI, обсяг) у межах `width_pct` % від форварда |
+| — | ✅ `bybit_option_chain` — ланцюг опціонів Bybit (BTC / ETH, USDT): по експірації й страйку bid / ask / mid кола й пута в USD, спред у % від mid і в пунктах IV (десятковий дріб), mark IV, OI в монетах; типово 3 найближчі експірації й ATM ± 3 страйки, усе — `include_details=true`. Лише верх стакана (з 19.11) |
+| — | ✅ `option_structure_quote` — конструкція на живому ланцюзі Bybit (BTC / ETH, USDT) функціями генератора опціонних ідей (`analytics/option_ideas.py`): кондор, пут- / кол-дебетовий спред, довгий стренгл, довгий стреддл; страйки за дельтою, крила кондора в частці ціни, експірація найближча до `days` у вікні (типово 14 у 7–24). Ноги з bid / ask і комісією тейкера Bybit, премія до й після комісії, макс. прибуток / збиток, беззбиток, R:R, ризик-нейтральна ймовірність (null для стренгла / стреддла з беззбитком поза сіткою путів), ширини крил кондора; USD за 1 монету. Без комісії поставки; ціна, не сигнал (з 19.11) |
 | — | ✅ `deribit_skew_term` — терм-структура скью: RR і butterfly на обраній дельті по експіраціях, найекстремальніша експірація за модулем RR, напрям `flattening` / `steepening` / `stable`; з `view="atm"` (з 15.11 замість окремого `deribit_atm_term`) — терм-структура ATM IV: на кожну експірацію форвард, дні до експірації, ATM IV на форварді (лінійна інтерполяція в log-moneyness), кількість страйків; крива вгору — контанго, вниз — бекуордація |
 | — | ✅ `deribit_expected_move` — очікуваний рух з ATM-стреддла: вартість стреддла в USD, беззбиткові F ± стреддл, діапазон з ATM IV × √T |
+| — | ✅ `deribit_event_move` — закладений рух події з двох сусідніх експірацій навколо `event_ts` (ISO-8601 UTC): ATM IV обох (десяткові), форвардна IV = √((σ₂²T₂ − σ₁²T₁)/(T₂ − T₁)), рух 1σ у % і USD, довжина вікна, порівняння з `deribit_expected_move` для пізнішої експірації. Це 1σ-рух усього вікна (подія плюс звичайна дифузія вікна), тобто верхня межа руху самої події, і для однодобового вікна теж; надлишок події над базовою дифузією — `base_forward_iv` (форвардна вола сусіднього вікна без події з `other_events`) і `excess_event_move_pct` / `_usd` = √max(дисперсія вікна − база · (T₂ − T₁), 0), оцінка, не прогноз; без придатного сусіднього вікна — `null` і попередження (з 20.11); ризик-нейтрально; σ²_fwd ≤ 0 — календарний арбітраж, попередження без руху; подія поза експіраціями — `ok=false` (з 19.11) |
 | — | ✅ `deribit_max_pain` — max pain однієї експірації (USD), відстань від форварда, put/call, п'ять страйків з найбільшим OI. Евристика, не прогноз: притягання розрахунку до цих рівнів на наших даних не підтверджено (BTC daily 2021–2026, n = 1 393) |
 | — | ✅ `deribit_gamma_exposure` — модель GEX дилерів: нетто GEX у USD на 1 % руху, найбільші додатні / від'ємні страйки, рівень зміни знака. Евристика (припущення: дилери long calls / short puts); притягання розрахунку до рівнів не підтверджено |
 | — | ✅ `deribit_oi_by_strike` — стіни OI: call / put OI по страйках у контрактах і USD, найбільші call- і put-стіни; знімок позиціонування, не прогноз |
@@ -135,13 +138,13 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | — | ✅ `funding_carry_scan` — funding carry на одній біржі: поточний і trailing APR з фактичних виплат, статус щодо порогів входу / виходу, дні окупності комісій, наявність спота, позначка `incomplete_history` для неповної історії funding; десяткові дроби; carry не безризиковий |
 | — | ✅ `funding_spread_scan` — крос-біржовий спред funding для перп-перп carry: найкраща пара, trailing і поточний спред, витрати, прапорці ризику; Hyperliquid опційно (бектест HL ↔ Binance збитковий після витрат: моніторинг, не сигнал) |
 | — | ✅ `market_flow` — потоки однієї монети: спот- і перп-CVD Binance, OI, funding, ліквідації (Coinalyze), частка лонгів рахунків, премія Coinbase, квадрант ціна × OI × перп-CVD. Окремо ці потоки в наших бектестах напрям не передбачили; описово, не сигнал |
-| — | ✅ `cycle_regime` — денний режим циклу (дно / накопичення / перегрів / ріст / падіння) за зафіксованими порогами з денних даних Binance; контекст, не сигнал; на історії не перевірено |
+| — | ✅ `cycle_regime` — денний режим циклу (дно / накопичення / перегрів / ріст / падіння) за зафіксованими порогами з денних даних Binance; контекст, не сигнал; на історії не перевірено. З 19.11 типово — останні 10 днів історії станів і `history_summary` по всіх днях, переходи без `changes`; усе — `include_details=true` |
 
 ### Прогнозні ринки, ймовірності, коефіцієнти
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `polymarket_options_gap` — розриви між відкритими ринками Polymarket BTC/ETH і ризик-нейтральною ймовірністю тієї самої події з поверхні Deribit, після комісії тейкера й половини спреду; розрив — не доведена перевага |
+| — | ✅ `polymarket_options_gap` — розриви між відкритими ринками Polymarket BTC/ETH і ризик-нейтральною ймовірністю тієї самої події з поверхні Deribit, після комісії тейкера й половини спреду; розрив — не доведена перевага. Типово — top 10 ринків з ключовими полями (`flags` замість трьох полів якості моделі й правил) і спот / DVOL в `underlying`; повні рядки — `include_details=true` |
 | — | ✅ `touch_probability` — ймовірність дотику бар'єра за `days` при заданій IV (безперервний моніторинг, без дрейфу, стала вола, r = 0): замкнена формула і перевірка Монте-Карло; модельне значення, не прогноз |
 | — | ✅ `odds_devig` — математика букмекера: маржа, сирі й справедливі ймовірності та коефіцієнти (методи `proportional` і `power`) |
 
@@ -149,7 +152,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `events_add` / `events_list` / `events_seed_load` — локальний календар подій: додати подію (ідемпотентно), список із фільтрами за `kind`, `impact` і датами UTC, вбудований сід FOMC / CPI / NFP 2024–2027 і виборів США 2026-11-03 (дати ФРС 2026 у сіді прогнозні, звіряти з офіційними) |
+| — | ✅ `events_add` / `events_list` — локальний календар подій: додати подію (ідемпотентно), список із фільтрами за `kind`, `impact` і датами UTC; вбудований сід FOMC / CPI / NFP 2024–2027 і виборів США 2026-11-03 завантажує разово скрипт `scripts/events_seed_load.py` (колишній інструмент, прибрано 18.11; дати ФРС 2026 у сіді прогнозні, звіряти з офіційними) |
 | — | ✅ `event_study` — event-study: розподіл метрики у вікні навколо збережених подій (`direction`, `close_vs_t0`, `max_up`, `max_dd`, `volatility`), `n_sample`, прапорець малої вибірки при n < 20; описова статистика, не прогноз |
 
 ### Ціна: режим, рейнджі, рівні
@@ -158,8 +161,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 |---|---|
 | — | ✅ `market_regime` — режим up / down / chop за нахилом і `trend_strength` на останніх барах (з `ohlcv_hist` або живі бари ccxt) |
 | — | ✅ `range_detect` — рейнджі, sweeps і deviations на OHLCV (за лекцією DoubleTop «Ranges») |
-| — | ✅ `range_setup` / `range_setup_scan` — SFP-сетап з останнього sweep у рейнджі (entry / stop / tp1 / tp2 / RR) і сканер таких сетапів по символах однієї біржі; механічна пропозиція, дворічний walk-forward значущої переваги не знайшов |
-| — | ✅ `fib_retracement` — драбина Фібоначчі 23.6 / 38.2 / 50 / 61.8 / 78.6 % між ціною до реакції та її екстремумом, прапорець `applicable`; чиста математика, без даних |
+| — | ✅ `range_detect(view="setup")` / `range_detect(view="scan")` (колишні `range_setup` / `range_setup_scan`) — SFP-сетап з останнього sweep у рейнджі (entry / stop / tp1 / tp2 / RR) і сканер таких сетапів по символах однієї біржі; механічна пропозиція, дворічний walk-forward значущої переваги не знайшов |
 
 ### Стратегії та бектест
 
@@ -169,7 +171,6 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | — | ✅ `strategy_scenario_matrix` — матриця сценаріїв: переоцінка стратегії за Black-76 по горизонтах × цінах, P&L і нетто-грецькі |
 | — | ✅ `strategy_cash_and_carry` — long спот + short датований ф'ючерс; конвергенція базису не моделюється, PoP — лише перевірка |
 | — | ✅ `strategy_funding_carry` — long перп на дешевій біржі + short на дорогій; показано лише конвергенцію mark-спреду, різницю funding не нараховує |
-| — | ✅ `strategy_backtest_momentum` — walk-forward бектест моментуму на OHLCV ccxt з комісіями й прослизанням; перевірка, не пропозиція стратегії; без funding, один інструмент |
 
 ### Пам'ять: журнал, позиції, плани
 
@@ -177,7 +178,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 |---|---|
 | — | ✅ `journal_add` / `journal_close` / `journal_list` / `journal_stats` — локальний журнал угод (SQLite): відкрити (стоп потрібен для R), закрити або скасувати, список із фільтрами, статистика закритих (win-rate, очікування в USD, R) |
 | — | ✅ `positions_add` / `positions_close` / `positions_list` — локальний портфель, що ведеться вручну, з грецькими на контракт; закриття ордер не ставить |
-| — | ✅ `positions_risk` — нетто-грецькі відкритого портфеля і сценарний P&L (наближення δ, γ, vega, θ; за замовчуванням ±5 / ±10 % спот, ±5 пунктів вола, крах із ростом вола) |
+| — | ✅ `positions_risk` — нетто-грецькі відкритого портфеля і сценарний P&L (наближення δ, γ, vega, θ; за замовчуванням ±5 / ±10 % спот, ±5 пунктів вола, крах із ростом вола; `d_vol_points` у процентних пунктах IV, 5.0 = +5 пунктів, бо vega на 1 пункт) |
 | — | ✅ `plan_add` / `plan_list` / `plan_review` / `plan_link` — плани угод асистента: запис за будь-якого вердикту, список, оцінка на свічках біржі (R з комісією тейкера), прив'язка до реальної угоди в `journal`; ордерів немає |
 
 ### Правила й алерти
@@ -185,14 +186,13 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | DOUBLETOP | Наш інструмент |
 |---|---|
 | — | ✅ `rules_add` / `rules_disable` / `rules_list` / `rules_test` — DSL-правила в локальному сховищі: створити, увімкнути / вимкнути / видалити, список, перевірити вираз без збереження |
-| — | ✅ `rules_presets_load` — вбудовані пресети правил (екстремуми funding, z-score funding, HL ↔ Deribit carry, каскади ліквідацій); пороги не бектестовані й не з досліджень |
 | — | ✅ `alerts_recent` — історія алертів з локальної SQLite; потрібна увімкнена робота alerts (`TRADEDESK_ALERTS_ENABLED=1`) |
 
 ### Паперові книги й журнал прогнозів
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `carry_paper_open` / `carry_paper_close` — паперові пари перп-перп carry вручну, стоп як у бектесті, закриті пари дзеркаляться в `journal` (тег `pp-paper`); стан і позначка живими даними — `paper_carry_status(strategy="manual")`; медіанна угода бектесту від'ємна; ордерів немає |
 | — | ✅ `paper_carry_status` — стан двох форвард-паперових книг рушія колектора (A `cc-paper`, B `pp-paper`) за останнім 8-годинним циклом, живих даних для них не бере; `strategy="manual"` — ручні пари з живим маркуванням (колишній `carry_paper_status`, злито 17.11); ордерів немає |
 | — | ✅ `assistant_paper_open` / `assistant_paper_status` — паперовий журнал опціонних рекомендацій асистента (ціни з живого ланцюга Deribit, розрахунок на delivery, мітка `hypothesis`, у `journal` не дзеркалиться); ордерів немає |
 | — | ✅ `forecast_log_status` — журнал ризик-нейтральних прогнозів діапазону BTC/ETH: розрахунок на delivery, Brier, калібрування, порівняння з моделлю RV30 |
+| — | ✅ `demo_status` — стан демо-трейдера Bybit (ігрові гроші) лише на читання: відкриті позиції, закриті угоди й середній R кожного сетапу проти смуги паспорта бектесту з вердиктом «рано» / «узгоджується» / «ні», частка заповнення лімітних сетапів, правило зняття S12, примітки (завислі, orphaned, розбіжний P&L) — ті самі числа, що блок демо `scripts/checkpoint_report.py`; типово стисло, усе — `include_details=true`; ордерів і ключів немає (з 19.11) |

@@ -7,8 +7,8 @@ a timestamp beyond SQLite INTEGER, a megabyte of text). Found on the way: journa
 opened_ts = 10**20 and stored size / entry / stop "inf" as inf; journal_close raised ValueError / TypeError on a string
 size / stop, failed its reply on a blob cell after it had written the close, stored a PnL that overflowed to inf and
 raised on closed_ts = 10**20; journal_stats answered Infinity on sums of 1e308; events_list failed its reply on an
-invalid UTF-8 blob and returned NaN / Infinity from a stored meta; events_add stored such a meta; events_seed_load
-raised on a seed that is not {"events": [...]} and on a row with ts 1e308 / Infinity, and counted junk rows as
+invalid UTF-8 blob and returned NaN / Infinity from a stored meta; events_add stored such a meta; events_seed_load (an MCP tool
+until 2026-11-18, now a function for scripts/events_seed_load.py) raised on a seed that is not {"events": [...]} and on a row with ts 1e308 / Infinity, and counted junk rows as
 "already present". All of these now answer ok=false (or skip the row with a warning).
 
 The in-memory store is reopened empty on every MCP connection, so each test makes all its calls and store checks in
@@ -354,11 +354,14 @@ def _seed(monkeypatch, text: str | None) -> None:
 SEED_EV = {"ts": NOW_TS, "kind": "fomc", "label": "FOMC", "impact": "high"}
 
 
+# events_seed_load is a function for scripts/events_seed_load.py since 2026-11-18 (no longer an MCP tool): called directly.
+load_seed = events_tools.events_seed_load
+
+
 @pytest.mark.parametrize("method", ["event_count", "events_insert_many"])
 async def test_events_seed_load_store_failure_goes_to_missing(rt, monkeypatch, method):
     _fails(rt, monkeypatch, method)
-    async with _session(rt) as call:
-        _store_failed(await call("events_seed_load"))
+    _store_failed(await load_seed(rt))
 
 
 @pytest.mark.parametrize(
@@ -369,10 +372,9 @@ async def test_events_seed_load_store_failure_goes_to_missing(rt, monkeypatch, m
 async def test_events_seed_load_unusable_seed_is_not_ok(rt, monkeypatch, text):
     # A list or an int / str `events` raised AttributeError / TypeError before item 287.
     _seed(monkeypatch, text)
-    async with _session(rt) as call:
-        env = await call("events_seed_load")
-        assert env["ok"] is False and env["data"] is None and _missing(env, "seed", "data_unavailable")
-        assert await rt.store.event_count() == 0
+    env = await load_seed(rt)
+    assert env["ok"] is False and env["data"] is None and _missing(env, "seed", "data_unavailable")
+    assert await rt.store.event_count() == 0
 
 
 BAD_SEED_ROWS = [
@@ -391,26 +393,24 @@ BAD_SEED_ROWS = [
 async def test_events_seed_load_skips_malformed_rows(rt, monkeypatch):
     # ts 1e308 / Infinity raised OverflowError out of the insert; the other rows were counted as "already present".
     _seed(monkeypatch, '{"events": [' + json.dumps(SEED_EV) + ", " + ", ".join(BAD_SEED_ROWS) + "]}")
-    async with _session(rt) as call:
-        env = await call("events_seed_load")
-        d = env["data"]
-        assert env["ok"] is True and d["candidates"] == 1 and d["inserted"] == 1 and d["already_present"] == 0
-        assert d["events_after"] == 1 and any(w.startswith(f"{len(BAD_SEED_ROWS)} seed rows skipped") for w in env["warnings"])
+    env = await load_seed(rt)
+    d = env["data"]
+    assert env["ok"] is True and d["candidates"] == 1 and d["inserted"] == 1 and d["already_present"] == 0
+    assert d["events_after"] == 1 and any(w.startswith(f"{len(BAD_SEED_ROWS)} seed rows skipped") for w in env["warnings"])
+    assert first_nonfinite(env["data"]) is None
 
 
 async def test_events_seed_load_only_malformed_rows_is_not_ok(rt, monkeypatch):
     _seed(monkeypatch, '{"events": [' + ", ".join(BAD_SEED_ROWS) + "]}")
-    async with _session(rt) as call:
-        env = await call("events_seed_load")
-        assert env["ok"] is False and _missing(env, "seed", "data_unavailable", f"all {len(BAD_SEED_ROWS)} seed rows are malformed")
-        assert await rt.store.event_count() == 0
+    env = await load_seed(rt)
+    assert env["ok"] is False and _missing(env, "seed", "data_unavailable", f"all {len(BAD_SEED_ROWS)} seed rows are malformed")
+    assert await rt.store.event_count() == 0
 
 
 async def test_events_seed_load_bundled_seed_loads_without_skips(rt):
-    async with _session(rt) as call:
-        env = await call("events_seed_load")
-        d = env["data"]
-        assert env["ok"] is True and d["inserted"] == d["candidates"] > 50 and d["already_present"] == 0
-        assert env["warnings"] == ["2026 Fed dates in the seed are projected; verify against the official calendar"]
-        again = await call("events_seed_load")
-        assert again["data"]["inserted"] == 0 and again["data"]["already_present"] == d["candidates"]
+    env = await load_seed(rt)
+    d = env["data"]
+    assert env["ok"] is True and d["inserted"] == d["candidates"] > 50 and d["already_present"] == 0
+    assert env["warnings"] == ["2026 Fed dates in the seed are projected; verify against the official calendar"]
+    again = await load_seed(rt)
+    assert again["data"]["inserted"] == 0 and again["data"]["already_present"] == d["candidates"]

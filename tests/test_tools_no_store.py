@@ -46,12 +46,10 @@ QUERY_GUARDED = {
     "alerts_recent",
     "assistant_paper_open",
     "assistant_paper_status",
-    "carry_paper_close",
-    "carry_paper_open",
+    "demo_status",
     "event_study",
     "events_add",
     "events_list",
-    "events_seed_load",
     "forecast_log_status",
     "funding_zscore",
     "iv_rank",
@@ -72,21 +70,19 @@ QUERY_GUARDED = {
     "positions_list",
     "positions_risk",
     "range_detect",
-    "range_setup",
     "rules_add",
     "rules_disable",
     "rules_list",
-    "rules_presets_load",
     "rules_test",
     "skew_percentile",
     "system_health",
 }
 
-# Guarded tools that do not report `missing: store` on a query error with the test ARGS: four return before their first
-# store query (providers fail first in the two `*_open`, `events_add` has no time, `rules_test` has no expression),
-# `range_setup` reads live bars by default (its source='store' path has its own test below);
-# `paper_carry_status` catches the error per book and reports it as `paper_carry:<book>`.
-NO_QUERY_WITH_ARGS = {"assistant_paper_open", "carry_paper_open", "events_add", "rules_test", "paper_carry_status", "range_setup"}
+# Guarded tools that do not report `missing: store` on a query error with the test ARGS: three return before their first
+# store query (providers fail first in `assistant_paper_open`, `events_add` has no time, `rules_test` has no expression);
+# `paper_carry_status` catches the error per book and reports it as `paper_carry:<book>`. range_detect's view='setup'
+# (the former range_setup) reads live bars by default: its source='store' path has its own test below.
+NO_QUERY_WITH_ARGS = {"assistant_paper_open", "events_add", "rules_test", "paper_carry_status"}
 
 # Guarded tools that still have other data when the store fails, so they report `missing: store` with ok=true.
 PARTIAL_ON_STORE_ERROR = {"system_health"}
@@ -265,14 +261,15 @@ def test_store_tool_discovery():
     """The AST scan finds the store tools (a broken scan would make the test above vacuous)."""
     assert STORE_TOOLS <= EXPECTED_TOOLS
     assert {"journal_add", "journal_list", "rules_add", "positions_list", "plan_add", "liquidations_summary"} <= STORE_TOOLS
-    assert len(STORE_TOOLS) >= 35
+    assert len(STORE_TOOLS) >= 32  # 36 until four store tools were removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md)
     assert set().union(*KNOWN_RAISERS.values()) <= STORE_TOOLS
     assert QUERY_GUARDED == STORE_TOOLS, f"store tools without a query-error check: {sorted(STORE_TOOLS - QUERY_GUARDED)}"
 
 
 @pytest.mark.parametrize("mode", ["query_error", "unreachable"])
 async def test_range_setup_store_source_never_raises(tmp_path, mode):
-    """range_setup with source='store' (its default is live, so the scan above never reaches the store)."""
+    """range_detect(view='setup') (the former range_setup) with source='store': its default is live, so the scan above
+    (the default view='ranges') never reaches the store through it."""
     rt = await _runtime(tmp_path, "empty")
     srv, _ = build_server(rt)
     async with Client(srv) as c:
@@ -283,7 +280,7 @@ async def test_range_setup_store_source_never_raises(tmp_path, mode):
             rt.store = Store(blocker / "store.sqlite")
         else:
             rt.store = _QueryFailingStore(rt.store)
-        res = await c.call_tool("range_setup", {**ARGS["range_setup"], "source": "store"})
+        res = await c.call_tool("range_detect", {**ARGS["range_detect"], "view": "setup", "source": "store"})
     assert not res.is_error, res.content[0].text[:300] if res.content else ""
     data = res.structured_content
     data = data.get("result", data)

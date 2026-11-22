@@ -3,7 +3,8 @@ what R would the entries that did not fill ('missed'), the signals left out by s
 signals the guard refused ('refused': R:R after fees, a coin already held, ...) have made, grouped by reason, next to
 the shadow plans of the trades the demo did fill ('taken', the reference).
 
-Pure functions, no I/O, time is a parameter (``now_ms``: decisions after it are ignored).
+Pure functions, no I/O, time is a parameter (``now_ms``: decisions after it are ignored, and a plan the store shows
+resolved after it, by ``trade_plan.resolved_ts``, counts as still open; so a report taken at a past cutoff repeats).
 
 Inputs are rows of the store (read by the caller over a read-only connection):
 - ``demo_trade``: a 'missed' row (the maker entry was cancelled with nothing filled) links its shadow plan by
@@ -154,14 +155,23 @@ def _decided(a: Mapping[str, Any], now_ms: int) -> bool:
     return a.get("kind") in AUDIT_GROUPS and isinstance(a.get("ts"), int) and int(a["ts"]) <= now_ms
 
 
-def _row(group: str, msg: object, base: dict[str, Any], plan: Mapping[str, Any] | None, fees: Fees) -> ShadowRow:
+def _resolved_by(plan: Mapping[str, Any], now_ms: int) -> bool:
+    """The plan is resolved as of ``now_ms``: status 'resolved' and ``resolved_ts`` (unix seconds) not after it. A
+    resolved plan without ``resolved_ts`` cannot be dated and stays resolved (as stored)."""
+    if plan.get("status") != "resolved":
+        return False
+    ts = _f(plan.get("resolved_ts"))
+    return ts is None or ts * 1000 <= now_ms
+
+
+def _row(group: str, msg: object, base: dict[str, Any], plan: Mapping[str, Any] | None, fees: Fees, now_ms: int) -> ShadowRow:
     reason = "" if group == "taken" else reason_key(msg)
     example = "" if group == "taken" else " ".join(str(msg or "").split())[:200]
     if plan is None:
         return ShadowRow(group, reason, example, **base, plan_id=None, status="no_plan")
     pid = plan.get("id")
     plan_id = int(pid) if isinstance(pid, int) else None
-    if plan.get("status") != "resolved":
+    if not _resolved_by(plan, now_ms):
         return ShadowRow(group, reason, example, **base, plan_id=plan_id, status="open")
     outcome = None if plan.get("outcome") is None else str(plan.get("outcome"))
     fill, stop, exit_ = _f(plan.get("fill")), _f(plan.get("stop")), _f(plan.get("exit"))
@@ -183,7 +193,7 @@ def match_rows(
     fees: Fees = Fees(),
 ) -> list[ShadowRow]:
     """Every missed demo entry, skipped or refused signal and filled demo trade decided by ``now_ms``, with its shadow
-    plan (module docstring); refusals that get no plan by design are left out (``planless_refusals``). ``plans``:
+    plan as of ``now_ms`` (resolved later: 'open'; module docstring); refusals that get no plan by design are left out (``planless_refusals``). ``plans``:
     trade_plan rows (only the demo shadow ones are used); ``audit``: exec_audit rows (only kinds 'skipped' and
     'refused'). Odd rows are skipped, never raised on."""
     return _match(trades, audit, plans, now_ms, fees)[0]
@@ -230,7 +240,7 @@ def _match(
         }
         pid = t.get("plan_id")
         plan = by_id.get(pid) if isinstance(pid, int) else None
-        out.append(_row("missed" if status == "missed" else "taken", t.get("note"), base, plan, fees))
+        out.append(_row("missed" if status == "missed" else "taken", t.get("note"), base, plan, fees, now_ms))
     planless: list[int] = []
     for a in audit:
         if not _decided(a, now_ms):
@@ -251,7 +261,7 @@ def _match(
         if kind == "refused" and plan is None and planless_refusal(vs):
             planless.append(ts)
             continue
-        out.append(_row(kind, vs[0] if vs else None, base, plan, fees))
+        out.append(_row(kind, vs[0] if vs else None, base, plan, fees, now_ms))
     return out, planless
 
 

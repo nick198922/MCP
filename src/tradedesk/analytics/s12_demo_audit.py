@@ -21,6 +21,7 @@ R is per trade risk (the demo: venue P&L with fees / ``risk_usd``), not on capit
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -102,6 +103,43 @@ def scaled_band(p: Passport, n: int) -> tuple[float, float]:
     lo, mid, hi = p.band_iid
     k = (30 / n) ** 0.5
     return mid + (lo - mid) * k, mid + (hi - mid) * k
+
+
+def contrast_ci(
+    values: list[float], in_a: list[bool], clusters: list[Any], *, n_boot: int = 10_000, seed: int = 0, alpha: float = 0.05
+) -> tuple[float, tuple[float, float] | None]:
+    """mean(A) - mean(B) and its percentile CI from a bootstrap that resamples whole clusters (e.g. signal days).
+
+    A draw where one group is empty is skipped; ``None`` CI when either group is empty or fewer than 2 clusters."""
+    a = [v for v, g in zip(values, in_a, strict=True) if g]
+    b = [v for v, g in zip(values, in_a, strict=True) if not g]
+    if not a or not b:
+        return float("nan"), None
+    point = sum(a) / len(a) - sum(b) / len(b)
+    by: dict[Any, list[tuple[float, bool]]] = {}
+    for v, g, c in zip(values, in_a, clusters, strict=True):
+        by.setdefault(c, []).append((v, g))
+    keys = sorted(by, key=str)
+    if len(keys) < 2:
+        return point, None
+    rng = random.Random(seed)
+    out: list[float] = []
+    for _ in range(n_boot):
+        sa = na = sb = nb = 0.0
+        for k in rng.choices(keys, k=len(keys)):
+            for v, g in by[k]:
+                if g:
+                    sa, na = sa + v, na + 1
+                else:
+                    sb, nb = sb + v, nb + 1
+        if na and nb:
+            out.append(sa / na - sb / nb)
+    if not out:
+        return point, None
+    out.sort()
+    lo = out[int(alpha / 2 * (len(out) - 1))]
+    hi = out[int((1 - alpha / 2) * (len(out) - 1))]
+    return point, (lo, hi)
 
 
 def _f(x: Any) -> float | None:

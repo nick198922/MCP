@@ -1,0 +1,4 @@
+- Жива перевірка інструментів BACKLOG 5.3 на службі MCP (20.11, ≈ 06:27 UTC), без змін коду.
+- `btc_fees`, `btc_mempool`, `btc_latest_block`, `btc_difficulty_hashrate`, `btc_address`, `yield_pools`, `yield_pool_history`, `contract_risk` (USDT, ethereum): `ok`, `missing` порожній, `evidence` з джерелом і часом.
+- `onchain_token_info`: `ok=false`, `missing: config` — `ETHERSCAN_API_KEY` не заданий у середовищі служби (Q-20261119-1, чекає власника).
+- Лишилось: перевірити чотири `onchain_*` після відповіді на Q-20261119-1.

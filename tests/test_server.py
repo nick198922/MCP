@@ -4,6 +4,8 @@ import math
 import pytest
 from mcp import Client
 
+# Removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md): carry_paper_open, carry_paper_close, fib_retracement,
+# strategy_backtest_momentum, events_seed_load and rules_presets_load (the two loaders are scripts/*.py now).
 EXPECTED_TOOLS = {
     "system_health",
     "market_tickers",  # also one symbol via fetch_ticker (the former market_ticker, merged 2026-11-17)
@@ -13,6 +15,8 @@ EXPECTED_TOOLS = {
     "market_orderbook",
     "market_trades",
     "perps_funding_compare",
+    # The next three also take source="coinalyze" (the former coinalyze_funding_history / coinalyze_long_short_history /
+    # coinalyze_oi_history, merged 2026-11-18; tests in test_coinalyze_history.py and test_coinalyze_exchanges.py).
     "perps_funding_history",
     "funding_carry_scan",
     "funding_spread_scan",
@@ -29,9 +33,12 @@ EXPECTED_TOOLS = {
     "deribit_futures_curve",
     "deribit_vol_surface",
     "deribit_option_chain",
+    "bybit_option_chain",  # Bybit USDT-settled options, added 2026-11-19 (tests in test_bybit_option_chain.py)
+    "option_structure_quote",  # a structure priced on the Bybit chain, added 2026-11-19 (tests in test_option_structure_quote.py)
     "deribit_max_pain",
     "deribit_gamma_exposure",
     "deribit_expected_move",
+    "deribit_event_move",  # implied event move between two adjacent expiries, added 2026-11-19 (tests in test_event_move.py)
     "deribit_oi_by_strike",
     "prob_from_options",
     "odds_devig",
@@ -42,14 +49,22 @@ EXPECTED_TOOLS = {
     "contract_risk",
     "chain_metrics",
     "stablecoin_supply",
+    "btc_fees",
+    "btc_mempool",
+    "btc_latest_block",
+    "btc_difficulty_hashrate",
+    "btc_address",
+    "yield_pools",
+    "yield_pool_history",
+    "onchain_balance",  # native coin, or one ERC-20 with token=
+    "onchain_address_txs",  # kind="normal" | "erc20"
+    "onchain_token_info",
+    "onchain_contract_source",
     "pendle_expiry_calendar",
     "pendle_fixed_yields",
     "pendle_market",
     "pendle_yield_curve",
     "liquidations_history",
-    "coinalyze_oi_history",
-    "coinalyze_funding_history",
-    "coinalyze_long_short_history",
     "calendar_expiries",
     "macro_calendar",
     "deribit_dvol",
@@ -70,19 +85,15 @@ EXPECTED_TOOLS = {
     "alerts_recent",
     "ohlcv_history",
     "market_regime",
+    # Also view="setup" / view="scan" (the former range_setup / range_setup_scan, merged 2026-11-18; tests in test_ranges.py).
     "range_detect",
-    "range_setup",
-    "range_setup_scan",
     "events_add",
     "events_list",
-    "events_seed_load",
     "event_study",
     "journal_add",
     "journal_list",
     "journal_close",
     "journal_stats",
-    "carry_paper_open",
-    "carry_paper_close",
     "paper_carry_status",  # also the manual pairs, strategy="manual" (the former carry_paper_status, merged 2026-11-17)
     "assistant_paper_open",
     "assistant_paper_status",
@@ -91,6 +102,7 @@ EXPECTED_TOOLS = {
     "plan_list",
     "plan_review",
     "plan_link",
+    "demo_status",  # read-only demo trader status vs passport bands, added 2026-11-19 (tests in test_demo_status.py)
     "positions_add",
     "positions_list",
     "positions_close",
@@ -100,13 +112,10 @@ EXPECTED_TOOLS = {
     "rules_list",
     "rules_test",
     "rules_disable",
-    "rules_presets_load",
     "strategy_payoff",  # also the straddle / strangle / risk_reversal / iron_condor presets (merged 2026-11-15)
     "strategy_cash_and_carry",
     "strategy_funding_carry",
-    "strategy_backtest_momentum",
     "strategy_scenario_matrix",
-    "fib_retracement",
 }
 
 
@@ -306,7 +315,7 @@ async def test_funding_history_warns_when_venue_history_is_shorter(server):
 
 
 async def test_funding_spread_scan_candidates(server):
-    env = await call(server, "funding_spread_scan", entry_apr=0.01)
+    env = await call(server, "funding_spread_scan", entry_apr=0.01, include_details=True)
     assert env["ok"], env["missing"]
     assert any("Backtest" in w for w in env["warnings"])
     rows = {x["base"]: x for x in env["data"]["rows"]}
@@ -361,6 +370,18 @@ async def test_oi_history_cross_venue(server):
     assert by["binanceusdm"]["base_stats"]["change_24h"] > 0  # fixture is rising
     assert len(by["binanceusdm"]["series"]) == 48
     assert d["cross_venue"]["biggest_gain_24h"]["venue"] in ("binanceusdm", "bybit")
+    assert not any("source='coinalyze' only" in w for w in env["warnings"])
+
+
+async def test_perps_source_exchanges_argument_rules(server):
+    """source='exchanges' (default) after the coinalyze merge: Coinalyze-only `exchanges` on perps_oi_history is ignored
+    with a warning; days_back above 180 is refused in the envelope (source='coinalyze' takes up to 365)."""
+    env = await call(server, "perps_oi_history", base="BTC", exchanges=["bybit"])
+    assert env["ok"] is True and {v["venue"] for v in env["data"]["venues"]} == {"binanceusdm", "bybit"}
+    assert any("exchanges applies to source='coinalyze' only" in w for w in env["warnings"])
+    env = await call(server, "perps_funding_history", base="BTC", days_back=200)
+    assert env["ok"] is False and env["data"] is None
+    assert env["missing"][0]["field"] == "days_back" and env["missing"][0]["reason"] == "invalid_argument"
 
 
 async def test_open_interest(server):
@@ -622,7 +643,7 @@ async def test_market_tools(server):
     t = await call(server, "market_tickers", exchange="binanceusdm", symbols="BTC/USDT:USDT")
     row = t["data"]["tickers"][0]
     assert row["last"] == 82750.0 and row["spread_bps"] == pytest.approx(0.1208, abs=0.01)
-    o = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100)
+    o = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100, include_series=True)
     assert o["data"]["summary"]["realized_vol_annualized"] > 0 and len(o["data"]["rows"]) == 100
     bad = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1x")
     assert bad["ok"] is False
@@ -916,7 +937,7 @@ async def test_coingecko_provider_failure(state):
 
 
 async def test_polymarket_search(server):
-    env = await call(server, "polymarket_search", query="btc", limit=5)
+    env = await call(server, "polymarket_search", query="btc", limit=5, include_details=True)
     d = env["data"]
     assert d["count"] == 1
     m = d["markets"][0]

@@ -457,7 +457,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List logged trade plans, newest first. Filters: `status` (open / resolved), `verdict` (enter / wait / skip), "
-            "`tag` (exact tag), `symbol`. Each plan shows its levels, reward:risk `rr`, risk distance `risk_pct` (decimal), "
+            "`tag` (one whole tag, ASCII letters case-insensitive), `symbol`. Each plan shows its levels, reward:risk `rr`, risk distance `risk_pct` (decimal), "
             "fill, and once resolved: outcome (target / stop / expired / not_filled), exit and net R `r_result`."
         ),
     )

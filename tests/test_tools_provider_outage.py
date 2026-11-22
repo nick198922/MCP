@@ -24,6 +24,7 @@ import pytest
 from mcp import Client
 
 from conftest import NOW
+from test_server import EXPECTED_TOOLS
 from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
@@ -39,6 +40,7 @@ STRINGS = {
     "symbol": "BTC/USDT:USDT",
     "coin": "BTC",
     "expiry": "27NOV26",
+    "event_ts": "2026-11-05T19:00:00Z",
     "market_id": "516700",
     "token_id": "TOK_YES",
     "coin_id": "bitcoin",
@@ -61,15 +63,15 @@ ARRAYS = {
     "legs": [{"kind": "call", "side": "long", "size": 1, "strike": 82_000, "entry_premium": 2_000}],
 }
 ARGS: dict[str, dict[str, Any]] = {
-    "carry_paper_open": {"long_venue": "binanceusdm", "short_venue": "bybit"},
+    # `address` above is an EVM address; a Bitcoin one passes the checksum check and reaches the failing transport.
+    "btc_address": {"address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"},
     # Coinalyze takes a bare coin; with a dummy key (failing_runtime) the call reaches the failing transport.
-    "coinalyze_funding_history": {"symbol": "BTC"},
-    "coinalyze_long_short_history": {"symbol": "BTC"},
-    "coinalyze_oi_history": {"symbol": "BTC"},
     "liquidations_history": {"symbol": "BTC"},
     "plan_add": {"entry": 82_750.0, "stop": 80_000.0, "target": 90_000.0, "expires_ts": int(NOW.timestamp()) + 86_400},
     "strategy_cash_and_carry": {"spot_price": 82_750.0, "futures_price": 83_500.0},
     "strategy_funding_carry": {"long_mark": 82_750.0, "short_mark": 82_760.0},
+    # a DefiLlama pool id (UUID) passes the check and reaches the failing transport
+    "yield_pool_history": {"pool": "00000000-0000-4000-8000-000000000002"},
 }
 
 # Tools whose required arguments cannot be guessed: none so far. Format: {"tool": "reason"}.
@@ -132,8 +134,15 @@ def failing_runtime(mode: str, db_path: str, calls: list[str]) -> Runtime:
             raise httpx.ReadTimeout("timed out", request=req)
         return httpx.Response(500, text="down")
 
-    # A dummy Coinalyze key (never a real one): without a key the tools answer `missing: config` before any request.
-    settings = Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=db_path, coinalyze_api_key="outage-test")
+    # Dummy Coinalyze / Etherscan keys (never real ones): without a key the tools answer `missing: config` before any request.
+    settings = Settings(
+        http_retries=0,
+        http_retry_backoff=0.0,
+        cache_scale=0.0,
+        db_path=db_path,
+        coinalyze_api_key="outage-test",
+        etherscan_api_key="outage-test",
+    )
     # Production rate limits (GoPlus 0.2 req/s, ...) would only make the failing fake calls wait in real time.
     with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
         rt = Runtime(
@@ -227,9 +236,50 @@ async def run_all(mode: str, db_path: str) -> Outcome:
 async def test_no_tool_raises_when_every_provider_is_down(mode, tmp_path):
     out = await run_all(mode, str(tmp_path / "outage.sqlite"))
     assert out.leaks == []  # every request went to the failing transports, none to a real venue
-    assert out.called >= 100  # the guard really walked the registry
+    # the guard really walked the registry: relative to the tool count, so removing tools does not break it
+    # (91 tools, 89+ called on 2026-11-18)
+    assert out.called >= len(EXPECTED_TOOLS) - len(SKIP) - 2
     assert out.attempted >= 50  # and the failing providers were really hit
     assert set(SKIP) - out.names == set(), "SKIP names a tool that is not registered"
     new = {name: why for name, why in out.violations.items() if name not in KNOWN}
     assert new == {}, "fix these tools with Builder.guard, or (if not clear-cut) list them in KNOWN and docs/BACKLOG.md"
     assert set(KNOWN) - set(out.violations) == set(), "these tools are fixed: remove them from KNOWN"
+
+
+@pytest.mark.parametrize("mode", FAILURES)
+@pytest.mark.parametrize("tool", ["perps_funding_history", "perps_long_short_ratio", "perps_oi_history"])
+async def test_coinalyze_source_reports_the_outage(mode, tool, tmp_path):
+    """source='coinalyze' (the former coinalyze_* tools, merged 2026-11-18) is not reached by the sweep above, which
+    calls the default source: the same outage gives an envelope with Coinalyze in `missing`."""
+    calls: list[str] = []
+    srv, _ = build_server(failing_runtime(mode, str(tmp_path / "outage.sqlite"), calls))
+    async with Client(srv) as c:
+        res = await c.call_tool(tool, {"source": "coinalyze", "base": "BTC"})
+    env = as_envelope(res)
+    assert not res.is_error and ENVELOPE_KEYS <= set(env) and env["ok"] is False
+    assert calls and env["missing"][0]["provider"] == "coinalyze"
+
+
+@pytest.mark.parametrize("mode", FAILURES)
+@pytest.mark.parametrize(
+    ("view", "args"),
+    [
+        ("ranges", {"symbol": "BTC/USDT:USDT", "source": "live"}),
+        ("setup", {"symbol": "BTC/USDT:USDT"}),
+        ("scan", {"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"]}),
+    ],
+)
+async def test_range_detect_live_views_report_the_outage(mode, view, args, tmp_path):
+    """view='setup' / 'scan' (the former range_setup / range_setup_scan, merged 2026-11-18) and live 'ranges' read ccxt
+    bars; the sweep above calls range_detect with its required `venue` only (no symbol: invalid_input, no request)."""
+    calls: list[str] = []
+    srv, _ = build_server(failing_runtime(mode, str(tmp_path / "outage.sqlite"), calls))
+    async with Client(srv) as c:
+        res = await c.call_tool("range_detect", {"venue": "binanceusdm", "view": view, **args})
+    env = as_envelope(res)
+    assert not res.is_error and ENVELOPE_KEYS <= set(env) and env["ok"] is False
+    assert calls and any(m["provider"] == "ccxt:binanceusdm" for m in env["missing"]), env["missing"]
+    if view == "scan":
+        assert env["data"]["rejected"] == [{"symbol": s, "reason": "fetch_failed"} for s in args["symbols"]]
+    else:
+        assert env["data"] is None

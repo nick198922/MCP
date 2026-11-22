@@ -1,60 +1,45 @@
-"""Paper tracker for cross-venue perp-perp funding carry (local bookkeeping only, no orders).
+"""Marking of the manual paper book of cross-venue perp-perp funding carry (local bookkeeping only, no orders).
 
 A paper pair is long the perp on one venue and short it on another with the same coin quantity. Marking mirrors
 ``simulate_perp_spread_portfolio`` (funding at the leg price of the payment, price P&L, fees + slippage, stop at
 ``1 / leverage``) so paper results are comparable with docs/verification/2026-10-13-funding-carry-perp-perp.md.
-Closed pairs are mirrored into the ``journal`` as one synthetic pair index tagged ``pp-paper`` plus ``pp-paper-rule``
-(opened while ``tradable_now`` held) or ``pp-paper-offrule``.
+The pairs are shown by ``paper_carry_status(strategy='manual')``. The tools that opened and closed them
+(carry_paper_open / carry_paper_close) were removed from the MCP server on 2026-11-18 (the collector's engine, books A
+and B, replaced the manual paper); pairs already in the store are still marked here.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Any
 
-from mcp.server.mcpserver import MCPServer
-from mcp.types import ToolAnnotations
-from pydantic import Field
-
-from ..analytics.carry import bar_gaps, carry_snapshot, pair_paper_mark, paper_summary, spread_snapshot
-from ..analytics.journal import outcome_of
-from ..analytics.journal import pnl as pnl_fn
+from ..analytics.carry import bar_gaps, carry_snapshot, pair_paper_mark, paper_summary
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, clean_row_flags, clean_row_tags, finite_float, r, reject_bad_id, store_failed, store_ready
-from .perps import MAX_FUNDING_RATE, TAKER_FEES, current_funding
+from ._util import STORE_ERRORS, clean_row_flags, clean_row_tags, finite_float, r, reject_bad_id, store_failed, store_ready
+from .perps import MAX_FUNDING_RATE, TAKER_FEES
 
-# carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
-# Re-validated through the aliases: model_copy(update=...) would not map the camelCase alias onto the field.
-OPEN_ANNOTATIONS = ToolAnnotations(**{**READ_ONLY.model_dump(by_alias=True), "idempotentHint": False})
 ENTRY_BAR_MS = 15 * 60_000  # the 4h bar containing the entry is checked on 15m bars from the entry on
-JOURNAL_TAGS = ("pp-paper", "pp-paper-rule", "pp-paper-offrule")  # set by the tracker, never copied from user tags
-MISMATCH_GAP = 0.20
 PAPER_WARNING = (
-    "Paper trade, local bookkeeping only: no order is sent. Fills are the last (or mark) price plus modelled costs "
+    "Paper trade, local bookkeeping only: no order is sent. Fills are the last price plus modelled costs "
     "(taker fees + slippage per leg per side), not real fills. Expectation for this strategy is about zero or negative: the earlier "
     "+76 % APR backtest (docs/verification/2026-10-13-funding-carry-perp-perp.md) came from holes in the Bybit funding history; "
     "on the full history (docs/verification/2026-10-17-paper-carry-bench.md, Binance<->Bybit, 2024-10..2026-10) it is -8.7 % APR "
     "on notional at 2x per leg with stop (397 trades, 67 % losing, 130 stopped) and +2.9 % without the stop. Not "
     "modelled: per-symbol position limits, venues changing caps / intervals / leverage, two separate margins that need "
     "top-ups, real liquidation prices (the stop here is the backtest's: either leg's 4h bar high / low moving >= 1 / leverage "
-    "from its entry, frozen at that bar). Compare journal_stats(tag='pp-paper-rule') (pairs opened while tradable_now held) "
-    "with the backtest only after many closed trades."
+    "from its entry, frozen at that bar). Closed pairs were mirrored into the journal as pp-paper-rule / pp-paper-offrule "
+    "until 2026-11-18 (the closing tool was removed then); compare them with the backtest only after many closed trades."
 )
-Venue = Literal["binanceusdm", "bybit", "okx"]
-
-
-def _symbol(base: str) -> str:
-    return f"{base.strip().upper()}/USDT:USDT"
 
 
 def _iso(ts: int | None) -> str | None:
     return None if ts is None else datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
 
 
-async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: float | None = None) -> float | None:
+async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str) -> float | None:
     got = await b.guard(f"ticker:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.tickers(venue, [sym]))
     try:
         raw = ((got or {}).get(sym) or {}).get("last")
@@ -66,11 +51,7 @@ async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: f
     except (TypeError, ValueError, OverflowError):
         b.warn(f"{venue} {sym}: last price in the ticker is not a finite number; not used")
         px = 0.0
-    if px > 0:
-        return px
-    if fallback:
-        b.warn(f"{venue} {sym}: last price unavailable, using the mark price from the funding feed instead")
-    return fallback
+    return px if px > 0 else None
 
 
 def _plausible_entries(b: Builder, venue: str, sym: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -173,7 +154,7 @@ async def mark_trade(rt: Runtime, b: Builder, t: dict[str, Any], now_ms: int) ->
 
 def _clean_pair_tags(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`rows` with `tags` as a list of strings, in place, so no pair is hidden (item 356): tags 300 levels deep failed the
-    MCP serialiser after carry_paper_close had written the close and its journal mirror, a number raised TypeError in the
+    MCP serialiser after the former carry_paper_close had written the close and its journal mirror, a number raised TypeError in the
     close. Anything that is not a list of strings is shown as its string items, NaN / Infinity in tags as []; warnings.
     `entry_flags` is normalised the same way (item 357)."""
     nonfinite, fixed = clean_row_tags(rows)
@@ -263,7 +244,8 @@ def _closed_view(t: dict[str, Any]) -> dict[str, Any]:
 
 
 async def manual_book_status(rt: Runtime, id: int | None, include_closed: bool) -> dict[str, Any]:
-    """Envelope of paper_carry_status(strategy='manual'): the pairs opened with carry_paper_open, marked with live data.
+    """Envelope of paper_carry_status(strategy='manual'): the pairs opened with the former carry_paper_open tool (removed
+    2026-11-18), marked with live data.
     The body of the former carry_paper_status tool (merged into paper_carry_status 2026-11-17), unchanged."""
     b = Builder()
     b.warn(PAPER_WARNING)
@@ -313,299 +295,3 @@ async def manual_book_status(rt: Runtime, id: int | None, include_closed: bool) 
         return b.build(data, ok=ok)
     except STORE_ERRORS as e:
         return store_failed(b, e)
-
-
-def register(server: MCPServer, rt: Runtime) -> None:
-    @server.tool(
-        annotations=OPEN_ANNOTATIONS,  # writes to the LOCAL store only — no orders, no external effects; not idempotent
-        description=(
-            "Open a PAPER perp-perp funding-carry pair in the local store: long the perp on `long_venue`, short it on "
-            "`short_venue` (binanceusdm / bybit / okx USDT perps), same coin quantity = notional_usd / long price. Entry "
-            "prices are the last prices now; nothing is sent to any venue. Records the trailing and current funding spread "
-            "(decimals, APR on notional, in the held direction) and the funding_spread_scan flags. Refuses (ok=false, "
-            "nothing written) when the price gap between the venues exceeds `max_entry_gap` or looks like different tokens "
-            "(> 20 %), as the backtest never opens those. If the pair is not `tradable_now` or opposes the scan's direction "
-            "it is still recorded, with a warning. Stop distance = 1 / `leverage`. Close with carry_paper_close; track with "
-            "paper_carry_status(strategy='manual'). Not idempotent: every call records a new pair (a repeat warns about the duplicate). "
-            "See `warnings`: the backtest median trade was negative."
-        ),
-    )
-    async def carry_paper_open(
-        base: Annotated[str, Field(description="Base asset, e.g. WIF, BTC.")],
-        long_venue: Annotated[Venue, Field(description="Venue where the paper long perp is held (the lower-funding side).")],
-        short_venue: Annotated[Venue, Field(description="Venue where the paper short perp is held (the higher-funding side).")],
-        notional_usd: Annotated[float, Field(gt=0, le=10_000_000, description="Notional per leg in USD.")] = 1000.0,
-        leverage: Annotated[
-            float, Field(ge=1, le=10, description="Isolated leverage per leg; the stop is 1 / leverage against a leg.")
-        ] = 2.0,
-        lookback_days: Annotated[float, Field(ge=1, le=30, description="Trailing window for the spread, days.")] = 7.0,
-        exit_apr: Annotated[float, Field(ge=-1, le=50, description="Exit signal when the trailing spread falls to this APR.")] = 0.0,
-        max_entry_gap: Annotated[float, Field(ge=0, le=0.2, description="Largest price gap between the legs, fraction.")] = 0.02,
-        slippage: Annotated[float, Field(ge=0, le=0.01, description="Slippage per leg per side, fraction of notional.")] = 0.0005,
-        note: Annotated[str | None, Field(description="Free-form note.")] = None,
-        tags: Annotated[
-            list[str] | None,
-            Field(
-                description="Free-form tags. On close the journal gets them plus 'pp-paper' and either 'pp-paper-rule' "
-                "(opened while tradable_now held) or 'pp-paper-offrule'; those three are set by the tracker only."
-            ),
-        ] = None,
-    ) -> dict[str, Any]:
-        b = Builder()
-        b.warn(PAPER_WARNING)
-        if not await store_ready(b, rt, "the journal"):
-            return b.build(None, ok=False)
-        try:
-            if long_venue == short_venue:
-                b.miss("venues", "tradedesk", "config", "long_venue and short_venue must differ")
-                return b.build(None, ok=False)
-            base_u, sym = base.strip().upper(), _symbol(base)
-            now = rt.now()
-            now_ms = int(now.timestamp() * 1000)
-            since_ms = now_ms - int(max(30.0, lookback_days) * 86_400_000)
-
-            async def leg(v: str) -> dict[str, Any] | None:
-                mk = await b.guard(f"perp_markets:{v}", f"ccxt:{v}", rt.exchanges.markets(v)) or {}
-                cur = (await current_funding(rt, b, v, mk)).get(sym)
-                hist = await b.guard(
-                    f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
-                )
-                px = await _last_price(rt, b, v, sym, fallback=(cur or {}).get("mark"))
-                entries = _plausible_entries(b, v, sym, hist["rows"]) if hist else []
-                if cur is None or not entries or px is None:
-                    b.miss(
-                        f"carry_paper_leg:{v}",
-                        "tradedesk",
-                        "data_unavailable",
-                        f"{sym} on {v}: current funding, funding history or price missing",
-                    )
-                    return None
-                if hist and not hist["complete"]:
-                    b.warn(
-                        f"{v} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp dropped)"
-                    )
-                return {
-                    "entries": entries,
-                    "price": px,
-                    "rate": cur["rate"],
-                    "interval_hours": cur["interval_hours"],
-                    "mark": cur["mark"],
-                    "cap": cur["cap"],
-                }
-
-            lg, sg = await asyncio.gather(leg(long_venue), leg(short_venue))
-            if lg is None or sg is None:
-                return b.build(None, ok=False)
-            snap = spread_snapshot(
-                {long_venue: lg, short_venue: sg},
-                now_ms=now_ms,
-                lookback_days=lookback_days,
-                entry_apr=0.10,
-                exit_apr=exit_apr,
-                fees=TAKER_FEES,
-                slippage=slippage,
-                max_entry_gap=max_entry_gap,
-                mismatch_gap=MISMATCH_GAP,
-            )
-            pair = snap["pair"]
-            if pair is None:
-                b.miss(
-                    "spread", "tradedesk", "data_unavailable", "not enough funding history on both venues to compute the trailing spread"
-                )
-                return b.build(None, ok=False)
-            gap = sg["price"] / lg["price"] - 1.0
-            if abs(gap) > MISMATCH_GAP or "price_mismatch" in pair["flags"]:
-                b.miss(
-                    "price_mismatch",
-                    "tradedesk",
-                    "refused",
-                    f"{base_u}: legs differ by {gap:.1%}; likely different tokens under one ticker",
-                )
-                return b.build(None, ok=False)
-            if abs(gap) > max_entry_gap or "price_gap" in pair["flags"]:
-                b.miss("price_gap", "tradedesk", "refused", f"{base_u}: legs differ by {gap:.2%} > max_entry_gap {max_entry_gap:.2%}")
-                return b.build(None, ok=False)
-
-            v = snap["venues"]
-            trailing = v[short_venue]["trailing_apr"] - v[long_venue]["trailing_apr"]
-            cs, cl = v[short_venue]["current_apr"], v[long_venue]["current_apr"]
-            current = cs - cl if cs is not None and cl is not None else None
-            same_dir = pair["short_venue"] == short_venue and pair["long_venue"] == long_venue
-            flags = [f for f in pair["flags"] if f != "current_spread_reversed"]
-            if current is not None and current < 0:
-                flags.append("current_spread_reversed")
-            tradable = same_dir and pair["tradable_now"]
-            if not same_dir:
-                flags.append("opposite_to_scan_direction")
-                b.warn(
-                    f"requested long {long_venue} / short {short_venue} is opposite to the scan direction "
-                    f"(long {pair['long_venue']} / short {pair['short_venue']}); trailing spread in the held direction is {trailing:+.1%}"
-                )
-            if not tradable:
-                b.warn(f"{base_u} is not tradable_now (status {pair['status']}, flags {flags or 'none'}); recorded anyway")
-            dupes = [
-                x["id"]
-                for x in await rt.store.carry_paper_list(status="open")
-                if x["base"] == base_u and x["long_venue"] == long_venue and x["short_venue"] == short_venue
-            ]
-            if dupes:
-                b.warn(f"open paper pair(s) {dupes} already exist for {base_u} long {long_venue} / short {short_venue}; recording another")
-            trade_id = await rt.store.carry_paper_insert(
-                opened_ts=int(now.timestamp()),
-                base=base_u,
-                symbol=sym,
-                long_venue=long_venue,
-                short_venue=short_venue,
-                qty=notional_usd / lg["price"],
-                notional_usd=notional_usd,
-                long_entry=lg["price"],
-                short_entry=sg["price"],
-                entry_trailing_spread_apr=trailing,
-                entry_current_spread_apr=current,
-                entry_flags=flags,
-                entry_tradable=tradable,
-                leverage=leverage,
-                stop_move=1.0 / leverage,
-                lookback_days=lookback_days,
-                exit_apr=exit_apr,
-                slippage=slippage,
-                note=note,
-                tags=tags,
-            )
-            return b.build(
-                {
-                    "id": trade_id,
-                    "base": base_u,
-                    "symbol": sym,
-                    "long_venue": long_venue,
-                    "short_venue": short_venue,
-                    "notional_usd": notional_usd,
-                    "qty": r(notional_usd / lg["price"], 8),
-                    "long_entry": lg["price"],
-                    "short_entry": sg["price"],
-                    "price_gap": r(gap, 5),
-                    "trailing_spread_apr": r(trailing, 4),
-                    "current_spread_apr": r(current, 4),
-                    "tradable_now": tradable,
-                    "flags": flags,
-                    "leverage": leverage,
-                    "stop_move": r(1.0 / leverage, 4),
-                    "exit_apr": exit_apr,
-                    "roundtrip_cost": r(pair["roundtrip_cost"], 5),
-                }
-            )
-        except STORE_ERRORS as e:
-            return store_failed(b, e)
-
-    @server.tool(
-        annotations=READ_ONLY,  # carry_paper_close writes to the LOCAL store only — no orders
-        description=(
-            "Close a PAPER perp-perp carry pair at live last prices (local store only, nothing is traded). `reason` "
-            "('signal' / 'stop' / 'manual') records your intent only. Whether the pair was stopped comes from the bar data "
-            "(see paper_carry_status, strategy='manual'): a stopped pair is closed at its stop bar (funding, price P&L and exit costs frozen "
-            "there, plus the 1 % of notional penalty) whatever `reason` says, and reason='stop' without a stop in the data "
-            "adds no penalty (warning). The close is atomic: a repeated or concurrent close returns ok=false and writes "
-            "nothing. Stores funding / price / cost P&L in USD and the return on notional, "
-            "and mirrors the pair into the journal as symbol 'PP:<BASE>:<long_venue>/<short_venue>' with tags ['pp-paper', "
-            "'pp-paper-rule' or 'pp-paper-offrule', ...] (side long, size = notional, entry 1.0, exit = 1 + return) so "
-            "journal_stats(tag='pp-paper') reports it: journal PnL is in USD on the notional. Compare with the backtest "
-            "through journal_stats(tag='pp-paper-rule') (opened while tradable_now held) or summary_closed.entry_tradable. `cancelled=true` drops the pair without a P&L or journal row. If live "
-            "data is unavailable the pair stays open and ok=false."
-        ),
-    )
-    async def carry_paper_close(
-        id: Annotated[int, Field(ge=1, description="Pair id from carry_paper_open.")],
-        reason: Annotated[Literal["signal", "stop", "manual"], Field(description="Why the pair is closed.")],
-        cancelled: Annotated[bool, Field(description="Mark as cancelled instead of closing (no P&L, no journal row).")] = False,
-        note: Annotated[str | None, Field(description="Post-mortem note.")] = None,
-    ) -> dict[str, Any]:
-        b = Builder()
-        b.warn(PAPER_WARNING)
-        if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
-            return bad
-        if not await store_ready(b, rt, "the journal"):
-            return b.build(None, ok=False)
-        try:
-            t = await rt.store.carry_paper_get(id)
-            if t is None:
-                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
-                return b.build(None, ok=False)
-            if t["status"] != "open":
-                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} is already {t['status']}")
-                return b.build(None, ok=False)
-            _clean_pair_tags(b, [t])  # before the journal mirror copies them
-
-            def reread(row: dict[str, Any]) -> dict[str, Any]:
-                # the stored cells are unchanged; shown as cleaned (warned) above
-                return {**row, "tags": t["tags"], "entry_flags": t.get("entry_flags")}
-
-            now = rt.now()
-            ts = int(now.timestamp())
-            already = ("carry_paper", "store", "data_unavailable", f"paper pair id={id} was closed by another call; nothing written")
-            if cancelled:
-                if not await rt.store.carry_paper_close(id, status="cancelled", closed_ts=ts, exit_reason=reason, note=note):
-                    b.miss(*already)
-                    return b.build(None, ok=False)
-                return b.build(_closed_view(reread(await rt.store.carry_paper_get(id))))
-            m = await mark_trade(rt, b, t, ts * 1000)
-            if m is None:
-                return b.build(None, ok=False)
-            # `stopped` and the penalty come from the data, never from `reason`; the result is frozen at the stop bar.
-            stopped = bool(m["stopped"])
-            if reason == "stop" and not stopped:
-                b.warn(f"reason='stop' but no stop is found in the data for pair {id}: recorded as not stopped, no stop penalty")
-            if stopped and reason != "stop":
-                b.warn(f"pair {id} hit its stop at {_iso(m['stop_ts_ms'] // 1000)}: recorded as stopped (frozen there, penalty charged)")
-            if m["stop_check"] != "complete":
-                b.warn(f"pair {id}: bar coverage is {m['stop_check']}; a stop may have been missed")
-            close_ts = m["stop_ts_ms"] // 1000 if stopped else ts
-            ret, pnl_usd = m["return_on_notional"], m["pnl_usd"]
-            symbol = f"PP:{t['base']}:{t['long_venue']}/{t['short_venue']}"
-            thesis = (
-                f"Paper perp-perp carry {t['base']}: long {t['long_venue']} {m['long_x']:.6g} (entry {t['long_entry']:.6g}) / short "
-                f"{t['short_venue']} {m['short_x']:.6g} (entry {t['short_entry']:.6g}); notional {t['notional_usd']:g} USD, "
-                f"funding {m['funding_pnl']:+.2f}, price {m['price_pnl']:+.2f}, costs {-m['costs']:+.2f} USD"
-                f"{', stopped' if stopped else ''}; carry_paper id {id}. Journal entry 1.0 / exit 1 + return encodes the return on notional."
-            )
-            # pp-paper-rule: opened under the backtest's entry rule (the comparable subset); pp-paper-offrule: outside it
-            rule_tag = "pp-paper-rule" if t.get("entry_tradable") else "pp-paper-offrule"
-            j_tags = ["pp-paper", rule_tag, *[x for x in (t.get("tags") or []) if x not in JOURNAL_TAGS]]
-            j_pnl = pnl_fn("long", float(t["notional_usd"]), 1.0, 1.0 + ret)
-            won = await rt.store.carry_paper_close(
-                id,
-                status="closed",
-                closed_ts=close_ts,
-                stop_ts=close_ts if stopped else None,
-                exit_reason=reason,
-                long_exit=m["long_x"],
-                short_exit=m["short_x"],
-                funding_pnl=m["funding_pnl"],
-                price_pnl=m["price_pnl"],
-                costs=m["costs"],
-                pnl_usd=pnl_usd,
-                return_on_notional=ret,
-                max_up=m["max_up"],
-                max_down=m["max_down"],
-                stopped=stopped,
-                journal={
-                    "opened_ts": int(t["opened_ts"]),
-                    "symbol": symbol,
-                    "side": "long",
-                    "size": float(t["notional_usd"]),
-                    "entry": 1.0,
-                    "exit": 1.0 + ret,
-                    "thesis": thesis,
-                    "tags": j_tags,
-                    "outcome": outcome_of(j_pnl),
-                    "pnl": j_pnl,
-                },
-                note=note,
-            )
-            if not won:
-                b.miss(*already)
-                return b.build(None, ok=False)
-            out = _closed_view(reread(await rt.store.carry_paper_get(id)))
-            out["exit_signal_at_close"] = m["exit_signal"]
-            return b.build(out)
-        except STORE_ERRORS as e:
-            return store_failed(b, e)

@@ -169,6 +169,7 @@ REVIEWED: dict[str, tuple[int, str]] = {
         "wrapper tests: the subprocess reads the real clock, so the login end is real now +/- days (relative)",
     ),
     "tests/test_contract_risk.py": (2, "GoPlus provider calls on a MockTransport (cache and health); no date logic"),
+    "tests/test_contract_risk_solana.py": (2, "GoPlus Solana provider calls on a MockTransport (cache and health); no date logic"),
     "tests/test_dashboard.py": (1, "read_usage gets time.time() and offsets from it: cache ages are relative, no fixed date"),
     "tests/test_forecast_log.py": (1, "test_tool_without_store: the tool answers 'no store' before reading the clock"),
     "tests/test_option_legs.py": (1, "_live_rt: scan_option_legs is called with the fixture's LIVE_NOW, not rt.now()"),

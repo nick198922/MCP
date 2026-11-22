@@ -16,6 +16,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from datetime import date
+from statistics import median
 from typing import Any
 
 from .tradfi_offhours import MIN_MS, nyse_sessions
@@ -86,3 +87,76 @@ def session_costs(
         cost = round_trip_cost(e, x, fee=fee) if e is not None and x is not None else None
         out.append({"day": s.day, "entry_ms": t_in, "exit_ms": t_out, "entry_spread": e, "exit_spread": x, "cost": cost})
     return out
+
+
+# ---------------------------------------------------------------- early kill (b), registered 2026-11-20 in the card
+
+KILL_COST = 0.0020  # a name "fails" when its median round-trip cost is >= 0.20 %
+KILL_SHARE = 0.70  # the card is rejected when >= 70 % of the evaluable names fail
+RETRIGGER_COST = 0.0015  # step-0 rerun needs forward costs <= 0.15 % per round trip
+MIN_SESSIONS = 20  # NYSE sessions with coverage before the rule may decide
+SESSION_MIN_NAME_SHARE = 0.50  # a session is covered when >= 50 % of the set has a cost that day
+NAME_MIN_DAY_SHARE = 0.75  # a name is evaluable with a cost on >= 75 % of the covered sessions
+MIN_EVALUABLE_SHARE = 0.50  # the rule decides only when >= 50 % of the set is evaluable
+
+
+def covered_sessions(
+    costs: Mapping[str, Mapping[date, float | None]], days: Sequence[date], *, min_name_share: float = SESSION_MIN_NAME_SHARE
+) -> list[date]:
+    """Sessions of ``days`` on which at least ``min_name_share`` of the names in ``costs`` have a cost (not None)."""
+    n = len(costs)
+    if n == 0:
+        return []
+    return [d for d in days if sum(1 for c in costs.values() if c.get(d) is not None) >= min_name_share * n]
+
+
+def early_kill(
+    costs: Mapping[str, Mapping[date, float | None]],
+    days: Sequence[date],
+    *,
+    kill_cost: float = KILL_COST,
+    kill_share: float = KILL_SHARE,
+    retrigger_cost: float = RETRIGGER_COST,
+    min_sessions: int = MIN_SESSIONS,
+    session_min_name_share: float = SESSION_MIN_NAME_SHARE,
+    name_min_day_share: float = NAME_MIN_DAY_SHARE,
+    min_evaluable_share: float = MIN_EVALUABLE_SHARE,
+) -> dict[str, Any]:
+    """Early-kill rule (b) of the card on per-name, per-session round-trip costs (decimals).
+
+    ``costs``: name -> {session day: cost or None}, the whole frozen set (a name with no rows maps to ``{}``).
+    Only covered sessions (:func:`covered_sessions`) count; a name is evaluable with a cost on at least
+    ``name_min_day_share`` of them, and its statistic is the median cost over those days. Decision: ``"wait"`` when
+    fewer than ``min_sessions`` covered sessions or fewer than ``min_evaluable_share`` of the set evaluable;
+    else ``"reject"`` when the share of evaluable names with median >= ``kill_cost`` is >= ``kill_share``, otherwise
+    ``"continue"``. Also returns the share of evaluable names with median <= ``retrigger_cost`` and the median of the
+    per-name medians (the step-0 rerun condition, descriptive)."""
+    cov = covered_sessions(costs, days, min_name_share=session_min_name_share)
+    need = name_min_day_share * len(cov)
+    per: dict[str, dict[str, Any]] = {}
+    for name, by_day in costs.items():
+        xs = [by_day[d] for d in cov if by_day.get(d) is not None]
+        ok = bool(cov) and len(xs) >= need
+        per[name] = {"n": len(xs), "evaluable": ok, "median": median(xs) if xs else None}
+    ev = [p["median"] for p in per.values() if p["evaluable"]]
+    n_fail = sum(1 for m in ev if m >= kill_cost)
+    n_cheap = sum(1 for m in ev if m <= retrigger_cost)
+    share_fail = n_fail / len(ev) if ev else None
+    if len(cov) < min_sessions or len(ev) < min_evaluable_share * len(costs):
+        decision = "wait"
+    elif share_fail is not None and share_fail >= kill_share:
+        decision = "reject"
+    else:
+        decision = "continue"
+    return {
+        "covered_sessions": cov,
+        "n_names": len(costs),
+        "n_evaluable": len(ev),
+        "n_fail": n_fail,
+        "share_fail": share_fail,
+        "n_cheap": n_cheap,
+        "share_cheap": n_cheap / len(ev) if ev else None,
+        "median_of_medians": median(ev) if ev else None,
+        "decision": decision,
+        "per_name": per,
+    }

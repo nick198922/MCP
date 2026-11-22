@@ -4,7 +4,7 @@ Sibling of tests/test_tools_malformed_200.py (a malformed body) and tests/test_t
 fakes, the seeded store, ARGS and SKIP, all reused here). A venue answers 200 with the expected keys, but one numeric
 field is `null`, the string "abc" or an empty list. For every registered tool:
 1. a warm-up call fills the in-process caches (Hyperliquid's coin map, ccxt markets) and runs one-shot side effects
-   (carry_paper_close closes its pair); a second clean call records the numeric fields (numbers and numeric strings)
+   (a store write); a second clean call records the numeric fields (numbers and numeric strings)
    of every JSON body and every ccxt result the tool reads. A field is named by its source (host + path, or ccxt
    exchange + method) and its path in the tree, with list indices folded to `[*]` (only short lists of scalars, i.e.
    rows like an OHLCV bar or a [price, size] level, keep their index);
@@ -43,7 +43,16 @@ from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
 from test_server import EXPECTED_TOOLS
-from test_tools_envelope_shape import ARGS, COINALYZE_TEST_KEY, NO_NETWORK, SKIP, _extra_fakes, _seed_store, _Transports
+from test_tools_envelope_shape import (
+    ARGS,
+    COINALYZE_TEST_KEY,
+    ETHERSCAN_TEST_KEY,
+    NO_NETWORK,
+    SKIP,
+    _extra_fakes,
+    _seed_store,
+    _Transports,
+)
 from test_tools_provider_outage import as_envelope
 from tradedesk.analytics.options import build_chain
 from tradedesk.config import Settings
@@ -80,9 +89,8 @@ def known_failures_match(failures: dict[str, str], pattern: str) -> bool:
 
 
 # Tools that read no numeric field on the recording call, so nothing is mutated (the test fails if one starts to):
-# the calculators and store tools of NO_NETWORK, plus these two.
+# the calculators and store tools of NO_NETWORK, plus this one (carry_paper_close, the other, was removed 2026-11-18).
 NO_FIELDS: dict[str, str] = {
-    "carry_paper_close": "the warm-up call closes the seeded pair; the next calls answer from the store",
     "plan_review": "each tool gets a fresh store here, so there is no open plan whose candles it would fetch",
 }
 
@@ -181,6 +189,9 @@ class Mutator:
                 self.seen[name] = max(self.seen.get(name, 0), n)
         if self.target is not None:
             field, value, where = self.target
+            if field == prefix:  # the whole body is one scalar (mempool.space /api/blocks/tip/height: a bare integer)
+                self.hits += 1
+                return copy.copy(value)
             if field.startswith(prefix + ".") or field.startswith(prefix + "["):
                 tree = tree if fresh else copy.deepcopy(tree)
                 self.hits += break_field(tree, prefix, field, value, where)
@@ -238,6 +249,7 @@ def _runtime(tmp_path, mutator: Mutator, cache_scale: float = 0.0, db: str = "wr
                 cache_scale=cache_scale,
                 db_path=str(tmp_path / f"{db}.sqlite"),
                 coinalyze_api_key=COINALYZE_TEST_KEY,
+                etherscan_api_key=ETHERSCAN_TEST_KEY,
             ),
             transports=_Transports({name: _MutatingTransport(t, mutator) for name, t in fakes.items()}),
             exchange_factory=lambda ex_id: _MutatingEx(ex_id, mutator),
@@ -289,7 +301,7 @@ async def run_tool(tmp_path, name: str, seeded: Path) -> dict[str, Any]:
     report: dict[str, Any] = {"mutations": 0, "hits": 0, "failures": {}}
     async with Client(srv) as c:
         # Two clean calls: the first warms the in-process caches (Hyperliquid's coin map, ccxt markets) and runs the
-        # one-shot side effects (carry_paper_close), the second records only the fields every call reads again.
+        # one-shot side effects (a store write), the second records only the fields every call reads again.
         for recording in (None, {}):
             m.seen = recording
             res = await c.call_tool(name, TOOL_ARGS.get(name, {}))

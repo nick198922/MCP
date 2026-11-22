@@ -29,7 +29,7 @@ from tradedesk.store import Store
 CORRUPT_MODES = ("random_bytes", "truncated")
 
 # Store tools that do not open the store with the test ARGS (see test_corrupt_store_file_goes_to_missing).
-NOT_OPENING = {"range_setup", "system_health"}
+NOT_OPENING = {"system_health"}
 
 # Rows created through the tools before the lock, so that the close/disable/link tools (id=1 in ARGS) reach their write.
 SEED = ("journal_add", "positions_add", "rules_add", "plan_add")
@@ -38,7 +38,6 @@ SEED = ("journal_add", "positions_add", "rules_add", "plan_add")
 # id 1; rules_add is not here: the seeded rule has its name, so it stops at the duplicate check before writing). Reads
 # keep working under a WAL write lock, so the other store tools answer from the last committed data.
 LOCKED_WRITERS = {
-    "events_seed_load",
     "journal_add",
     "journal_close",
     "plan_add",
@@ -46,7 +45,6 @@ LOCKED_WRITERS = {
     "positions_add",
     "positions_close",
     "rules_disable",
-    "rules_presets_load",
 }
 
 
@@ -115,10 +113,10 @@ async def test_corrupt_store_file_goes_to_missing(tmp_path, mode):
     expected = "file is not a database" if mode == "random_bytes" else "database disk image is malformed"
     failed = {n for n, env in envelopes.items() if any(expected in d for d in _store_misses(env))}
     # The tools open the store through `tools._util.store_ready` before anything else, so even those that return
-    # before their first query on a healthy store (NO_QUERY_WITH_ARGS) report it here. Two do not open it: range_setup
-    # reads live bars with the test ARGS (its store source: test below), and system_health only reads an open store and
-    # shows this never-opened one as `not_initialised` (in production the lifespan has opened it, and a query error on
-    # it is `missing: store`, see test_tools_no_store.py).
+    # before their first query on a healthy store (NO_QUERY_WITH_ARGS) report it here. One does not open it:
+    # system_health only reads an open store and shows this never-opened one as `not_initialised` (in production the
+    # lifespan has opened it, and a query error on it is `missing: store`, see test_tools_no_store.py). range_detect's
+    # view='setup' (the former range_setup) reads live bars by default; its store source: test below.
     assert failed == set(envelopes) - NOT_OPENING, f"no `missing: store` from: {sorted(set(envelopes) - NOT_OPENING - failed)}"
     assert all(envelopes[n]["ok"] is False for n in failed)
     assert envelopes["system_health"]["ok"] is True
@@ -133,7 +131,7 @@ async def test_range_setup_store_source_corrupt(tmp_path, mode):
     async with Client(srv) as c:
         await rt.store.aclose()
         rt.store = Store(path)
-        res = await c.call_tool("range_setup", {**ARGS["range_setup"], "source": "store"})
+        res = await c.call_tool("range_detect", {**ARGS["range_detect"], "view": "setup", "source": "store"})
     assert not res.is_error, res.content[0].text[:300] if res.content else ""
     data = _payload(res)
     assert data["ok"] is False and _store_misses(data)

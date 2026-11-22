@@ -12,18 +12,38 @@ Stablecoins live on a separate host, `https://stablecoins.llama.fi` (public, no 
   "circulatingPrevMonth": {...}, "chainCirculating": {...}, "chains": [...]}, ...]}`. Per-chain breakdowns are dropped.
 * `/stablecoincharts/all` -> `[{"date": "unix seconds as a string", "totalCirculating": {peg: n},
   "totalCirculatingUSD": {peg: usd}, ...}, ...]` (daily). Only `date` and `totalCirculatingUSD` are kept.
+
+Yield pools live on `https://yields.llama.fi` (public, no key). Field names checked live on 2026-11-19; the
+documentation (api-docs.defillama.com) was not fetched, and the test sample is synthetic
+(tests/fixtures/defillama_yields_sample_2026-11-19.json):
+
+* `/pools` -> `{"status": "success", "data": [{"pool": uuid, "chain", "project", "symbol", "tvlUsd", "apy", "apyBase",
+  "apyReward", "apyPct1D", "apyPct7D", "apyPct30D", "apyMean30d", "stablecoin", "ilRisk", "exposure", "poolMeta",
+  "rewardTokens", "underlyingTokens", "il7d", "apyBase7d", "volumeUsd1d", "volumeUsd7d", "count", "outlier",
+  "predictions", "mu", "sigma", ...}, ...]}`, every APY in PERCENT. One large body (~15k pools, every pool DefiLlama
+  tracks), so it is fetched without the `Http` cache; the rows are normalised once (`analytics.yields.normalise_pools`,
+  decimals, cleaned text) and only that result is cached here for 10 min, so a call filters without re-parsing.
+  Memory (tracemalloc, 15k synthetic rows of the live shape): ~26 MB stays cached for the 10 min, ~50 MB peak while
+  a download is parsed, plus the ~11 MB response bytes.
+* `/chart/{pool}` -> `{"status": "success", "data": [{"timestamp": ISO, "tvlUsd", "apy", "apyBase", "apyReward",
+  "il7d", "apyBase7d", "pricePerShare"}, ...]}` (daily points; the newest can be intraday). An unknown pool id gives
+  `{"status": "success", "data": []}`.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from ..analytics.yields import normalise_pools, valid_pool_id
+from ..core.cache import TTLCache
 from ..core.envelope import Fetched
 from ..core.errors import ProviderError
 from ..core.http import Http
 
 BASE_URL = "https://api.llama.fi"
 STABLECOINS_URL = "https://stablecoins.llama.fi"
+YIELDS_URL = "https://yields.llama.fi"
+POOLS_TTL_SECONDS = 600.0  # DefiLlama refreshes yields about hourly; the list is one large download
 
 _ASSET_KEEP = (
     "id",
@@ -61,19 +81,64 @@ _KEEP = (
 class DefiLlama:
     name = "defillama"
 
-    def __init__(self, http: Http, stablecoins: Http | None = None) -> None:
+    def __init__(
+        self, http: Http, stablecoins: Http | None = None, yields: Http | None = None, *, pools_ttl: float = POOLS_TTL_SECONDS
+    ) -> None:
         self.http = http
         self.stablecoins = stablecoins  # stablecoins.llama.fi host
+        self.yields = yields  # yields.llama.fi host
+        self._pools_ttl = pools_ttl
+        self._pools_cache = TTLCache(max_items=2)
 
     async def aclose(self) -> None:
         await self.http.aclose()
         if self.stablecoins is not None:
             await self.stablecoins.aclose()
+        if self.yields is not None:
+            await self.yields.aclose()
 
     def _stables(self) -> Http:
         if self.stablecoins is None:
             raise ProviderError(self.name, "config", "stablecoins client not configured")
         return self.stablecoins
+
+    def _yields(self) -> Http:
+        if self.yields is None:
+            raise ProviderError(self.name, "config", "yields client not configured")
+        return self.yields
+
+    @staticmethod
+    def _yields_rows(f: Fetched, path: str) -> list[Any]:
+        body = f.data
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list) or body.get("status", "success") != "success":
+            raise ProviderError(f.evidence.provider, "backend_error", f"unexpected response shape at {path}")
+        return rows
+
+    async def _fetch_pools(self) -> Fetched:
+        f = await self._yields().get_json("/pools", ttl=0, tool="yields/pools", args={})
+        rows = self._yields_rows(f, "/pools")
+        # pool_row reads only the fields it keeps, so the raw rows go straight in (no slimmed copy first)
+        return Fetched(normalise_pools([r for r in rows if isinstance(r, dict)]), f.evidence)
+
+    async def yield_pools(self) -> Fetched:
+        """Every yield pool DefiLlama tracks, normalised once: `{"pools": [pool_row ...], "skipped": n}` (APYs as
+        decimals). The rows are shared with the cache: callers must not mutate them."""
+        if self._pools_ttl <= 0:
+            return await self._fetch_pools()
+        fetched, from_cache = await self._pools_cache.get_or_fetch("pools", self._pools_ttl, self._fetch_pools)
+        if from_cache:
+            return Fetched(fetched.data, fetched.evidence.model_copy(update={"cached": True}))
+        return fetched
+
+    async def yield_chart(self, pool: str) -> Fetched:
+        """Daily history of one pool (`/chart/{pool}`), rows as sent (APYs in percent)."""
+        # The id becomes a URL path segment: re-checked here even though the tool validates it first.
+        pid = valid_pool_id(pool)
+        if pid is None:
+            raise ProviderError(self._yields().provider, "unknown", "invalid pool id (a DefiLlama pool UUID expected)")
+        f = await self._yields().get_json(f"/chart/{pid}", ttl=600, tool="yields/chart", args={"pool": pid})
+        return Fetched(self._yields_rows(f, "/chart"), f.evidence)
 
     async def stablecoin_assets(self) -> Fetched:
         """Current circulating supply per stablecoin with DefiLlama's own day / week / month-ago snapshots."""

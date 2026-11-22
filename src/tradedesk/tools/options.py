@@ -8,6 +8,13 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics import probability
+from ..analytics.event_move import (
+    base_forward_iv,
+    base_window_is_short,
+    events_in_event_window,
+    excess_event_move,
+    implied_event_move,
+)
 from ..analytics.instruments import expiry_token
 from ..analytics.options import (
     OptionRow,
@@ -29,7 +36,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import MAX_BAR_TS_MS, READ_ONLY, bar_rows, find_expiry, parsed_rows, r, store_num
+from ._util import MAX_BAR_TS_MS, READ_ONLY, bar_rows, find_expiry, parsed_rows, r, reject_nonfinite_result, store_num
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -57,6 +64,15 @@ def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
 
 def _day(d: float) -> str:
     return datetime.fromtimestamp(int(d) * 86400, UTC).date().isoformat()
+
+
+def _iso_utc(s: str) -> datetime | None:
+    """An ISO-8601 time as an aware UTC datetime (no offset = UTC), or None when it does not parse."""
+    try:
+        t = datetime.fromisoformat(s.strip())
+        return t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
 
 
 MAX_DVOL_PCT = 1000.0  # DVOL is annualised percent (BTC's record is ~200); a close beyond 1000 % is a corrupt row
@@ -415,6 +431,180 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
+            "Implied move of a dated event (FOMC, CPI, ...) from the two adjacent Deribit BTC/ETH expiries around it. "
+            "ATM IV (decimal, 0.45 = 45 %) of each expiry is read at its forward from the mark-IV smile; T = days / 365. "
+            "Forward variance between the expiries is (iv2^2 T2 - iv1^2 T1) / (T2 - T1) and `forward_iv` is its square root "
+            "(annualised decimal). `event_move_pct` = sqrt(iv2^2 T2 - iv1^2 T1) x 100 is a 1-sigma move in percent and "
+            "`event_move_usd` ~ that fraction x the later expiry's forward (USD). It is the 1-sigma move of the WHOLE window "
+            "(`window_days`): the event plus the window's ordinary diffusion, which is not removed, so it is an upper bound on "
+            "the event's own move even for a one-day window (one day of ordinary diffusion is itself a few percent). "
+            "The excess over the base diffusion is the event's own estimate: `base_forward_iv` is the forward vol "
+            "(annualised decimal) of a neighbouring window between two expiries, just before or just after the event's, that holds "
+            "no event from `other_events` (`base_window` says which; when both qualify, the one closest in length to the "
+            "event window), and `excess_event_move_pct` = sqrt(max(event_var - base_forward_iv^2 x (T2 - T1), 0)) x 100 "
+            "(`_usd` ~ that fraction x the later forward), as an earnings move is backed out of equity options. It is 0 when the "
+            "window's variance is not above the base (no event premium in the marks) and null with a warning when no "
+            "neighbouring window qualifies (no expiry there, another event inside it, or calendar arbitrage). It is an "
+            "estimate, not a forecast: it assumes the neighbouring window's forward vol is the event window's vol without the "
+            "event (term structure, weekends and unlisted events bias it); a warning flags it when one of `other_events` lies "
+            "inside the event window itself or the base window is under 1 day or under half the event window. "
+            "`vs_expected_move` puts it next to deribit_expected_move for the later expiry "
+            "(ATM straddle in percent of the forward, sigma move to expiry) and gives the event's share of that expiry's "
+            "variance. Risk-neutral, not a forecast. A non-positive forward variance (calendar arbitrage in the marks) gives no "
+            "move and a warning. ok=false when the event is in the past or not between two listed expiries."
+        ),
+    )
+    async def deribit_event_move(
+        event_ts: Annotated[
+            str,
+            Field(
+                description="Event time, ISO-8601 (e.g. '2026-12-16T19:00:00Z', as macro_calendar's ts_utc); "
+                "a time without an offset is read as UTC. Must lie between two listed expiries (08:00 UTC)."
+            ),
+        ],
+        currency: CUR = "BTC",
+        other_events: Annotated[
+            list[str] | None,
+            Field(
+                description="Other dated events (ISO-8601, as event_ts; e.g. events_list / macro_calendar times) that rule "
+                "out a neighbouring window as the base diffusion for excess_event_move. Max 50.",
+                max_length=50,
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        ev = _iso_utc(event_ts)
+        if ev is None:
+            b.miss("event_ts", "tradedesk", "invalid_input", "event_ts is not an ISO-8601 time such as 2026-12-16T19:00:00Z")
+            return b.build(None, ok=False)
+        others: list[datetime] = []
+        for s in other_events or []:
+            o = _iso_utc(s)
+            if o is None:
+                b.miss("other_events", "tradedesk", "invalid_input", f"{str(s)[:40]!r} is not an ISO-8601 time")
+                return b.build(None, ok=False)
+            others.append(o)
+        now = rt.now()
+        if ev <= now:
+            b.miss("event_ts", "tradedesk", "invalid_input", f"event {ev.isoformat()} is not in the future")
+            return b.build(None, ok=False)
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        ivs: dict[datetime, float] = {}
+        no_smile: list[datetime] = []
+        for exp, rs in by.items():
+            sm = build_smile(rs) if exp > now else None
+            a = atm_iv(sm) if sm is not None else None
+            if a is not None and math.isfinite(a) and a > 0:
+                ivs[exp] = a
+            elif exp > now:
+                no_smile.append(exp)
+        res = implied_event_move(ivs.items(), ev, now)
+        if not res["ok"]:
+            b.miss("event_move", "tradedesk", "data_unavailable", res["reason"])
+            return b.build(None, ok=False)
+        e1, e2 = res["before"]["expiry"], res["after"]["expiry"]
+        skipped = [expiry_token(e) for e in no_smile if e1 < e < e2]
+        if skipped:
+            b.warn(f"expiries between the pair skipped (fewer than 3 priced strikes): {', '.join(skipped)}")
+        f1, f2 = by[e1][0].forward, by[e2][0].forward
+        move = res["event_move"]
+        st = atm_straddle(by[e2])
+        vs: dict[str, Any] = {
+            "expiry": expiry_token(e2),
+            "sigma_move_pct": r(res["after"]["iv"] * math.sqrt(res["after"]["T"]) * 100, 3),
+            "event_share_of_variance": r(res["event_share"], 4),
+        }
+        if st is not None:
+            vs["straddle_pct"] = r(st["straddle_pct_of_forward"] * 100, 3)
+            vs["straddle_usd"] = r(st["straddle_usd"], 2)
+        base = base_forward_iv(ivs.items(), ev, now, others)
+        base_window: dict[str, Any] | None = None
+        excess: dict[str, Any] | None = None
+        if base["ok"]:
+            base_window = {
+                "side": base["side"],
+                "from": expiry_token(base["start"]),
+                "to": expiry_token(base["end"]),
+                "days": r(base["window_days"], 3),
+            }
+            if not res["calendar_arbitrage"]:
+                excess = excess_event_move(res["event_var"], base["forward_var"], res["before"]["T"], res["after"]["T"])
+        data = {
+            "currency": currency,
+            "event_utc": ev.isoformat(),
+            "expiry_before": {
+                "expiry": expiry_token(e1),
+                "days": r(res["before"]["T"] * 365, 3),
+                "forward": r(f1, 2),
+                "atm_iv": r(res["before"]["iv"], 4),
+            },
+            "expiry_after": {
+                "expiry": expiry_token(e2),
+                "days": r(res["after"]["T"] * 365, 3),
+                "forward": r(f2, 2),
+                "atm_iv": r(res["after"]["iv"], 4),
+            },
+            "window_days": r(res["window_days"], 3),
+            "forward_variance": r(res["forward_var"], 6),
+            "forward_iv": r(res["forward_iv"], 4),
+            "event_move_pct": r(move * 100, 3) if move is not None else None,
+            "event_move_usd": r(move * f2, 2) if move is not None else None,
+            "calendar_arbitrage": res["calendar_arbitrage"],
+            "base_forward_iv": r(base["forward_iv"], 4) if base["ok"] else None,
+            "base_window": base_window,
+            "excess_event_move_pct": r(excess["excess_move"] * 100, 3) if excess is not None else None,
+            "excess_event_move_usd": r(excess["excess_move"] * f2, 2) if excess is not None else None,
+            "vs_expected_move": vs,
+            "spot_index": next((x.index for x in rows if x.index), None),
+        }
+        if bad := reject_nonfinite_result(b, data):
+            return bad
+        if not base["ok"]:
+            b.warn(f"no base forward vol without the event, so excess_event_move is null: {base['reason']}")
+        elif excess is not None and excess["below_base"]:
+            b.warn(
+                f"the window's variance is not above the base diffusion (base_forward_iv {base['forward_iv']:.4f} over "
+                f"{expiry_token(base['start'])}..{expiry_token(base['end'])}), so excess_event_move is 0: "
+                "no event premium in the marks"
+            )
+        if excess is not None:
+            inside = events_in_event_window(others, ev, e1, e2)
+            if inside:
+                b.warn(
+                    f"another event inside the event window ({expiry_token(e1)}, {expiry_token(e2)}]: "
+                    f"{', '.join(x.isoformat() for x in inside)}; its variance is attributed to the main event, "
+                    "so excess_event_move is not that event's alone"
+                )
+            if base_window_is_short(base["window_days"], res["window_days"]):
+                b.warn(
+                    f"the base window is short ({base['window_days']:.2f} days vs the event window's "
+                    f"{res['window_days']:.2f}; under 1 day or under half of it): its forward variance is a noisy "
+                    "difference of two IVs, so excess_event_move may be badly biased"
+                )
+        if res["calendar_arbitrage"]:
+            b.miss("event_move", "tradedesk", "data_unavailable", "non-positive forward variance between the expiries")
+            b.warn(
+                f"calendar arbitrage in the marks: total variance to {expiry_token(e2)} is not above {expiry_token(e1)}'s, "
+                "so no event move is implied (no square root of a negative number is taken)"
+            )
+        b.warn(
+            f"The move is the 1-sigma move of the whole {res['window_days']:.2f}-day window (the event plus the window's "
+            "ordinary diffusion, which is not removed), so it is an upper bound on the event's own move, even for a one-day "
+            "window. excess_event_move is the estimate of the event's own move: the excess over the base diffusion "
+            "(base_forward_iv of a neighbouring window with no event from other_events), an estimate that assumes that "
+            "window's vol is the event window's vol without the event (term structure, weekends and unlisted events bias it)."
+        )
+        b.warn(
+            "Risk-neutral (option marks), not a forecast; ATM IVs of short-dated expiries are noisy and the difference amplifies the noise."
+        )
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
             "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional "
             "(each option's OI times its own expiry's forward), sorted largest-first. Returns top strikes overall and separately the biggest "
             "call walls (potential resistance) and put walls (potential support). Without `expiry` all expiries are summed per strike, and the "
@@ -567,7 +757,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Deribit DVOL index (implied-volatility index) time series via /public/get_volatility_index_data. "
             "DVOL is reported in annualised PERCENT (e.g. 45.3 means 45.3 %). Returns the OHLC series plus "
             "latest/mean/min/max/stdev and point-change vs 24h/7d ago. Resolutions supported: 60s, 3600s, "
-            "43200s, 86400s; defaults to 3600s. IV rank/percentile needs stored history (Phase 2)."
+            "43200s, 86400s; defaults to 3600s; at most 30 days back. "
+            "When to pick it: the raw DVOL path and its recent point changes (values in PERCENT, unlike the decimals "
+            "of deribit_vrp and iv_rank); for DVOL's percentile over up to 1000 days, implied vs realized vol and the "
+            "straddle-selling record use deribit_vrp; for the IV rank of one listed expiry over our stored history use "
+            "iv_rank."
         ),
     )
     async def deribit_dvol(
@@ -632,7 +826,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(DVOL minus the following 30 days' realized vol); and the record of selling a 30d ATM straddle at "
             "DVOL - `entry_cost_vol` with daily delta hedging (P&L as a fraction of spot per trade), overall and by "
             "DVOL's percentile within the trailing 365 days (`by_dvol_level`, current bucket flagged). Vols are "
-            "decimals (0.45 = 45 %). Historical, not a forecast: see `warnings`."
+            "decimals (0.45 = 45 %). Historical, not a forecast: see `warnings`. "
+            "When to pick it: is implied vol rich or cheap against realized and against its own past (daily data, no "
+            "stored history needed); for the intraday DVOL series in percent use deribit_dvol; for the IV rank of one "
+            "listed expiry (not the 30-day index) over our stored history use iv_rank."
         ),
     )
     async def deribit_vrp(

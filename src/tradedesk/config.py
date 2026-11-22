@@ -38,6 +38,9 @@ class Settings:
     # not pinned in code (read it off Graph Explorer).
     graph_api_key: str | None = field(default=None, repr=False)
     graph_pnl_subgraph_id: str | None = None
+    # Etherscan V2 (providers/etherscan.py, onchain_* tools). The free key lives in ~/.config/tradedesk/onchain.env; the MCP
+    # service reads only its own environment, so without ETHERSCAN_API_KEY there the tools answer `missing: config`.
+    etherscan_api_key: str | None = field(default=None, repr=False)
     # Local SQLite history (Phase 2). Empty string disables the store entirely.
     db_path: str = "data/tradedesk.sqlite"
     collector_enabled: bool = False
@@ -59,6 +62,16 @@ class Settings:
     collect_liquidations_restart_seconds: int = 5
     collect_liquidations_bybit_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
     collect_liquidations_okx_inst_type: str = "SWAP"
+    # Order-book walls collector (WebSocket; collector/book_walls.py, IDEA-20261114-book-walls item 1): one job per venue
+    # (binance = USD-M depth diffs + aggTrades, bybit = linear orderbook.1000 + trades, binance_spot = spot depth diffs +
+    # aggTrades, coinbase = Advanced Trade level2 + market_trades of BTC-USD / ETH-USD) stores closed walls and a depth
+    # row per symbol and minute. Each run holds the streams for `_window_seconds`; the book and the open walls carry over
+    # to the next run (a reconnect is a gap). Off by default.
+    collect_book_walls_enabled: bool = False
+    collect_book_walls_venues: str = "binance,bybit,binance_spot,coinbase"
+    collect_book_walls_symbols: str = "BTCUSDT,ETHUSDT"  # bases need a coin minimum in analytics.book_walls.MIN_QTY
+    collect_book_walls_window_seconds: int = 900
+    collect_book_walls_restart_seconds: int = 2
     # Historical OHLCV collector
     collect_ohlcv_hist_enabled: bool = False
     collect_ohlcv_hist_markets: str = ""  # "venue:symbol:timeframe,..."
@@ -193,6 +206,7 @@ class Settings:
             # non-ASCII keys are refused by the provider as `config` (providers/thegraph.key_problem)
             graph_api_key=(os.environ.get("GRAPH_API_KEY") or "").strip() or None,
             graph_pnl_subgraph_id=os.environ.get("TRADEDESK_GRAPH_PNL_SUBGRAPH_ID") or None,
+            etherscan_api_key=(os.environ.get("ETHERSCAN_API_KEY") or "").strip() or None,
             db_path=os.environ.get("TRADEDESK_DB_PATH", "data/tradedesk.sqlite"),
             collector_enabled=os.environ.get("TRADEDESK_COLLECTOR_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_atm_term_seconds=int(_float("TRADEDESK_COLLECT_ATM_TERM_SECONDS", 300)),
@@ -208,6 +222,11 @@ class Settings:
             collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
             collect_liquidations_bybit_symbols=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT"),
             collect_liquidations_okx_inst_type=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_OKX_INST_TYPE", "SWAP"),
+            collect_book_walls_enabled=os.environ.get("TRADEDESK_COLLECT_BOOK_WALLS_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_book_walls_venues=os.environ.get("TRADEDESK_COLLECT_BOOK_WALLS_VENUES", "binance,bybit,binance_spot,coinbase"),
+            collect_book_walls_symbols=os.environ.get("TRADEDESK_COLLECT_BOOK_WALLS_SYMBOLS", "BTCUSDT,ETHUSDT"),
+            collect_book_walls_window_seconds=int(_float("TRADEDESK_COLLECT_BOOK_WALLS_WINDOW_SECONDS", 900)),
+            collect_book_walls_restart_seconds=int(_float("TRADEDESK_COLLECT_BOOK_WALLS_RESTART_SECONDS", 2)),
             collect_ohlcv_hist_enabled=os.environ.get("TRADEDESK_COLLECT_OHLCV_HIST_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_ohlcv_hist_markets=os.environ.get("TRADEDESK_COLLECT_OHLCV_HIST_MARKETS", ""),
             collect_ohlcv_hist_seconds=int(_float("TRADEDESK_COLLECT_OHLCV_HIST_SECONDS", 3600)),

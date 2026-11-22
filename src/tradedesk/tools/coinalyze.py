@@ -149,7 +149,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "liquidations_summary (our own live-collected stream). Intervals are UTC-aligned daily or hourly. "
             "Coinalyze keeps hourly data only for a limited recent window (older ranges come back empty). "
             "Liquidation counts are exchange-reported and understate forced closes on venues that publish only the "
-            "largest order per second. Do not read the totals as market-wide liquidations."
+            "largest order per second. Do not read the totals as market-wide liquidations. "
+            "When to pick it: history beyond the last 24 hours (up to 365 days daily, 30 days hourly); for the last "
+            "minutes to 24 hours with exact per-liquidation USD and Binance / Bybit / OKX use liquidations_summary."
         ),
     )
     async def liquidations_history(
@@ -188,148 +190,87 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b.warn("Not a trading signal by itself: no backtest of liquidation spikes is attached to this tool.")
         return b.build(data)
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Open-interest history (OHLC per interval) of a perpetual from Coinalyze (needs the COINALYZE_API_KEY "
-            "setting), on Binance by default or summed over the selected exchanges: exchanges = 'binance' (Coinalyze "
-            "code '.A') and/or 'bybit' ('.6', USDT-margined only); no other codes are accepted. Each code is one "
-            "exchange, not an all-exchanges aggregate; the response lists the exchanges used, and an exchange that "
-            "fails or has no data goes to `missing` while the rest is summed (only intervals present on every used "
-            "exchange are summed; summed high/low are sums of per-exchange extremes, i.e. bounds). Rows: "
-            "open/high/low/close OI; stats over the closes: latest, mean, stdev, min, max, z-score of the latest, "
-            "change and change_pct (fraction, 0.05 = +5 %) from the first to the last close. Units: USD by default, "
-            "or base-asset coins with in_usd=false. USD in Coinalyze = coins x the close of the interval (its own "
-            "conversion, checked on daily liquidations), so on crash days USD values are shifted against the coin "
-            "counts; exact USD liquidation sums come from liquidations_summary. Timestamps are interval starts "
-            "(Binance openInterestHist stamps the interval end, so its daily series sits one day later). Daily "
-            "history goes back years; hourly only for a limited recent window. For live OI per venue use "
-            "perps_open_interest, for a short multi-venue history perps_oi_history. Descriptive data, not a signal."
-        ),
-    )
-    async def coinalyze_oi_history(
-        symbol: Symbol,
-        interval: Interval = "daily",
-        days: Days = 30,
-        margin: Margin = "usdt",
-        in_usd: Annotated[bool, Field(description="OI in USD (true) or in base-asset coins (false).")] = True,
-        exchanges: Exchanges = None,
-    ) -> dict[str, Any]:
-        b = Builder()
-        w = _window(b, rt, symbol, margin, interval, days)
-        if w is None:
-            return b.build(None, ok=False)
-        _, span_days, start, end = w
-        pairs = _exchange_symbols(b, "open_interest", symbol, margin, exchanges)
-        if pairs is None:
-            return b.build(None, ok=False)
-        api_iv = api_interval(interval)
-        data = await _summed(
-            b,
-            "open_interest",
-            "open-interest",
-            pairs,
-            lambda sym: rt.coinalyze.open_interest_history(sym, api_iv, start, end, convert_to_usd=in_usd),
-            lambda rows: ohlc_series(rows, interval),
-            ("o", "h", "l", "c"),
-        )
-        if data is None:
-            return b.build(None, ok=False)
-        data.update({"interval": interval, "unit": "USD" if in_usd else symbol.upper(), "days": span_days})
-        _gap_warning(b, data["stats"]["gaps"])
-        if margin == "usd" and not in_usd:
-            b.warn("coin-margined OI without USD conversion: the native unit (coins or contracts) is not verified.")
-        if in_usd:
-            b.warn(USD_NOTE)
-        b.warn("Timestamps are interval starts.")
-        return b.build(data)
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Funding-rate history (OHLC per interval) of a perpetual on **Binance only** from Coinalyze (symbol suffix "
-            "'.A' is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY setting). "
-            "Units: decimal fractions per funding interval (0.0001 = 0.01 % per settlement, usually 8 h on Binance, "
-            "some symbols 4 h or 1 h); NOT annualised. Coinalyze sends percent; we divide by 100. For daily bars use "
-            "close (= last settlement of the UTC day) and high (= largest settlement), both checked against Binance "
-            "payments 2026-10-18; open and low may carry the previous day's last rate, so they are not this day's "
-            "settlements. Stats over the closes: latest, mean, stdev, min, max, z-score of the latest, change. The "
-            "mean of daily closes is neither the average rate of the day nor the sum of its payments: do not compute "
-            "carry from it. Hourly bars are unverified (in hours without a settlement Coinalyze may repeat the last "
-            "rate, send a predicted one or skip the bar). Daily history goes back years; hourly only for a limited "
-            "recent window. For multi-venue funding with carry and annualisation use perps_funding_history / "
-            "perps_funding_compare. Descriptive data, not a signal."
-        ),
+# The former coinalyze_oi_history / coinalyze_funding_history / coinalyze_long_short_history tools (merged 2026-11-18
+# into perps_oi_history / perps_funding_history / perps_long_short_ratio with source="coinalyze"); bodies unchanged,
+# the caller passes its Builder so it can add its own warnings first.
+
+
+async def oi_history(
+    b: Builder, rt: Runtime, symbol: str, interval: str, days: int, margin: str, in_usd: bool, exchanges: Sequence[str] | None
+) -> dict[str, Any]:
+    """Coinalyze OI history (OHLC per interval), Binance by default or summed over the whitelisted exchanges."""
+    w = _window(b, rt, symbol, margin, interval, days)
+    if w is None:
+        return b.build(None, ok=False)
+    _, span_days, start, end = w
+    pairs = _exchange_symbols(b, "open_interest", symbol, margin, exchanges)
+    if pairs is None:
+        return b.build(None, ok=False)
+    api_iv = api_interval(interval)
+    data = await _summed(
+        b,
+        "open_interest",
+        "open-interest",
+        pairs,
+        lambda sym: rt.coinalyze.open_interest_history(sym, api_iv, start, end, convert_to_usd=in_usd),
+        lambda rows: ohlc_series(rows, interval),
+        ("o", "h", "l", "c"),
     )
-    async def coinalyze_funding_history(
-        symbol: Symbol,
-        interval: Interval = "daily",
-        days: Days = 30,
-        margin: Margin = "usdt",
-    ) -> dict[str, Any]:
-        b = Builder()
-        w = _window(b, rt, symbol, margin, interval, days)
-        if w is None:
-            return b.build(None, ok=False)
-        sym, span_days, start, end = w
-        rows = await b.guard("funding", "coinalyze", rt.coinalyze.funding_rate_history(sym, api_interval(interval), start, end))
-        if rows is None:
-            return b.build(None, ok=False)
-        data = ohlc_series(rows, interval, scale=FUNDING_PCT_TO_DECIMAL, with_pct_change=False)
-        if data is None:
-            b.miss("funding", "coinalyze", "data_unavailable", f"no funding history for {sym} in the range")
-            return b.build(None, ok=False)
-        data.update({"symbol": sym, "interval": interval, "unit": "decimal per funding interval", "days": span_days})
-        _gap_warning(b, data["stats"]["gaps"])
-        b.warn(BINANCE_ONLY + " Rates are per funding interval, not annualised.")
+    if data is None:
+        return b.build(None, ok=False)
+    data.update({"interval": interval, "unit": "USD" if in_usd else symbol.upper(), "days": span_days})
+    _gap_warning(b, data["stats"]["gaps"])
+    if margin == "usd" and not in_usd:
+        b.warn("coin-margined OI without USD conversion: the native unit (coins or contracts) is not verified.")
+    if in_usd:
+        b.warn(USD_NOTE)
+    b.warn("Timestamps are interval starts.")
+    return b.build(data)
+
+
+async def funding_history(b: Builder, rt: Runtime, symbol: str, interval: str, days: int, margin: str) -> dict[str, Any]:
+    """Coinalyze funding-rate history (OHLC per interval) of the Binance perp, decimals per funding interval."""
+    w = _window(b, rt, symbol, margin, interval, days)
+    if w is None:
+        return b.build(None, ok=False)
+    sym, span_days, start, end = w
+    rows = await b.guard("funding", "coinalyze", rt.coinalyze.funding_rate_history(sym, api_interval(interval), start, end))
+    if rows is None:
+        return b.build(None, ok=False)
+    data = ohlc_series(rows, interval, scale=FUNDING_PCT_TO_DECIMAL, with_pct_change=False)
+    if data is None:
+        b.miss("funding", "coinalyze", "data_unavailable", f"no funding history for {sym} in the range")
+        return b.build(None, ok=False)
+    data.update({"symbol": sym, "interval": interval, "unit": "decimal per funding interval", "days": span_days})
+    _gap_warning(b, data["stats"]["gaps"])
+    b.warn(BINANCE_ONLY + " Rates are per funding interval, not annualised.")
+    b.warn(
+        "Use close (last settlement) and high (largest settlement); open/low may carry the previous bar's last "
+        "rate. The mean of closes is not the average rate or the sum of payments: not a carry basis."
+    )
+    if interval == "hourly":
         b.warn(
-            "Use close (last settlement) and high (largest settlement); open/low may carry the previous bar's last "
-            "rate. The mean of closes is not the average rate or the sum of payments: not a carry basis."
+            "hourly bar semantics are not verified: in hours without a settlement the value may be the last "
+            "settled rate forward-filled, a predicted rate, or the bar may be missing (affects gaps, mean, z-score)."
         )
-        if interval == "hourly":
-            b.warn(
-                "hourly bar semantics are not verified: in hours without a settlement the value may be the last "
-                "settled rate forward-filled, a predicted rate, or the bar may be missing (affects gaps, mean, z-score)."
-            )
-        return b.build(data)
+    return b.build(data)
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Long/short account-ratio history of a perpetual on **Binance only** from Coinalyze (symbol suffix '.A' "
-            "is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY setting). "
-            "Rows: ratio = long accounts / short accounts, long_share and short_share as fractions in [0, 1] "
-            "(Coinalyze sends percent; we divide by 100). Counts accounts, not notional: a crowd of small longs can "
-            "face a few large shorts. Matches Binance globalLongShortAccountRatio (checked 2026-10-18), including "
-            "its timestamps one to one: a row at t is most likely Binance's snapshot taken at t (known at t, not at "
-            "the end of the bar; inferred, not independently verified), unlike the OI/funding OHLC rows whose t is "
-            "the interval start; mind lookahead in backtests. Stats: ratio "
-            "latest, mean, stdev, min, max, z-score of the latest; latest and mean long_share. Daily history goes "
-            "back years; hourly only for a limited recent window. For Binance + Bybit side by side use "
-            "perps_long_short_ratio. Descriptive data, not a signal."
-        ),
-    )
-    async def coinalyze_long_short_history(
-        symbol: Symbol,
-        interval: Interval = "daily",
-        days: Days = 30,
-        margin: Margin = "usdt",
-    ) -> dict[str, Any]:
-        b = Builder()
-        w = _window(b, rt, symbol, margin, interval, days)
-        if w is None:
-            return b.build(None, ok=False)
-        sym, span_days, start, end = w
-        rows = await b.guard(
-            "long_short_ratio", "coinalyze", rt.coinalyze.long_short_ratio_history(sym, api_interval(interval), start, end)
-        )
-        if rows is None:
-            return b.build(None, ok=False)
-        data = long_short_series(rows, interval)
-        if data is None:
-            b.miss("long_short_ratio", "coinalyze", "data_unavailable", f"no long/short history for {sym} in the range")
-            return b.build(None, ok=False)
-        data.update({"symbol": sym, "interval": interval, "unit": "ratio; shares as fractions", "days": span_days})
-        _gap_warning(b, data["stats"]["gaps"])
-        b.warn(BINANCE_ONLY + " Accounts, not notional.")
-        return b.build(data)
+
+async def long_short_history(b: Builder, rt: Runtime, symbol: str, interval: str, days: int, margin: str) -> dict[str, Any]:
+    """Coinalyze long/short account-ratio history of the Binance perp, shares as fractions."""
+    w = _window(b, rt, symbol, margin, interval, days)
+    if w is None:
+        return b.build(None, ok=False)
+    sym, span_days, start, end = w
+    rows = await b.guard("long_short_ratio", "coinalyze", rt.coinalyze.long_short_ratio_history(sym, api_interval(interval), start, end))
+    if rows is None:
+        return b.build(None, ok=False)
+    data = long_short_series(rows, interval)
+    if data is None:
+        b.miss("long_short_ratio", "coinalyze", "data_unavailable", f"no long/short history for {sym} in the range")
+        return b.build(None, ok=False)
+    data.update({"symbol": sym, "interval": interval, "unit": "ratio; shares as fractions", "days": span_days})
+    _gap_warning(b, data["stats"]["gaps"])
+    b.warn(BINANCE_ONLY + " Accounts, not notional.")
+    return b.build(data)

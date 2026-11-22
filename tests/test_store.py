@@ -377,3 +377,77 @@ async def test_concurrent_inits_on_one_file_apply_each_migration_once(tmp_path):
     finally:
         for s in stores:
             await s.aclose()
+
+
+# ---------- tag filter (item 396a): one whole JSON tag, not a LIKE pattern ----------
+
+_TAG_ROWS = (["хедж", "Core"], ["a%b", "x_y"], ["axb", "xzy"], ["хеджування"])
+
+
+async def _raw_tags(store: Store, table: str, row_id: int, raw: str | None) -> None:
+    # Another writer: unescaped UTF-8 JSON, a bare string, junk text or NULL.
+    async with store._write():
+        await store.conn.execute(f"UPDATE {table} SET tags = ? WHERE id = ?", (raw, row_id))
+
+
+async def _tag_cases(store: Store, table: str, ids) -> None:
+    assert await ids("хедж") == [1]  # stored \u-escaped by json.dumps, still matches; not the longer "хеджування"
+    assert await ids("core") == [1]  # ASCII case-insensitive, as before
+    assert await ids("a%b") == [2] and await ids("x_y") == [2]  # literal `%` / `_`
+    assert await ids("a_b") == [] and await ids("a%") == [] and await ids("x%y") == []  # not wildcards
+    assert await ids("хеджув") == [] and await ids("or") == []  # whole tag only
+    await _raw_tags(store, table, 3, '["ринок"]')  # UTF-8 written without ensure_ascii
+    assert await ids("ринок") == [3]
+    await _raw_tags(store, table, 3, '"ринок"')  # a bare JSON string reads as one tag
+    assert await ids("ринок") == [3]
+    for junk in ('["ринок"', "[NaN]", None):  # not valid JSON / NULL: no tags, and the query does not fail
+        await _raw_tags(store, table, 3, junk)
+        assert await ids("ринок") == []
+        assert await ids("хедж") == [1]
+
+
+async def test_journal_list_tag_is_exact_and_handles_non_ascii(store: Store):
+    for i, tags in enumerate(_TAG_ROWS):
+        await store.journal_insert(opened_ts=10 - i, symbol="BTC/USDT:USDT", side="long", size=1.0, entry=1.0, tags=tags)
+
+    async def ids(tag: str) -> list[int]:
+        return [r["id"] for r in await store.journal_list(tag=tag)]
+
+    await _tag_cases(store, "journal", ids)
+
+
+async def test_positions_list_tag_is_exact_and_handles_non_ascii(store: Store):
+    greeks = {"entry": None, "mark": None, "delta": None, "gamma": None, "vega": None, "theta": None}
+    for i, tags in enumerate(_TAG_ROWS):
+        await store.position_insert(opened_ts=10 - i, instrument="BTC-PERP", kind="perp", side="long", size=1.0, tags=tags, **greeks)
+
+    async def ids(tag: str) -> list[int]:
+        return [r["id"] for r in await store.positions_list(tag=tag)]
+
+    await _tag_cases(store, "positions", ids)
+
+
+async def test_plan_list_tag_and_exclude_tag_are_exact(store: Store):
+    plan = {
+        "exchange": "binance",
+        "symbol": "BTC/USDT:USDT",
+        "instrument": "perp",
+        "side": "long",
+        "entry_type": "limit",
+        "entry": 100.0,
+        "stop": 90.0,
+        "target": 120.0,
+        "expires_ts": 99,
+        "verdict": "enter",
+    }
+    for i, tags in enumerate(_TAG_ROWS):
+        await store.plan_insert(created_ts=10 - i, tags=tags, **plan)
+
+    async def ids(tag: str) -> list[int]:
+        return [r["id"] for r in await store.plan_list(tag=tag)]
+
+    await _tag_cases(store, "trade_plan", ids)
+    # exclude_tag is the exact complement; a row without valid tags does not carry the excluded tag.
+    assert [r["id"] for r in await store.plan_list(exclude_tag="хедж")] == [2, 3, 4]
+    assert [r["id"] for r in await store.plan_list(exclude_tag="a_b")] == [1, 2, 3, 4]
+    assert [r["id"] for r in await store.plan_list(exclude_tag="CORE")] == [2, 3, 4]

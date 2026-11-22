@@ -17,6 +17,20 @@ PARTIAL_DEVIG = (
 )
 
 
+SEARCH_COMPACT_ROWS = 10  # polymarket_search markets in the default (compact) answer
+SEARCH_QUESTION_CHARS = 160  # the compact row cuts a longer question (Polymarket text) to this many characters
+
+
+def _compact_market(m: dict[str, Any]) -> dict[str, Any]:
+    """A polymarket_search row without `slug` and the outcomes' `token_id`, the question cut to SEARCH_QUESTION_CHARS
+    characters (the last one an ellipsis when cut): the same prices, volume and flags."""
+    q = m.get("question")
+    if isinstance(q, str) and len(q) > SEARCH_QUESTION_CHARS:
+        q = q[: SEARCH_QUESTION_CHARS - 1] + "…"
+    outcomes = [{k: v for k, v in o.items() if k != "token_id"} for o in m.get("outcomes") or []]
+    return {k: v for k, v in m.items() if k != "slug"} | {"question": q, "outcomes": outcomes}
+
+
 def _partial_devig(m: dict[str, Any]) -> bool:
     """True when an outcome lacks a price while others were de-vigged over the remaining ones."""
     outs = m.get("outcomes") or []
@@ -35,20 +49,41 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Polymarket search by free-text query over markets (Gamma API). Returns the "
-            "top markets by volume with question, outcomes with raw and de-vigged prices "
-            "(prices sum to 1 after de-vig), USD volume and liquidity, end date and active/"
-            "closed flags. Yes-outcome price ~ implied probability. active_only=True keeps "
-            "only currently tradable markets."
+            "Polymarket search by free-text query over markets (Gamma API). Returns markets "
+            "in Gamma's order (without a query: the top markets by volume) with question, outcomes "
+            "with raw and de-vigged prices (prices sum to 1 after de-vig), USD volume and liquidity, "
+            "end date and active/closed flags. Yes-outcome price ~ implied probability. "
+            "active_only=True keeps only currently tradable markets. `count` = the number of markets found "
+            "(up to `limit`), not the length of `markets`. By default the answer is compact: `markets` "
+            "holds up to the first 10 of them (`shown` = how many) without "
+            "`slug` and the outcomes' `token_id`, question cut to 160 characters; "
+            "include_details=true returns every market in full (token ids feed polymarket_history; "
+            "polymarket_market also gives them). Prices and counts are the same either way."
         ),
     )
     async def polymarket_search(
         query: Annotated[str | None, Field(description="Free-text search (e.g. 'bitcoin').")] = None,
         limit: Annotated[
-            int, Field(ge=1, le=100, description="Maximum markets to return (1-100); with a query, may be fewer after filtering.")
+            int,
+            Field(
+                ge=1,
+                le=100,
+                description="Maximum markets to find (1-100); with a query, may be fewer after filtering. The compact "
+                "default lists the first 10 of them.",
+            ),
         ] = 20,
         active_only: Annotated[bool, Field(description="Keep only markets flagged active (currently tradable).")] = True,
         include_closed: Annotated[bool, Field(description="Also return markets that already resolved.")] = False,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every market found (up to `limit`) in full, with `slug` and each outcome's `token_id`; "
+                    "false (default) = a compact answer: the first 10 markets without them, question cut to 160 "
+                    "characters. Prices and counts are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await b.guard("search", "polymarket:gamma", rt.polymarket.search(query, limit, active_only, include_closed))
@@ -61,7 +96,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.warn(f"{PARTIAL_DEVIG} (market ids: {', '.join(str(i) for i in partial)})")
         for m in markets:
             _warn_undecodable(b, m)
-        return b.build({"query": query, "count": len(out), "markets": out})
+        shown = out if include_details else [_compact_market(m) for m in out[:SEARCH_COMPACT_ROWS]]
+        if not include_details and out:
+            b.warn(
+                f"compact answer: first {len(shown)} of {len(out)} markets, without slug and outcome token ids; "
+                "include_details=true for every market in full"
+            )
+        return b.build({"query": query, "count": len(out), "shown": len(shown), "markets": shown})
 
     @server.tool(
         annotations=READ_ONLY,

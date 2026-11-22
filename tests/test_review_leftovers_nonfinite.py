@@ -111,7 +111,7 @@ async def test_hyperliquid_funding_history_drops_a_non_finite_rate(tmp_path, val
     clean, res = await _clean_and_broken(tmp_path, "hyperliquid_funding_history", f"{HL}.fundingRate", value, "last")
     env = as_envelope(res)
     assert env["ok"] is True and _non_finite(env) == []
-    assert len(env["data"]["entries"]) == env["data"]["stats"]["count"] == clean["data"]["stats"]["count"] - 1
+    assert env["data"]["stats"]["count"] == clean["data"]["stats"]["count"] - 1  # entries come only with include_series
 
 
 @pytest.mark.parametrize(
@@ -120,13 +120,12 @@ async def test_hyperliquid_funding_history_drops_a_non_finite_rate(tmp_path, val
         ("funding_carry_scan", CCXT_HIST.format("binanceusdm")),
         ("funding_spread_scan", CCXT_HIST.format("binanceusdm")),
         ("funding_spread_scan", CCXT_HIST.format("bybit")),
-        ("carry_paper_open", CCXT_HIST.format("bybit")),
     ],
 )
 @pytest.mark.parametrize("value", [math.nan, math.inf])
-async def test_funding_scans_and_paper_carry_drop_a_non_finite_rate(tmp_path, name, field, value):
+async def test_funding_scans_drop_a_non_finite_rate(tmp_path, name, field, value):
     # Before the fix the NaN came out as null trailing APRs, funding_spread_scan paired a venue with itself and
-    # carry_paper_open warned "trailing spread ... is +nan%". One payment fewer moves the numbers a little, but no
+    # carry_paper_open (removed 2026-11-18) warned "trailing spread ... is +nan%". One payment fewer moves the numbers a little, but no
     # number may turn into null and no label (venue, status, flag) may change.
     clean, res = await _clean_and_broken(tmp_path, name, field, value, "last")
     assert _failure(res) is None
@@ -201,33 +200,34 @@ async def _call(rt: Runtime, name: str, args: dict) -> Any:
         return await c.call_tool(name, args)
 
 
-@pytest.mark.parametrize("name", ["range_detect", "range_setup"])
-async def test_live_ranges_take_a_none_volume_as_zero(tmp_path, name):
-    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live"}
-    res = await _call(_bars_runtime(tmp_path, None), name, args)
+@pytest.mark.parametrize("view", ["ranges", "setup"])  # range_detect and the former range_setup (merged 2026-11-18)
+async def test_live_ranges_take_a_none_volume_as_zero(tmp_path, view):
+    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live", "view": view}
+    res = await _call(_bars_runtime(tmp_path, None), "range_detect", args)
     assert _failure(res) is None, _failure(res)  # raised TypeError before
     env = as_envelope(res)
-    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), name, args))
+    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_detect", args))
     assert (env["ok"], env["data"], env["missing"]) == (zero["ok"], zero["data"], zero["missing"])
     assert not any("malformed" in w for w in env["warnings"])
 
 
-@pytest.mark.parametrize("name", ["range_detect", "range_setup"])
-async def test_live_ranges_drop_a_bar_with_a_bad_price_and_say_so(tmp_path, name):
-    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live"}
-    res = await _call(_bars_runtime(tmp_path, 10.0, bad_close=5), name, args)
+@pytest.mark.parametrize("view", ["ranges", "setup"])
+async def test_live_ranges_drop_a_bar_with_a_bad_price_and_say_so(tmp_path, view):
+    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live", "view": view}
+    res = await _call(_bars_runtime(tmp_path, 10.0, bad_close=5), "range_detect", args)
     assert _failure(res) is None, _failure(res)  # raised ValueError before
     env = as_envelope(res)
     assert any(w.startswith("1 malformed bars") for w in env["warnings"]), env["warnings"]
-    if name == "range_detect":
-        clean = as_envelope(await _call(_bars_runtime(tmp_path, 10.0), name, args))
+    if view == "ranges":
+        clean = as_envelope(await _call(_bars_runtime(tmp_path, 10.0), "range_detect", args))
         assert env["data"]["n_bars_evaluated"] == clean["data"]["n_bars_evaluated"] - 1
 
 
 async def test_range_setup_scan_keeps_bars_with_a_none_volume(tmp_path):
-    """Leftover 2(c) of the wrong-type review: a None volume on every bar is not `insufficient_bars`."""
-    args = {"venue": "binanceusdm", "symbols": ["BTC/USDT:USDT"]}
-    env = as_envelope(await _call(_bars_runtime(tmp_path, None), "range_setup_scan", args))
-    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_setup_scan", args))
+    """Leftover 2(c) of the wrong-type review: a None volume on every bar is not `insufficient_bars` (view='scan', the
+    former range_setup_scan)."""
+    args = {"venue": "binanceusdm", "symbols": ["BTC/USDT:USDT"], "view": "scan"}
+    env = as_envelope(await _call(_bars_runtime(tmp_path, None), "range_detect", args))
+    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_detect", args))
     assert env["data"] == zero["data"]
     assert "insufficient_bars" not in str(env["data"])

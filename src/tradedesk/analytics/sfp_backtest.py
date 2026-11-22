@@ -1,6 +1,6 @@
 """Walk-forward verification of the DoubleTop SFP mechanic.
 
-At every closed bar ``t`` we run exactly what ``range_setup_scan`` would have
+At every closed bar ``t`` we run exactly what ``range_detect(view='scan')`` would have
 seen at that moment (trailing window ending at ``t``, nothing after it). When
 the last bar of that window is a fresh sweep inside the latest range, we open
 a bracket trade at the sweep close and walk forward bar by bar.

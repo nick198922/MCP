@@ -53,6 +53,86 @@ def _warn_notes(b: Builder, ctx: MetricContext) -> None:
         b.warn(note)
 
 
+async def rules_presets_load(rt: Runtime, only: list[str] | None = None, enable_disabled: bool = False) -> dict[str, Any]:
+    """Install the bundled rule presets (data/rules_presets.json) into the local store; idempotent via UNIQUE(name).
+    `only` picks preset names; `enable_disabled` enables presets whose seed `enabled` is false. Returns the envelope.
+    Not an MCP tool since 2026-11-18 (a one-off action): run ``uv run python scripts/rules_presets_load.py``. The
+    preset thresholds are starting points, NOT backtested or research-sourced."""
+    b = Builder()
+    if not await store_ready(b, rt, "rules"):
+        return b.build(None, ok=False)
+    try:
+        try:
+            with resources.files("tradedesk.data").joinpath("rules_presets.json").open("r", encoding="utf-8") as f:
+                seed = json.load(f)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            b.miss("presets", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+
+        # A seed that is not {"presets": [...]} raised AttributeError / TypeError; presets that cannot be stored are skipped.
+        presets = seed.get("presets") if isinstance(seed, dict) else None
+        if not isinstance(presets, list) or not presets:
+            b.miss("presets", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `presets` list")
+            return b.build(None, ok=False)
+        usable = [row for row in presets if _preset_ok(row)]
+        if len(usable) < len(presets):
+            b.warn(
+                f"{len(presets) - len(usable)} seed presets skipped: not an object with a text name / message, a boolean "
+                "enabled and an integer cooldown_seconds in 60-86400"
+            )
+        if not usable:
+            b.miss("presets", "tradedesk", "data_unavailable", f"all {len(presets)} seed presets are malformed")
+            return b.build(None, ok=False)
+        meta = seed.get("_meta")
+        if not finite_json(meta):  # NaN / Infinity in the seed's _meta came back as such in the reply
+            b.warn("the seed's _meta holds NaN or Infinity; it is not returned")
+            meta = None
+        selected: list[dict[str, Any]] = []
+        for row in usable:
+            if only and row.get("name") not in only:
+                continue
+            selected.append(row)
+
+        now_ts = int(rt.now().timestamp())
+        inserted = 0
+        skipped: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for row in selected:
+            name = row.get("name") or ""
+            expr = row.get("expr") or ""
+            try:
+                compile_expr(expr)
+            except DslError as e:
+                failed.append({"name": name, "reason": str(e)})
+                continue
+            # UNIQUE(name) — rule_insert raises IntegrityError on dup, so skip existing names.
+            existing = await rt.store.rules_list()
+            if any(r["name"] == name for r in existing):
+                skipped.append(name)
+                continue
+            enabled = bool(row.get("enabled", True)) or enable_disabled
+            await rt.store.rule_insert(
+                name=name,
+                expr=expr,
+                message=row.get("message"),
+                cooldown_seconds=int(row.get("cooldown_seconds", 1800)),
+                enabled=enabled,
+                created_ts=now_ts,
+            )
+            inserted += 1
+        return b.build(
+            {
+                "candidates": len(selected),
+                "inserted": inserted,
+                "already_present": skipped,
+                "failed": failed,
+                "meta": meta,
+            }
+        )
+    except STORE_ERRORS as e:
+        return store_failed(b, e)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,  # writes a row to the local store only
@@ -173,7 +253,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
     @server.tool(
         annotations=READ_ONLY,  # writes to the local store only
-        description="Enable, disable or delete a DSL rule in the local store.",
+        description=(
+            "Enable, disable or delete a DSL rule in the local store. Default (enable=false) disables the rule: the "
+            "alert engine evaluates only enabled rules, so it stops firing; enable=true re-enables it; delete=true "
+            "removes the row for good and wins over `enable`. Returns the stored rule row (disabled_ts and created_ts in "
+            "Unix seconds UTC, cooldown_seconds in seconds; disabled_ts is null when enabled), or {id, deleted} after a "
+            "delete. An unknown id goes to `missing`. Touches only the local store: no exchange call, no order."
+        ),
     )
     async def rules_disable(
         id: Annotated[int, Field(ge=1, description="Rule id from rules_add / rules_list.")],
@@ -204,96 +290,5 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.warn(f"rule id={id} was {'enabled' if enable else 'disabled'}, but its stored row is malformed, so it is not returned")
                 return b.build({"id": id, "enabled": enable})
             return b.build(row)
-        except STORE_ERRORS as e:
-            return store_failed(b, e)
-
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Install the bundled rule presets (funding extremes, funding z-score, HL↔Deribit "
-            "crypto-carry, liquidation cascades + imbalance). Each preset is a complete DSL "
-            "rule validated at compile time. Idempotent via UNIQUE(name) — existing rules are "
-            "skipped. Use `only=['name1','name2']` to pick a subset; `enable_disabled=true` "
-            "forces presets flagged `enabled: false` in the seed to be enabled on install. "
-            "IMPORTANT: thresholds in the presets are starting-point values picked by the model "
-            "from general crypto-derivatives intuition — they are NOT backtested or research-"
-            "sourced. Tune them against your own history before trusting the alerts."
-        ),
-    )
-    async def rules_presets_load(
-        only: Annotated[list[str] | None, Field(description="Install just these preset names.")] = None,
-        enable_disabled: Annotated[bool, Field(description="Enable presets whose seed `enabled` is false.")] = False,
-    ) -> dict[str, Any]:
-        b = Builder()
-        if not await store_ready(b, rt, "rules"):
-            return b.build(None, ok=False)
-        try:
-            try:
-                with resources.files("tradedesk.data").joinpath("rules_presets.json").open("r", encoding="utf-8") as f:
-                    seed = json.load(f)
-            except (FileNotFoundError, ValueError, OSError) as e:
-                b.miss("presets", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
-                return b.build(None, ok=False)
-
-            # A seed that is not {"presets": [...]} raised AttributeError / TypeError; presets that cannot be stored are skipped.
-            presets = seed.get("presets") if isinstance(seed, dict) else None
-            if not isinstance(presets, list) or not presets:
-                b.miss("presets", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `presets` list")
-                return b.build(None, ok=False)
-            usable = [row for row in presets if _preset_ok(row)]
-            if len(usable) < len(presets):
-                b.warn(
-                    f"{len(presets) - len(usable)} seed presets skipped: not an object with a text name / message, a boolean "
-                    "enabled and an integer cooldown_seconds in 60-86400"
-                )
-            if not usable:
-                b.miss("presets", "tradedesk", "data_unavailable", f"all {len(presets)} seed presets are malformed")
-                return b.build(None, ok=False)
-            meta = seed.get("_meta")
-            if not finite_json(meta):  # NaN / Infinity in the seed's _meta came back as such in the reply
-                b.warn("the seed's _meta holds NaN or Infinity; it is not returned")
-                meta = None
-            selected: list[dict[str, Any]] = []
-            for row in usable:
-                if only and row.get("name") not in only:
-                    continue
-                selected.append(row)
-
-            now_ts = int(rt.now().timestamp())
-            inserted = 0
-            skipped: list[str] = []
-            failed: list[dict[str, Any]] = []
-            for row in selected:
-                name = row.get("name") or ""
-                expr = row.get("expr") or ""
-                try:
-                    compile_expr(expr)
-                except DslError as e:
-                    failed.append({"name": name, "reason": str(e)})
-                    continue
-                # UNIQUE(name) — rule_insert raises IntegrityError on dup, so skip existing names.
-                existing = await rt.store.rules_list()
-                if any(r["name"] == name for r in existing):
-                    skipped.append(name)
-                    continue
-                enabled = bool(row.get("enabled", True)) or enable_disabled
-                await rt.store.rule_insert(
-                    name=name,
-                    expr=expr,
-                    message=row.get("message"),
-                    cooldown_seconds=int(row.get("cooldown_seconds", 1800)),
-                    enabled=enabled,
-                    created_ts=now_ts,
-                )
-                inserted += 1
-            return b.build(
-                {
-                    "candidates": len(selected),
-                    "inserted": inserted,
-                    "already_present": skipped,
-                    "failed": failed,
-                    "meta": meta,
-                }
-            )
         except STORE_ERRORS as e:
             return store_failed(b, e)

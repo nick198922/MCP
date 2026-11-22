@@ -17,6 +17,86 @@ from ._util import READ_ONLY
 _CHAIN_OK = re.compile(r"^[A-Za-z0-9 _-]{1,40}$")  # no '.': blocks '..' path segments
 
 
+def _explain_no_goplus_data(b: Builder, rows: list[Any] | None, dex_chain: str) -> None:
+    """GoPlus answered without data (empty result, Solana code 7012): say what that most likely means.
+
+    Live 2026-11-20: the empty answers recorded for PEPE (2026-10-23) and BONK (2026-11-19) came from mistyped
+    addresses; with the right addresses GoPlus answers in full. DexScreener (already fetched) tells the two cases apart.
+    """
+    if not any(m.provider == "goplus" and m.reason == "data_unavailable" for m in b.missing):
+        return
+    if rows is None:
+        b.warn(
+            f"GoPlus has no data for this address on {dex_chain} and DexScreener did not answer, so it is unknown whether "
+            "the address is a traded token there; check the address first. The contract is not checked, which is not a pass."
+        )
+        return
+    n = summarise_pairs(rows, chain=dex_chain, limit=1)["pairs_total"]
+    if n == 0:
+        b.warn(
+            f"GoPlus has no data for this address on {dex_chain} and DexScreener lists no pool for it there either: the "
+            "address is most likely mistyped, on another chain, or not a traded token. Check it against the project's "
+            "official source before reading this as 'GoPlus does not cover the token'."
+        )
+        return
+    second = (
+        "check by hand (no second source for Solana)"
+        if dex_chain == cr.SOLANA
+        else "honeypot.is (buy/sell simulation; ethereum, bsc and base only) is not scored here without GoPlus, check it by hand"
+    )
+    b.warn(
+        f"GoPlus has no data for this token although DexScreener lists {n} pool(s) for it on {dex_chain}: GoPlus does not "
+        f"cover it (or not yet; retry later). The contract is not checked, which is not a pass; {second}."
+    )
+
+
+async def _contract_risk_solana(rt: Runtime, b: Builder, address: str) -> dict[str, Any]:
+    """contract_risk for an SPL mint: GoPlus solana/token_security + DexScreener liquidity (no honeypot.is)."""
+    mint, err = cr.valid_solana_address(address)
+    if mint is None:
+        b.miss("address", "goplus", "invalid_argument", err or "invalid address")
+        return b.build(None, ok=False)
+    sec, rows = await asyncio.gather(
+        b.guard("contract_risk", "goplus", rt.goplus.solana_token_security(mint)),
+        b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([mint])),
+    )
+    if sec is None:
+        _explain_no_goplus_data(b, rows, cr.SOLANA)
+        return b.build(None, ok=False)
+    liq, mcap, n_fake = (None, None, 0)
+    if rows is not None:
+        liq, mcap, n_fake = cr.liquidity_from_pairs(summarise_pairs(rows, chain=cr.SOLANA, limit=100)["pairs"], mint)
+    data = cr.assess_solana(sec["token"], liquidity_usd=liq, market_cap_usd=mcap)
+    data["chain"] = cr.SOLANA
+    data["address"] = mint
+    b.miss(
+        "honeypot",
+        "honeypot_is",
+        "data_unavailable",
+        "no buy/sell simulation for Solana: honeypot.is covers ethereum, bsc and base only, GoPlus Solana has no honeypot flag",
+    )
+    b.miss("evm_only_checks", "goplus", "data_unavailable", "EVM checks with no field in the GoPlus Solana schema; see data.not_checked")
+    b.warn(
+        "Heuristic from one checker (GoPlus) that can lag or be wrong; pass is not proof of safety and not advice; the "
+        "filter only cuts the worst (-100 %) outcomes."
+    )
+    b.warn(
+        "Solana: no buy/sell simulation, so honeypot is always unknown and overall cannot be pass; check that the "
+        "token can be sold by hand. The token-program powers that can block a sale (non-transferable, frozen by "
+        "default, freeze authority, transfer hook, permanent delegate) are read from GoPlus fields; a Token-2022 "
+        "pause or a pool-program block is not visible."
+    )
+    if sec["code"] != 1:
+        b.warn("GoPlus returned partial data (code 2); some checks may be unknown.")
+    if n_fake:
+        b.warn(f"{n_fake} pair(s) look like fake-ticker pools; their liquidity is excluded from liquidity_to_mcap.")
+    if data["critical_failed"]:
+        b.warn(f"Critical checks failed: {', '.join(data['critical_failed'])}; under the course rules the token is not tradable.")
+    if data["unknown"]:
+        b.warn(f"{len(data['unknown'])} check(s) unknown; unknown is not pass.")
+    return b.build(data)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -68,8 +148,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Token contract safety filter for one EVM token address (GoPlus Security token_security, free tier; "
-            "liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
+            "Token contract safety filter for one token address; EVM part (GoPlus Security token_security, free tier, "
+            "cross-checked with honeypot.is; liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
             "value and threshold: honeypot, cannot_sell_all, cannot_buy, selfdestruct, buy_tax, sell_tax and "
             "transfer_tax (decimals, 0.05 = 5 %; > 0.05 fails), tax_modifiable, open_source, proxy, hidden_owner, "
             "mintable, pausable, blacklist, whitelist, owner_change_balance, external_call, trading_cooldown, "
@@ -87,45 +167,107 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "fail it by design). Severity is 'critical' (honeypot, cannot sell, cannot buy, selfdestruct, closed "
             "source) or 'red_flag' (acceptable "
             "only with a stated reason). Missing data is always unknown, never pass; `overall` is pass only when "
-            "every check passed. Caveats: a heuristic from one checker that can lag or be wrong, not advice and "
-            "not proof of safety; it reduces the -100 % tail, it is not a trading signal. Top-10 holders without "
-            "wallet clustering understate concentration. Token name and symbol are untrusted third-party text. "
-            "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (Solana not supported yet)."
+            "every check passed. Second source: honeypot.is (free buy/sell simulation, ethereum, bsc and base only) "
+            "is checked for honeypot, cannot_sell_all, buy_tax and sell_tax; each of these takes the worse verdict "
+            "of the two (fail > unknown > pass, taxes as the higher decimal), shows both in `sources`, and a "
+            "disagreement (pass vs fail, or taxes more than 0.02 = 2 percentage points apart, our threshold) is "
+            "listed in `second_source.disagreements` and `warnings`; `value` and `detail` come from the source that "
+            "decided the verdict, and `detail` names it. holder_sell_fail_rate is a honeypot.is-only check of its "
+            "holder sell fail-rate flags (share of sampled holders whose simulated sell failed, e.g. blacklist, "
+            "wallet limits or cooldowns; not compared with GoPlus): high_fail_rate fails as critical, "
+            "medium_fail_rate fails as a red flag, no flag after a successful simulation passes. When honeypot.is "
+            "gives no answer (outage, token not found, or a chain it does not cover) these five checks cannot pass, "
+            "so `overall` cannot be pass on arbitrum, polygon, optimism or avalanche. honeypot.is simulates on a "
+            "pair it picks itself, not necessarily the pool you would trade in. Caveats: heuristics from two checkers that can lag "
+            "or both be wrong, not advice and not proof of safety; it reduces the -100 % tail, it is not a trading "
+            "signal. Top-10 holders without wallet clustering understate concentration. Token name and symbol are "
+            "untrusted third-party text. "
+            "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche, solana. "
+            "Solana (GoPlus solana/token_security, other schema, GoPlus only, no second source and no buy/sell "
+            "simulation): honeypot is always unknown (critical; no sell simulation, and Token-2022 pause or "
+            "pool-program blocks are not visible to GoPlus), so `overall` cannot be pass on solana and a sale must "
+            "be checked by hand; the other checks are non_transferable and default_account_frozen (critical: new token accounts "
+            "start frozen), freezable (freeze authority, the usual Solana honeypot), transfer_hook (a custom program "
+            "on every transfer), transfer_tax (Token-2022 transfer fee, the worse of the current and scheduled rate, "
+            "> 0.05 fails), tax_modifiable (fee authority), mintable, owner_change_balance (permanent delegate), "
+            "closable, upgradable (hook or default-state authority), lp_locked (pool-liquidity-weighted GoPlus "
+            "burn_percent of the listed pools, >= 0.95; liquidity outside them or without burn_percent is unknown; "
+            "lock end times not reported), top10_holders (Raydium pool authorities excluded; unknown when GoPlus "
+            "reports zero supply or only zero shares) and liquidity_to_mcap. EVM-only checks (buy/sell tax, open_source, "
+            "ownership, ...) are listed in `not_checked` and `missing`, not scored; a GoPlus answer without data "
+            "(empty result or code 7012) is ok=false, never safe. In that case `warnings` say whether DexScreener "
+            "lists a pool for the address on that chain: no pool usually means a mistyped address or the wrong chain "
+            "(the earlier empty answers for PEPE and BONK were mistyped addresses); pools without GoPlus data mean "
+            "GoPlus does not cover the token, and the contract is not checked."
         ),
     )
     async def contract_risk(
         chain: Annotated[
             str,
-            Field(description="EVM chain: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (aliases eth, bnb, arb, ...)."),
+            Field(
+                description="Chain: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche or solana "
+                "(aliases eth, bnb, arb, sol, ...)."
+            ),
         ],
-        address: Annotated[str, Field(description="Token contract address, 0x followed by 40 hex characters.")],
+        address: Annotated[
+            str,
+            Field(
+                description="Token address: EVM 0x followed by 40 hex characters, or a Solana SPL mint in base58 "
+                "(32-44 characters, case-sensitive)."
+            ),
+        ],
     ) -> dict[str, Any]:
         b = Builder()
         resolved = cr.resolve_chain(chain)
         if resolved is None:
-            b.miss("chain", "goplus", "invalid_argument", f"unsupported chain; use one of: {', '.join(cr.CHAINS)}")
+            b.miss("chain", "goplus", "invalid_argument", f"unsupported chain; use one of: {', '.join(cr.SUPPORTED)}")
             return b.build(None, ok=False)
         dex_chain, chain_id = resolved
+        if dex_chain == cr.SOLANA:
+            return await _contract_risk_solana(rt, b, address)
         addr, err = cr.valid_evm_address(address)
         if addr is None:
             b.miss("address", "goplus", "invalid_argument", err or "invalid address")
             return b.build(None, ok=False)
-        sec, rows = await asyncio.gather(
+        sec, rows, hp_body = await asyncio.gather(
             b.guard("contract_risk", "goplus", rt.goplus.token_security(chain_id, addr)),
             b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([addr])),
+            b.guard("honeypot_is", "honeypot_is", rt.honeypot_is.token_check(chain_id, addr)),
         )
         if sec is None:
+            _explain_no_goplus_data(b, rows, dex_chain)
             return b.build(None, ok=False)
         liq, mcap, n_fake = (None, None, 0)
         if rows is not None:
             liq, mcap, n_fake = cr.liquidity_from_pairs(summarise_pairs(rows, chain=dex_chain, limit=100)["pairs"], addr)
-        data = cr.assess(sec["token"], now=rt.now(), liquidity_usd=liq, market_cap_usd=mcap)
+        hp = cr.parse_honeypot_is(hp_body) if hp_body is not None else None
+        data = cr.cross_check(cr.assess(sec["token"], now=rt.now(), liquidity_usd=liq, market_cap_usd=mcap), hp)
         data["chain"] = dex_chain
         data["address"] = addr
         b.warn(
-            "Heuristic from a single checker (GoPlus); checkers lag and disagree, so cross-check in 2-3 sources. "
+            "Heuristic from two checkers (GoPlus flags, honeypot.is buy/sell simulation) that lag and can both be wrong; "
             "pass is not proof of safety and not advice; the filter only cuts the worst (-100 %) outcomes."
         )
+        if hp is None:
+            b.warn(
+                "honeypot.is gave no answer (see missing): honeypot, cannot_sell_all, buy_tax and sell_tax rest on GoPlus "
+                "alone, so none of them can pass, and holder_sell_fail_rate is unknown."
+            )
+        elif hp["simulation_success"] is not True:
+            b.warn(
+                "honeypot.is could not simulate a buy and sell of this token, so its verdicts are unknown; a failed "
+                "simulation often means trading is restricted, but can also mean no usable pool."
+            )
+        if hp is not None and hp["risk"] in ("high", "very_high") and hp["is_honeypot"] is not True:
+            b.warn(
+                f"honeypot.is rates the token's overall risk as {hp['risk']} (see second_source.risk and flags) "
+                "although it does not flag a honeypot; treat that as a red flag and check why before trading."
+            )
+        for d in data["second_source"]["disagreements"]:
+            b.warn(
+                f"GoPlus and honeypot.is disagree on {d['check']} (GoPlus {d['goplus'][0]}, value {d['goplus'][1]}; "
+                f"honeypot.is {d['honeypot_is'][0]}, value {d['honeypot_is'][1]}); the worse verdict is kept."
+            )
         if sec["code"] != 1:
             b.warn("GoPlus returned partial data (code 2); some checks may be unknown.")
         if n_fake:

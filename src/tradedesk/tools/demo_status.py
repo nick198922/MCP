@@ -141,13 +141,19 @@ def _closed_view(t: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cut_note(note: str) -> str:
-    """A note longer than NOTE_CHARS cut at the last ', ' list separator within the limit (whole trade ids kept), else
-    at NOTE_CHARS characters (no separator in the second half of the limit); ends with ' …'."""
+    """A note longer than NOTE_CHARS cut to at most NOTE_CHARS characters. Its explanatory tail (from the last '; ' on,
+    e.g. '; вони не входять у закриті вибірки…') is kept when it fits in a third of the limit; the part before it is cut
+    at the last ', ' list separator within the room left (whole trade ids kept), else by characters (no separator in
+    the second half of that room). ' …' marks where the list was cut."""
     if len(note) <= NOTE_CHARS:
         return note
-    i = note.rfind(", ", 0, NOTE_CHARS + 2)  # a separator starting at NOTE_CHARS still leaves a whole item before it
-    head = note[:i] if i >= NOTE_CHARS // 2 else note[:NOTE_CHARS]
-    return head.rstrip() + " …"
+    j = note.rfind("; ")
+    tail = note[j:] if j > 0 and len(note) - j <= NOTE_CHARS // 3 else ""
+    body = note[: len(note) - len(tail)]
+    room = NOTE_CHARS - len(tail) - 2  # 2 = len(" …")
+    i = body.rfind(", ", 0, room + 2)  # a separator starting at `room` still leaves a whole item before it
+    head = body[:i] if i >= room // 2 else body[:room]
+    return head.rstrip() + " …" + tail
 
 
 def _newest(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
@@ -171,8 +177,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "with a 95 % Wilson CI. `s12_stop_rule`: the owner's S12 stop rule (v9: n >= 30 and mean below -0.827 -> stop "
             "and review the execution; v4 entry: n >= 100 and below -0.524 -> drop) with a 95 % CI clustered by signal day. "
             "`notes` (Ukrainian): stuck, orphaned and P&L-mismatch trades, 'no' verdicts on 3+ setups; by default a note "
-            f"longer than {NOTE_CHARS} characters is cut at the last ', ' before that limit, so trade ids stay whole (ends "
-            "with ' …', a warning says so). `open`: filled positions not "
+            f"longer than {NOTE_CHARS} characters is cut to that length: the trade list at its last ', ' that fits, so "
+            "trade ids stay whole (by characters if no ', ' is in the second half), ' …' where it was cut, the "
+            "explanatory tail after the list (from the last '; ', up to a third of the limit) kept; a warning says so. "
+            "`open`: filled positions not "
             f"closed yet (stop = break-even stop once moved; prices in USDT), newest {COMPACT_OPEN} by default with counts per "
             "setup. include_details=true adds every open position with more fields, each setup's name, passport source and "
             f"notes (clustered CI, fees vs the backtest model, orphan scenarios), the full text of every demo note, and the "
@@ -229,8 +237,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not include_details and (cut := sum(len(n) > NOTE_CHARS for n in notes)):
             notes = [_cut_note(n) for n in notes]
             b.warn(
-                f"compact answer: {cut} long note(s) cut to at most {NOTE_CHARS} characters (at a ', ' list boundary); "
-                "include_details=true for the full text"
+                f"compact answer: {cut} long note(s) cut to at most {NOTE_CHARS} characters (the trade list at a ', ' "
+                "boundary when one is in the second half of the room, else by characters; ' …' marks the cut, the "
+                "explanatory tail after the last '; ' is kept if it fits in a third of the limit); include_details=true "
+                "for the full text"
             )
         data: dict[str, Any] = {
             "as_of": now.astimezone(UTC).isoformat(timespec="seconds"),

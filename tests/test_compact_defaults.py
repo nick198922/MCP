@@ -824,8 +824,14 @@ async def test_demo_status_default_cuts_long_notes_and_stays_bounded(tmp_path):
     for d, f in zip(d_notes, f_notes, strict=True):  # short notes unchanged, a long one is the head of the full text
         if len(f) <= cap:
             assert d == f
-        else:  # cut at a ', ' list boundary: the next characters of the full text are the separator, no id split
-            assert d.endswith(" …") and f.startswith(d[:-2]) and len(d) <= cap + 2
-            assert f[len(d) - 2 :].startswith(", ")
-    assert any(f"1 long note(s) cut to at most {cap} characters" in w for w in default["warnings"])
+        else:  # the list cut at a ', ' boundary (no id split), then ' …' and the explanatory tail of the full text
+            tail = f[f.rindex("; ") :]
+            assert tail.startswith("; вони не входять у закриті вибірки")
+            assert len(d) <= cap and d.endswith(" …" + tail)
+            head = d[: -len(" …" + tail)]
+            assert f.startswith(head) and f[len(head) :].startswith(", ")
+    n_cut = sum(len(f) > cap for f in f_notes)
+    assert n_cut >= 1
+    (warn,) = [w for w in default["warnings"] if "note(s) cut" in w]
+    assert warn.startswith(f"compact answer: {n_cut} long note(s) cut to at most {cap} characters")
     assert not any("note(s) cut" in w for w in full["warnings"])

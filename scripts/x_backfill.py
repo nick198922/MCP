@@ -317,7 +317,7 @@ def coverage_report(tweets: Iterable[dict[str, Any]], state: dict[str, Any], tod
     suspect, bad_oldest = [], []
     for x in months:
         oldest = state["oldest"].get(x["month"]) if x["status"] == "done" else None
-        if oldest:
+        if oldest is not None:  # None = empty month; 0, "" or [] are damage and go to bad_oldest
             try:
                 oldest_dt = datetime.strptime(oldest, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
             except (TypeError, ValueError):  # state.json hand-edited or damaged: report the month, do not crash --stat

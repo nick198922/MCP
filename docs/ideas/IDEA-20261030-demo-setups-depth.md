@@ -760,6 +760,7 @@
   - `uv run python scripts/verify_s38_demo_vs_passport.py --stage run --setup S39 --cutoff 2026-11-22T13:15 --seen-cutoff 2026-11-19T04:00 --cache-dir ~/.cache/tradedesk-agents/s39-demo-vs-passport --out-tag s39_20261122`
   - `uv run python scripts/verify_s38_demo_vs_passport.py --stage run --setup S14 --cutoff 2026-11-22T13:15 --cache-dir ~/.cache/tradedesk-agents/s14-demo-vs-passport --out-tag s14_20261122`
   - Далі звіт `docs/verification/2026-11-2x-s39-s14-demo-vs-passport.md` за зразком [S38 19.11](../verification/2026-11-19-s38-demo-vs-passport.md).
+- **Результат (квант, 22.11, [звіт](../verification/2026-11-22-s39-s14-demo-vs-passport.md), [рев'ю](../reviews/2026-11-22-s39-s14-demo-vs-passport.md)).** S39 v5 n 31: +0.676R [+0.105; +1.083], ≈ (вище i.i.d.-смуги, у ковзній); перевага формально є, але ненадійна (12 днів, 44 % суми — 14.11, режим ринку). S14 v3 n 30: +0.354R [−0.118; +0.889], ✓ у смузі. Змін виконання не пропоную. Питання власнику Q-20261122-2 (S39) і Q-20261122-3 (S14), рекомендація — тримати до 100. Відкрито: BSV 14.11 (беззбиток?).
 
 ## Попередня реєстрація 10a (2026-10-31, квант, до прогону)
 Що вже відомо до реєстрації: лише розбивка H2 зі звіту модулів S3 (4h / 1d, вибірка P, 2021-01 … 2026-09): край = рівень IS −0.006 (n 4 485), OOS +0.011 (n 2 179); далі за 0.3 ATR IS −0.098, OOS −0.101. Жодного R на 2h / 8h / 12h і жодного R 2020 року в розрізі ознаки я не бачив.

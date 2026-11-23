@@ -1,10 +1,21 @@
-"""Item 383: carry B leg-price gap classification (analytics.carry_leg_gap)."""
+"""Item 383: carry B leg-price gap classification (analytics.carry_leg_gap) and the bar cache of
+scripts/verify_carry_b_leg_gap.py (item 448, no network)."""
 
 from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tradedesk.analytics import carry_leg_gap as g
+
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "verify_carry_b_leg_gap.py"
+_spec = importlib.util.spec_from_file_location("verify_carry_b_leg_gap", _SCRIPT)
+vb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(vb)
 
 H = 3_600_000
 C0 = 16 * H  # a cycle at 16:00 UTC (day 0); the engine decides at 16:05 and prices off the bar 12:00-16:00
@@ -143,3 +154,35 @@ def test_earlier_results_do_not_depend_on_later_data() -> None:
     b1 = {0: 1.0, 60_000: 1.0}
     m = g.minute_gap(a1, b1, 0, 120_000)
     assert g.minute_gap(a1 | {120_000: 5.0}, b1 | {120_000: 1.0}, 0, 120_000) == m
+
+
+def test_bar_cache_name_carries_the_format_version(tmp_path: Path) -> None:
+    p = vb.cache_path(tmp_path, "bybit", "BTC/USDT:USDT", "4h", 0, 4 * H)
+    assert vb.CACHE_VERSION and vb.CACHE_VERSION in p.name
+    assert p.name == f"{vb.CACHE_VERSION}_bybit_BTC_4h_0_{4 * H}.json"
+
+
+async def test_unversioned_bar_cache_is_not_read(tmp_path: Path) -> None:
+    # a file of the pre-23.11 format (no version in the name) with an unknown volume written as 0.0
+    old = tmp_path / f"bybit_BTC_4h_0_{4 * H}.json"
+    old.write_text(json.dumps({"0": [1.0, 1.0, 1.0, 1.0, 0.0]}))
+    assert await vb.bars(None, tmp_path, "bybit", "BTC/USDT:USDT", "4h", 0, 4 * H, False) == {}
+    # the versioned file of the same request is read
+    vb.cache_path(tmp_path, "bybit", "BTC/USDT:USDT", "4h", 0, 4 * H).write_text(json.dumps({"0": [1.0, 1.0, 1.0, 1.0, None]}))
+    assert await vb.bars(None, tmp_path, "bybit", "BTC/USDT:USDT", "4h", 0, 4 * H, False) == {0: [1.0, 1.0, 1.0, 1.0, None]}
+
+
+async def test_bars_keep_unknown_ohlc_and_volume_as_none(tmp_path: Path) -> None:
+    rows = [[0, None, None, None, 2.0, None], [60_000, 1.0, 1.5, 0.5, None, 3.0], [120_000, 1.0, 1.0, 1.0, 1.0, 0]]
+
+    async def ohlcv(*_a: object) -> SimpleNamespace:
+        return SimpleNamespace(data=rows)
+
+    rt = SimpleNamespace(exchanges=SimpleNamespace(ohlcv=ohlcv))
+    out = await vb.bars(rt, tmp_path, "bybit", "BTC/USDT:USDT", "1m", 0, 180_000, True)
+    # unknown open / high / low / volume stay None, a row without a close is dropped, an explicit 0 volume stays 0
+    assert out == {0: [None, None, None, 2.0, None], 120_000: [1.0, 1.0, 1.0, 1.0, 0.0]}
+    cached = vb.cache_path(tmp_path, "bybit", "BTC/USDT:USDT", "1m", 0, 180_000)
+    assert cached.exists() and await vb.bars(None, tmp_path, "bybit", "BTC/USDT:USDT", "1m", 0, 180_000, False) == out
+    checks = g.row_checks([{"cycle_ts": C0, "price_a": 2.0, "price_b": 2.0}], {g.cycle_bar_open(C0): out[0]}, {})
+    assert checks[0]["close_a"] == 2.0 and checks[0]["vol_a"] is None

@@ -28,6 +28,9 @@ CACHE = Path.home() / ".cache/tradedesk-agents/carry_b_leg_gap"
 VENUES = ("binanceusdm", "bybit")  # leg a, leg b (collector.carry_paper_engine.PERP_VENUE, BYBIT)
 TF_MS = {"4h": g.BAR_MS, "1m": 60_000}
 PAGE = 1000
+# Bar cache format version, part of every cache file name: files written before 23.11 turned an unknown volume (and
+# open / high / low) into 0.0, which reads as an R1 «zero volume» bar; a new version makes those files invisible.
+CACHE_VERSION = "v2"
 
 
 def _t(ms: int | None) -> str:
@@ -58,10 +61,16 @@ def load_b(db: str) -> dict[str, Any]:
     return {"positions": pos, "side": side, "cycles": cyc}
 
 
+def cache_path(cache: Path, venue: str, sym: str, tf: str, start: int, end: int) -> Path:
+    """Cache file of one bar request; the name carries ``CACHE_VERSION`` so files of an older format are not read."""
+    return cache / f"{CACHE_VERSION}_{venue}_{sym.split('/')[0]}_{tf}_{start}_{end}.json"
+
+
 async def bars(rt: Any, cache: Path, venue: str, sym: str, tf: str, start: int, end: int, fetch: bool) -> dict[int, list[float | None]]:
-    """Bars [open, high, low, close, volume] by open ms in [start, end), cached per (venue, sym, tf, start, end).
-    An unknown volume stays None (only an explicit 0 is a zero-volume bar for R1)."""
-    p = cache / f"{venue}_{sym.split('/')[0]}_{tf}_{start}_{end}.json"
+    """Bars [open, high, low, close, volume] by open ms in [start, end), cached per (version, venue, sym, tf, start,
+    end). A row without a close is dropped; an unknown open / high / low / volume stays None (never 0.0: only an
+    explicit 0 volume is a zero-volume bar for R1)."""
+    p = cache_path(cache, venue, sym, tf, start, end)
     if p.exists():
         return {int(k): v for k, v in json.loads(p.read_text()).items()}
     if not fetch or rt is None:
@@ -74,7 +83,7 @@ async def bars(rt: Any, cache: Path, venue: str, sym: str, tf: str, start: int, 
         for r in rows:
             if start <= int(r[0]) < end and r[4] is not None:
                 vol = r[5] if len(r) > 5 else None
-                ohlc: list[float | None] = [float(x) if x is not None else 0.0 for x in r[1:5]]
+                ohlc: list[float | None] = [float(x) if x is not None else None for x in r[1:5]]
                 out[int(r[0])] = [*ohlc, float(vol) if vol is not None else None]
         cur = until + 1
         await asyncio.sleep(0.2)

@@ -167,6 +167,16 @@ while read -r b; do
     echo "re-parking orphaned work $b"
     park_add "$b" "$(date +%s)" "${runs:-1}" "$STAMP"
     ;;
+  stuck)
+    # Work handed over "stuck" waited for the owner while the agents idled (18-23.11: btc_charlie's registration,
+    # approved by the critic, held the x-traders card for 5 days and 150+ idle runs). Once the last run found nothing
+    # to do, it gets one last run (never `continue`): delivered, its PR is marked ready (gh_pr.py); stuck again, it waits.
+    if [[ "$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2)" == idle ]] &&
+      (($(grep -F "\`$b\`" "$LOG_DIR/history.tsv" | cut -f2 | grep -cx stuck || true) == 1)); then
+      echo "reviving stuck work $b for one last run (the agents are idle)"
+      park_add "$b" "$(date +%s)" "$((MAX_RUNS - 1))" "$STAMP"
+    fi
+    ;;
   esac
 done < <(git branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##')
 PARKED_NOTE=""
@@ -342,6 +352,8 @@ $(cat "$LOG_DIR/refusal.txt")"
 
 Runs are limited. Once the critic has approved what is on this branch, write \`continue\` only when the rest fits in the runs left; work of several more runs (a label table, code, a stage 0, data batches) becomes the card's next step on a new branch, and this work ends with \`owner\`. Every run that requests delivery, this one too, writes all three: .agent/branch, .agent/commit-msg.txt and .agent/next."
   ((RUNS >= MAX_RUNS)) && limit="$limit This is the last run on this work: never \`continue\`; finish what can be finished, then \`owner\`."
+  [[ "$(grep -F "\`$WORK_BR\`" "$LOG_DIR/history.tsv" 2>/dev/null | tail -1 | cut -f2)" == stuck ]] &&
+    limit="$limit This work was handed to the owner as stuck and is revived because the agents were idle: if the critic approved what is on the branch, deliver it as it is (lint, tests, \`owner\`); anything left becomes the card's next step on a new branch."
   PROMPT="$PROMPT
 
 CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$limit$refused"

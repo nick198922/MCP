@@ -144,7 +144,9 @@ def _cut_note(note: str) -> str:
     """A note longer than NOTE_CHARS cut to at most NOTE_CHARS characters. Its explanatory tail (from the last '; ' on,
     e.g. '; вони не входять у закриті вибірки…') is kept when it fits in a third of the limit; the part before it is cut
     at the last ', ' list separator within the room left (whole trade ids kept), else by characters (no separator in
-    the second half of that room). ' …' marks where the list was cut."""
+    the second half of that room). ' …' marks where the list was cut. Known limitation: a '; ' inside the last list
+    entry is taken for the tail separator, so the kept tail is then a piece of that entry (the cut still fits the
+    limit and ends on a whole item)."""
     if len(note) <= NOTE_CHARS:
         return note
     j = note.rfind("; ")

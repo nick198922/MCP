@@ -220,7 +220,21 @@ def test_demo_status_cut_note_keeps_the_explanatory_tail(monkeypatch):
     assert cut(long_tail) == "orphaned: 5 — S38 AAAUSDT, S38 BBBUSDT …"
     # a tail with no ', ' in the second half of the room left: the list is cut by characters, the tail kept
     no_sep = "orphaned: " + "Q" * 60 + "; check"
+    # 41 = 60 (cap) - 7 (len "; check") - 2 (len " …") - 10 (len "orphaned: ")
     assert cut(no_sep) == "orphaned: " + "Q" * 41 + " …; check" and len(cut(no_sep)) == 60
+
+
+def test_demo_status_cut_note_semicolon_inside_the_last_entry(monkeypatch):
+    # review 2026-11-23-demo-status-note-cut, finding 6 (known limitation): a '; ' inside the last trade entry is taken for the explanation
+    # separator, so the kept "tail" is a piece of that entry; the cut still fits the cap, ends on a whole item, has ' …'
+    monkeypatch.setattr(demo_status_tool, "NOTE_CHARS", 60)
+    cut = demo_status_tool._cut_note
+    note = "orphaned: 4 — S38 AAAUSDT, S38 BBBUSDT, S38 CCCUSDT, S38 DDDUSDT (qty 0; stuck)"
+    out = cut(note)
+    assert out == "orphaned: 4 — S38 AAAUSDT, S38 BBBUSDT …; stuck)"
+    assert len(out) <= 60 and " …" in out
+    head = out.split(" …")[0]
+    assert note.startswith(head) and note[len(head) : len(head) + 2] == ", "  # no trade id cut in half
 
 
 async def test_demo_status_skips_a_corrupt_row_with_a_warning(tmp_path):

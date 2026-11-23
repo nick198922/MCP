@@ -72,6 +72,9 @@ SHORT_HOLE_H = 12  # 'short' if one hole is longer than 12 h ...
 SHORT_MISSING = 0.05  # ... or the missing hours total more than 5 % of the 336 h window (set before the --bars run)
 DRIFT_HOLD_H = 168  # the local-drift benchmark holds 7 days (3.3, metric p. 7)
 SAMPLES = {"main": (date(2020, 1, 1), date(2022, 12, 31)), "combo": (date(2025, 10, 1), date(2026, 9, 30))}
+# The 3.3 census stopped on this prefix at the cost control point (card 3.3, 23.11); rows of later batches inside
+# 2020-2022 (2021-Q2, 24.11, after the full run) are described in the CSV but stay outside the main sample.
+MAIN_QUARTERS = frozenset({"2020-Q1", "2020-Q2", "2020-Q3", "2021-Q4", "2022-Q1"})
 VENUES = ("binanceusdm", "bybit", "okx", "gate", "bitget", "mexc")
 PAGE = {"binanceusdm": 1000, "bybit": 1000, "okx": 100, "bitget": 200, "binance": 1000}
 COLUMNS = (
@@ -125,7 +128,8 @@ def quarter(d: date) -> str:
 
 
 def sample_of(d: date) -> str:
-    return next((s for s, (lo, hi) in SAMPLES.items() if lo <= d <= hi), "")
+    s = next((s for s, (lo, hi) in SAMPLES.items() if lo <= d <= hi), "")
+    return "" if s == "main" and quarter(d) not in MAIN_QUARTERS else s
 
 
 def load_rows() -> tuple[list[Row], list[str]]:

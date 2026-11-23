@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -166,6 +166,18 @@ def test_t0_id_is_the_t0_tweet_for_every_row():
 def test_committed_markup_equals_the_generator_output():
     rows, _ = bce.load_rows()
     assert bce.MARKUP.read_text(encoding="utf-8") == bce.markup_text([r for r in rows if r.sample])
+
+
+def test_main_sample_is_the_census_prefix_only():
+    """The 3.3 census stopped on five quarters (23.11); later 2020-2022 batches (2021-Q2) stay outside the markup."""
+    assert bce.sample_of(date(2020, 7, 6)) == "main"
+    assert bce.sample_of(date(2021, 11, 23)) == "main"
+    assert bce.sample_of(date(2021, 5, 12)) == ""
+    assert bce.sample_of(date(2022, 6, 1)) == ""
+    assert bce.sample_of(date(2025, 12, 16)) == "combo"
+    rows, _ = bce.load_rows()
+    q2 = [r for r in rows if r.id.startswith("BC-2021-0") and r.call.day.month in (4, 5, 6)]
+    assert q2 and not any(r.sample for r in q2)
 
 
 def test_markup_counters_are_pinned():

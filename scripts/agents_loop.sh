@@ -222,7 +222,7 @@ idle_wait() { # idle_wait <seconds>
   while ((left > 0)); do
     sleep 60
     left=$((left - 60))
-    git -C "$REPO" fetch -q --no-write-fetch-head origin 2>/dev/null || continue
+    git -C "$REPO" fetch -q --prune --no-write-fetch-head origin 2>/dev/null || continue
     now="$(open_branches | wc -l)"
     if ((now < before)); then
       log "an agent branch was merged: next step now"
@@ -336,7 +336,7 @@ while true; do
     continue
   fi
   daily_check
-  if ! git -C "$REPO" fetch -q --no-write-fetch-head origin; then
+  if ! git -C "$REPO" fetch -q --prune --no-write-fetch-head origin; then
     log "fetch failed"
     if ! github_up; then
       github_down "fetch"

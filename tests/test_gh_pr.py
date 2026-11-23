@@ -37,6 +37,33 @@ def test_returns_the_existing_pull_request_of_the_branch():
     assert gh.calls[1][0] == "GET" and "head=o%3Aagent%2Fx" in gh.calls[1][1] and "state=open" in gh.calls[1][1]
 
 
+def test_a_ready_delivery_marks_the_existing_unmarked_pull_request():
+    # 18.11: btc_charlie's branch was handed over "stuck" (an unmarked PR); its later delivery must mark that PR.
+    exists = {"message": "Validation Failed", "errors": [{"message": "A pull request already exists for o:agent/x."}]}
+    unmarked = [{"number": 5, "html_url": "https://github.com/o/r/pull/5", "body": "stuck as is"}]
+    gh = FakeGitHub((422, exists), (200, unmarked), (200, {}))
+    body = "done\n\n" + gh_pr.READY_MARK
+    assert gh_pr.open_pr(gh, "o/r", "agent/x", "Done", body) == "https://github.com/o/r/pull/5"
+    method, path, patch = gh.calls[2]
+    assert (method, path) == ("PATCH", "/repos/o/r/pulls/5") and gh_pr.READY_MARK in patch["body"] and patch["title"] == "Done"
+
+
+def test_an_existing_pull_request_is_left_alone_unless_it_needs_the_mark():
+    exists = {"message": "Validation Failed", "errors": [{"message": "A pull request already exists for o:agent/x."}]}
+    marked = [{"number": 5, "html_url": "u5", "body": "x " + gh_pr.READY_MARK}]
+    gh = FakeGitHub((422, exists), (200, marked))
+    assert gh_pr.open_pr(gh, "o/r", "agent/x", "t", "again " + gh_pr.READY_MARK) == "u5" and len(gh.calls) == 2
+    gh = FakeGitHub((422, exists), (200, [{"number": 6, "html_url": "u6", "body": "stuck"}]))
+    assert gh_pr.open_pr(gh, "o/r", "agent/x", "t", "stuck again") == "u6" and len(gh.calls) == 2
+
+
+def test_a_refused_mark_is_reported():
+    exists = {"message": "Validation Failed", "errors": [{"message": "A pull request already exists for o:agent/x."}]}
+    gh = FakeGitHub((422, exists), (200, [{"number": 5, "html_url": "u5", "body": ""}]), (403, {"message": "Forbidden"}))
+    with pytest.raises(RuntimeError, match="403 marking PR #5 ready: Forbidden"):
+        gh_pr.open_pr(gh, "o/r", "agent/x", "t", gh_pr.READY_MARK)
+
+
 def test_a_refusal_names_github_reason():
     gh = FakeGitHub((403, {"message": "Resource not accessible by personal access token"}))
     with pytest.raises(RuntimeError, match="403.*not accessible"):

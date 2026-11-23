@@ -67,7 +67,10 @@ def message(data: object) -> str:
 
 
 def open_pr(call: Call, repo: str, head: str, title: str, body: str, base: str = "main") -> str:
-    """The URL of the open PR for `head` (created if there is none). Raises RuntimeError with GitHub's reason."""
+    """The URL of the open PR for `head` (created if there is none). Raises RuntimeError with GitHub's reason.
+
+    A ready `body` (with READY_MARK) replaces the body of an existing PR that lacks the mark: work handed over as
+    "stuck" opens an unmarked PR, and its later delivery (nightly_agents.sh revives it once) must make it mergeable."""
     status, data = call("POST", f"/repos/{repo}/pulls", {"title": title[:250], "head": head, "base": base, "body": body[:BODY_LIMIT]})
     if status == 201 and isinstance(data, dict):
         return str(data["html_url"])
@@ -76,7 +79,12 @@ def open_pr(call: Call, repo: str, head: str, title: str, body: str, base: str =
         query = urllib.parse.urlencode({"head": f"{owner}:{head}", "state": "open"})
         status2, found = call("GET", f"/repos/{repo}/pulls?{query}", None)
         if status2 == 200 and isinstance(found, list) and found:
-            return str(found[0]["html_url"])
+            pr = found[0]
+            if READY_MARK in body and READY_MARK not in (pr.get("body") or ""):
+                status3, patched = call("PATCH", f"/repos/{repo}/pulls/{pr['number']}", {"title": title[:250], "body": body[:BODY_LIMIT]})
+                if status3 != 200:
+                    raise RuntimeError(f"GitHub HTTP {status3} marking PR #{pr['number']} ready: {message(patched) or 'no reason given'}")
+            return str(pr["html_url"])
     raise RuntimeError(f"GitHub HTTP {status}: {message(data) or 'no reason given'}")
 
 

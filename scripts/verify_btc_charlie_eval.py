@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import csv
 import io
 import json
 import logging
 import resource
+import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -39,6 +41,10 @@ MARKUP = ROOT / "docs/calls/x/btc_charlie-eval.csv"
 CACHE = Path.home() / ".cache/tradedesk-agents/btc_charlie_eval"
 H, D = 3_600_000, 86_400_000
 NEED_H = 168 + 168  # registered as in 3.2: an order waits 7 days, a fill is held 7 days
+GAP_H = 3  # a hole = a run of more than 3 missing 1h bars inside t0 … t0 + 336 h (review B 3.3б, p. 6)
+SHORT_HOLE_H = 12  # 'short' if one hole is longer than 12 h ...
+SHORT_MISSING = 0.05  # ... or the missing hours total more than 5 % of the 336 h window (set before the --bars run)
+DRIFT_HOLD_H = 168  # the local-drift benchmark holds 7 days (3.3, metric p. 7)
 SAMPLES = {"main": (date(2020, 1, 1), date(2022, 12, 31)), "combo": (date(2025, 10, 1), date(2026, 9, 30))}
 VENUES = ("binanceusdm", "bybit", "okx", "gate", "bitget", "mexc")
 PAGE = {"binanceusdm": 1000, "bybit": 1000, "okx": 100, "bitget": 200, "binance": 1000}
@@ -46,6 +52,23 @@ COLUMNS = (
     "id sample quarter units t0_utc t0_id t0_moved tag group ownership scalp exclusion primary idlist_variant border "
     "border_variant border_ownership border_alt q2_template q2_out limit_conditional"
 ).split()
+
+# Compositions of the variants whose rows the CSV columns do not give (card 3.3в, p. 18; review B 3.3в, p. 2). Fixed
+# from the note text and labels only (tweets of a row <= its t0, as in 3.3), before any P&L; the full run reads them.
+STRICT_BOUNDARY_OUT = {  # 'stricter ex ante boundary' (< 0.25 R; no stop: swing < 1 %, scalp < 0.25 %): rows it drops
+    "BC-2020-01-09-TOMO-LONG": "0.47 R",
+    "BC-2020-05-26-TOMO-LONG": "0.46 R",
+    "BC-2020-03-20-BTC-SHORT": "no stop, swing, m 1.16 % (primary reading, rule p. 4)",
+    "BC-2025-10-10-BTC-LONG": "no stop, swing, m 1.50 %",
+    "BC-2026-09-29-APT-LONG": "(0.8545 - 0.8292) / 0.1005 = 0.2517 R",
+}
+ONE_IDEA = {  # 'one idea': cluster head -> the members the variant drops (one tweet / one trade by the text <= t0)
+    "BC-2020-01-05-TOMO-LONG": ("BC-2020-01-09-TOMO-LONG", "BC-2020-01-30-TOMO-LONG"),
+    "BC-2020-03-20-BTC-LONG-2": ("BC-2020-04-29-BTC-LONG",),
+}
+CONFIRMED_ENTRY = {  # 'conditional as an entry at the author's confirmation': id -> (t0 UTC, confirming tweet id)
+    "BC-2020-04-24-ALGO-LONG": ("2020-04-25T07:14", "1253945366384443400"),
+}
 
 
 @dataclass(frozen=True)
@@ -169,6 +192,25 @@ def summary(rows: list[Row], sample: str) -> dict[str, int]:
     }
 
 
+def confirmed_t0(row_id: str) -> int:
+    t = datetime.strptime(CONFIRMED_ENTRY[row_id][0], "%Y-%m-%dT%H:%M").replace(tzinfo=UTC)
+    return int(t.timestamp() * 1000)
+
+
+def variant_ids(rows: list[Row], sample: str) -> dict[str, list[str]]:
+    """Row ids of the registered variants not given by the CSV columns (card 3.3в, p. 18): the primary set minus the
+    'stricter boundary' rows, minus the non-head members of 'one idea' clusters, plus the conditional rows entered at
+    the author's confirmation (their t0 is ``confirmed_t0``)."""
+    prim = [r.id for r in rows if r.sample == sample and r.lab.primary]
+    members = {m for ms in ONE_IDEA.values() for m in ms}
+    conf = [r.id for r in rows if r.sample == sample and r.id in CONFIRMED_ENTRY]
+    return {
+        "strict_boundary": [i for i in prim if i not in STRICT_BOUNDARY_OUT],
+        "one_idea": [i for i in prim if i not in members],
+        "confirmed_entry": prim + conf,
+    }
+
+
 def counters(rows: list[Row]) -> None:
     for s in SAMPLES:
         sel = [r for r in rows if r.sample == s]
@@ -215,12 +257,46 @@ def candidates(key: str) -> list[tuple[str, str]]:
             ("vision_spot", f"{key}USDT")]  # fmt: skip
 
 
+def holes(bars: list[Bar], t0: int, need_ms: int) -> tuple[list[int], int]:
+    """Holes inside the call's window (review B 3.3б, p. 6; edges per review B 3.3в, p. 1): every hour of the grid
+    [hour of t0, t0 + ``need_ms``] without a bar is missing, including runs at the start and at the end of the window.
+    Returns the lengths (hours) of the runs of more than ``GAP_H`` missing hours and the total of missing hours. Only
+    bar times are read."""
+    lo, hi = t0 // H * H, t0 + need_ms
+    have = {b.t for b in bars if lo <= b.t <= hi}
+    runs, run = [], 0
+    for h in range(lo, hi + 1, H):
+        if h in have:
+            if run:
+                runs.append(run)
+            run = 0
+        else:
+            run += 1
+    if run:
+        runs.append(run)
+    return [g for g in runs if g > GAP_H], sum(runs)
+
+
 def availability(bars: list[Bar], t0: int, need_ms: int) -> str:
-    """'ok' if 1h bars hold the call's first hours and reach ``need_ms`` past t0; 'short' if they stop earlier; else
-    'missing'. Only bar times are read."""
-    if not bars or bars[0].t > t0 + 2 * H or bars[-1].t < t0:
+    """'missing' if no bar opens at or after the hour of t0 within 2 h past t0 (the call's first hours); 'short' if the
+    bars stop before ``need_ms`` past t0, a hole (start and end of the window included) is longer than
+    ``SHORT_HOLE_H`` or the missing hours total more than ``SHORT_MISSING`` of the window; else 'ok'. Only bar times are
+    read. Thresholds registered with the output, before any return (card 3.3б)."""
+    first = next((b.t for b in bars if b.t >= t0 // H * H), None)
+    if first is None or first > t0 + 2 * H:
         return "missing"
+    long_holes, missing = holes(bars, t0, need_ms)
+    if any(g > SHORT_HOLE_H for g in long_holes) or missing > SHORT_MISSING * need_ms / H:
+        return "short"
     return "ok" if bars[-1].t >= t0 + need_ms else "short"
+
+
+def drift_coverage(times: set[int], t0: int) -> float:
+    """Share of the hours h in [t0 − 30 d, t0 + 30 d] whose 7-day same-side hold (open of bar h, close of bar
+    h + 167 h) is in the data: the local-drift benchmark of 3.3, metric p. 7. Only bar times are read."""
+    base = t0 // H * H
+    hours = range(base - 30 * D, base + 30 * D + 1, H)
+    return sum(h in times and h + (DRIFT_HOLD_H - 1) * H in times for h in hours) / len(hours)
 
 
 async def fetch_bars(rt, venue: str, sym: str, since: int, until: int, cache: Path, markets: dict) -> list[Bar]:
@@ -311,13 +387,45 @@ def stage_bars(rows: list[Row], cache: Path, smoke: bool) -> None:
     sel += [r for r in rows if r.lab.border_variant and r not in sel]
     series = synthetic(sel) if smoke else asyncio.run(load_markets(sel, cache))
     need = NEED_H * H
+    print(f"\nthresholds: hole = > {GAP_H} missing 1h bars in a row in t0 … t0 + {NEED_H} h; 'short' if a hole > "
+          f"{SHORT_HOLE_H} h or missing hours > {SHORT_MISSING:.0%} of the window, or the bars end before t0 + {NEED_H} h")  # fmt: skip
+    times = {k: {b.t for b in v[1]} for k, v in series.items()}
     for s in SAMPLES:
         part = [r for r in sel if r.sample == s]
+        by_id = {r.id: r for r in part}
         cov = {r.id: availability(series.get(r.key, ("—", []))[1], r.lab.t0_ms, need) for r in part}
+        print(f"\n=== {s}: per row (ex ante + border-variant rows; market, status, holes > {GAP_H} h, missing hours, "
+              "local-drift hours with a full 7-day hold)")  # fmt: skip
+        drift = {}
+        for r in sorted(part, key=lambda r: r.lab.t0_ms):
+            src, bars = series.get(r.key, ("—", []))
+            hl, miss = holes(bars, r.lab.t0_ms, need)
+            drift[r.id] = drift_coverage(times.get(r.key, set()), r.lab.t0_ms)
+            sets = "".join(c for c, f in (("P", r.lab.primary), ("I", r.lab.idlist_variant), ("B", r.lab.border_variant)) if f)  # fmt: skip
+            print(f"  {r.id[3:]:24} {sets:3} {src:32} {cov[r.id]:7} holes={len(hl)} max={max(hl, default=0):3d}h "
+                  f"missing={miss:3d}h drift={drift[r.id]:.2f}")  # fmt: skip
+        prim = [r for r in part if r.lab.primary and cov[r.id] == "ok"]
+        dr = sorted(drift[r.id] for r in prim)
+        if dr:
+            print(f"  {s} primary rows with data: local-drift coverage min {dr[0]:.2f}, median {dr[len(dr) // 2]:.2f}; "
+                  f"rows < 0.50: {sum(x < 0.5 for x in dr)}")  # fmt: skip
+        holed = [r for r in part if r.lab.primary and holes(series.get(r.key, ("", []))[1], r.lab.t0_ms, need)[0]]
+        print(f"  {s} primary rows with any hole > {GAP_H} h:", " ".join(r.id[3:] for r in holed) or "none")
         for name, pick in (("primary", lambda r: r.lab.primary), ("idlist variant", lambda r: r.lab.idlist_variant),
                            ("border variant", lambda r: r.lab.border_variant)):  # fmt: skip
             c = Counter(cov[r.id] for r in part if pick(r))
-            print(f"{s} {name:15} ok={c['ok']} short={c['short']} missing={c['missing']}")
+            weeks = len({week_of(r.lab.t0_ms) for r in part if pick(r) and cov[r.id] == "ok"})
+            print(f"{s} {name:15} ok={c['ok']} short={c['short']} missing={c['missing']} weeks_with_data={weeks}")
+        c = Counter(cov[r.id] for r in part if r.lab.primary and not r.lab.q2_template)
+        print(f"{s} {'no Q2 template':15} ok={c['ok']} short={c['short']} missing={c['missing']}")
+        for r in part:
+            if r.id in CONFIRMED_ENTRY:  # the variant's row is read from its confirmation time, not from t0
+                cov[r.id] = availability(series.get(r.key, ("—", []))[1], confirmed_t0(r.id), need)
+        for name, ids in variant_ids(part, s).items():
+            c = Counter(cov[i] for i in ids)
+            weeks = len({week_of(confirmed_t0(i) if i in CONFIRMED_ENTRY else by_id[i].lab.t0_ms)
+                         for i in ids if cov[i] == "ok"})  # fmt: skip
+            print(f"{s} {name:15} ok={c['ok']} short={c['short']} missing={c['missing']} weeks_with_data={weeks}")
         print(f"  {s} no_data (primary):", " ".join(r.id[3:] for r in part if r.lab.primary and cov[r.id] != "ok") or "none")
         print(f"  {s} markets from the Binance archive:",
               " ".join(sorted({series[r.key][0] for r in part if series.get(r.key, ('',))[0].startswith('vision')})) or "none")  # fmt: skip
@@ -342,7 +450,29 @@ def main() -> None:
     ap.add_argument("--bars", action="store_true", help="stage zero: check 1h candle availability (network)")
     ap.add_argument("--smoke", action="store_true", help="stage zero: availability on synthetic bars (no network)")
     ap.add_argument("--cache-dir", type=Path, default=CACHE)
+    ap.add_argument("--out", type=Path, help="also write the whole output to this file (outside the repo)")
     a = ap.parse_args()
+    if a.out:
+        a.out.parent.mkdir(parents=True, exist_ok=True)
+        with a.out.open("w", encoding="utf-8") as fh, contextlib.redirect_stdout(_Tee(sys.stdout, fh)):
+            run(a)
+        print(f"output written to {a.out}")
+    else:
+        run(a)
+
+
+class _Tee(io.TextIOBase):
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, s: str) -> int:
+        for st in self.streams:
+            st.write(s)
+            st.flush()
+        return len(s)
+
+
+def run(a: argparse.Namespace) -> None:
     logging.basicConfig(level=logging.WARNING)
     rows, errors = load_rows()
     print(f"rows {len(rows)}; refused / untagged {len(errors)}")

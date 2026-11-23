@@ -184,3 +184,81 @@ def test_markup_counters_are_pinned():
         "strict_border_variant": 3, "strict_without_q2_template": 3, "scalps_primary": 3, "btc_units_primary": 0,
         "shorts_primary": 5, "weeks_primary": 15,
     }  # fmt: skip
+
+
+# --- stage 0 availability (review B 3.3б, p. 6): holes inside t0 … t0 + 336 h --------------------------------------
+
+H = bce.H
+T0 = ms(2020, 3, 2, 10, 15)
+
+
+def hourly(lo: int, hi: int, skip: range | tuple = ()) -> list:
+    base = T0 // H * H
+    return [bce.Bar(base + k * H, 1.0, 1.0, 1.0, 1.0) for k in range(lo, hi + 1) if k not in skip]
+
+
+def test_full_window_is_ok_and_has_no_holes():
+    bars = hourly(-5, 400)
+    assert bce.holes(bars, T0, 336 * H) == ([], 0)
+    assert bce.availability(bars, T0, 336 * H) == "ok"
+
+
+def test_short_holes_count_but_do_not_fail():
+    bars = hourly(-5, 400, skip=(10, 11, 12, 100, 101, 102, 103))  # 3 missing (not a hole) + 4 missing (a hole)
+    assert bce.holes(bars, T0, 336 * H) == ([4], 7)
+    assert bce.availability(bars, T0, 336 * H) == "ok"
+
+
+def test_a_hole_over_a_day_or_too_many_missing_hours_is_short():
+    assert bce.availability(hourly(-5, 400, skip=range(50, 63)), T0, 336 * H) == "short"  # one hole of 13 h
+    assert bce.availability(hourly(-5, 400, skip=range(50, 62)), T0, 336 * H) == "ok"  # 12 h: at the threshold
+    spread = tuple(j for k in range(20, 320, 15) for j in (k, k + 1))  # 20 holes of 2 h: 40 h > 5 % of 336 h
+    assert bce.holes(hourly(-5, 400, skip=spread), T0, 336 * H) == ([], 40)
+    assert bce.availability(hourly(-5, 400, skip=spread), T0, 336 * H) == "short"
+
+
+def test_missing_and_early_end():
+    assert bce.availability([], T0, 336 * H) == "missing"
+    assert bce.availability(hourly(3, 400), T0, 336 * H) == "missing"  # starts more than 2 h after t0
+    assert bce.availability(hourly(-5, 300), T0, 336 * H) == "short"
+
+
+def test_a_hole_at_the_start_of_the_window_is_seen():
+    # review B 3.3в, p. 1: a bar 1 h before t0, then nothing until t0's hour + 40 h -> hours 0 … 39 of the grid missing
+    bars = hourly(-5, -1) + hourly(40, 400)
+    assert bce.holes(bars, T0, 336 * H) == ([40], 40)
+    assert bce.availability(bars, T0, 336 * H) == "missing"  # the first bar at or after t0's hour is > t0 + 2 h
+    bars = hourly(-5, 0) + hourly(41, 400)  # t0's hour present, then 40 h missing: a hole, 'short'
+    assert bce.holes(bars, T0, 336 * H) == ([40], 40)
+    assert bce.availability(bars, T0, 336 * H) == "short"
+
+
+def test_a_hole_at_the_end_of_the_window_is_seen():
+    # bars up to t0's hour + 236 h, the next one at + 400 h: grid hours 237 … 336 (100 h) missing, though bars resume
+    bars = hourly(-5, 236) + hourly(400, 450)
+    assert bce.holes(bars, T0, 336 * H) == ([100], 100)
+    assert bce.availability(bars, T0, 336 * H) == "short"
+
+
+def test_registered_variant_compositions():
+    # card 3.3в, p. 18 (review B 3.3в, p. 2): fixed lists, all inside the primary set; cluster heads stay in 'one idea'
+    rows, _ = bce.load_rows()
+    prim = {r.id for r in rows if r.lab.primary and r.sample}
+    members = {m for ms in bce.ONE_IDEA.values() for m in ms}
+    assert set(bce.STRICT_BOUNDARY_OUT) <= prim and members <= prim and set(bce.ONE_IDEA) <= prim
+    assert not set(bce.ONE_IDEA) & members
+    by_id = {r.id: r for r in rows}
+    assert all(by_id[i].lab.exclusion == "conditional" and not by_id[i].lab.primary for i in bce.CONFIRMED_ENTRY)
+    main = bce.variant_ids(rows, "main")
+    assert (len(main["strict_boundary"]), len(main["one_idea"]), len(main["confirmed_entry"])) == (61, 61, 65)
+    combo = bce.variant_ids(rows, "combo")
+    assert (len(combo["strict_boundary"]), len(combo["one_idea"]), len(combo["confirmed_entry"])) == (15, 17, 17)
+    assert bce.confirmed_t0("BC-2020-04-24-ALGO-LONG") == ms(2020, 4, 25, 7, 14)
+
+
+def test_drift_coverage_counts_hours_with_a_full_7_day_hold():
+    times = {b.t for b in hourly(-30 * 24, 30 * 24 + 167)}
+    assert bce.drift_coverage(times, T0) == 1.0
+    half = {b.t for b in hourly(-30 * 24, 167)}  # holds only for hours up to t0's hour
+    assert bce.drift_coverage(half, T0) == pytest.approx((30 * 24 + 1) / (60 * 24 + 1))
+    assert bce.drift_coverage(set(), T0) == 0.0

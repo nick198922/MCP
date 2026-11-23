@@ -106,7 +106,7 @@ $rest}"
 }
 
 echo "== $(date) start (dry=$DRY)"
-git -C "$REPO" fetch --quiet --no-write-fetch-head origin
+git -C "$REPO" fetch --quiet --prune --no-write-fetch-head origin
 # The agents work in a separate clone, not a git worktree: Claude Code applies the main checkout's project
 # settings (the owner's broad permissions in .claude/settings.local.json) to its worktrees as well.
 # Unfinished work in an old worktree is carried over to the clone, on the commit it was based on.
@@ -310,10 +310,13 @@ handover() {
   local br="$1" status="$2" head="$3" title url ready="" verdict how
   title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"
   verdict="$(git diff --name-only "origin/main...$br" | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
-  if [[ "$status" == delivered && "$verdict" == auto ]]; then
+  # A stuck step merges by itself too (owner 2026-11-23: «Щоб такого більше не було!» — a stuck branch nobody merged
+  # held the loop at its open-branch limit for days): CI still gates it, and the next run picks the card up from main.
+  if [[ ("$status" == delivered || "$status" == stuck) && "$verdict" == auto ]]; then
     ready="--ready"
     AUTO_DELIVERY=1
     how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
+    [[ "$status" == stuck ]] && how="🤖 Незавершене зіллється само після тестів; наступний прогін продовжить картку з main."
   elif [[ "$status" == delivered && "$verdict" == claude:* ]]; then
     ready="--ready"
     how="🔍 Код демо-трейдера або правил злиття: зіллється після рев'ю Claude (scripts/trader_review.py)."

@@ -86,10 +86,12 @@ async def store():
     await s.aclose()
 
 
-def _scenario(strategy: str) -> tuple[dict[str, Any], CarryParams, range]:
-    """Markets, params and decision times of the runs over the whole segment (backtest equivalence, no look-ahead)."""
+def _scenario(strategy: str, days: int = 110) -> tuple[dict[str, Any], CarryParams, range]:
+    """Markets, params and decision times of the runs over the whole segment (backtest equivalence, no look-ahead).
+
+    ``days`` (A only): a shorter sample for a test that runs the engine twice itself instead of reading the snapshot."""
     if strategy == "A":
-        mk = markets_a(days=110)
+        mk = markets_a(days=days)
         params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
         f = [e["ts_ms"] for d in mk.values() for e in d["funding"]]
         return mk, params, _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(f))
@@ -855,8 +857,23 @@ def test_entry_stop_switch_stops_a_only():
     assert "entries" not in repr(PARAMS_A)  # not a registered parameter: the params hash of the record is unchanged
 
 
-async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_stop(store, full_run):
-    mk, params, times = _scenario("A")
+STOP_DAYS = 30  # item 456: the 110-day sample took 18.7 s here; at 30 days 2 of 3 held positions close, 1 stays open
+
+
+async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_stop(store):
+    # Every stopped cycle still builds the whole universe from the full series (FixtureFeed ignores ``held_only``), so the
+    # cost grows with days x cycles; the 110-day snapshot is not reused, the reference run below is the same scenario.
+    mk, params, times = _scenario("A", days=STOP_DAYS)
+    ref_store = Store(":memory:")
+    await ref_store.init()
+    try:
+        await _drive(ref_store, FixtureFeed(mk, "A"), params, times)  # the same engine and sample without the stop
+        await _check_stopped_a(store, ref_store, mk, params, times)
+    finally:
+        await ref_store.aclose()
+
+
+async def _check_stopped_a(store: Store, ref_store: Store, mk: dict[str, Any], params: CarryParams, times: range) -> None:
     feed = FixtureFeed(mk, "A")
     i = 0
     while not await store.cp_positions("A", "open"):
@@ -869,7 +886,7 @@ async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_
         assert out["status"] == "done" and out["opened"] == [], out
     rows = await store.cp_positions("A")
     assert {r["trade_id"] for r in rows} == held  # no position opened after the stop
-    ref = {r["trade_id"]: r for r in await (await full_run("A")).cp_positions("A")}
+    ref = {r["trade_id"]: r for r in await ref_store.cp_positions("A")}
     assert len(ref) > len(held)  # without the stop the engine kept opening
     closed = [r for r in rows if r["status"] == "closed"]
     assert closed  # held positions still close by their own exit rule, at the same cycle as without the stop
@@ -889,7 +906,7 @@ async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_
     assert view["engine"]["new_entries_stopped"] == reason
     # Review 2026-11-11 (carry-a-stop, note 4): a stopped book has empty slots, yet none of them will be filled.
     assert len(view["open"]) < PARAMS_A.slots and view["free_slots"] == 0  # book_view counts the live 5 slots of A
-    ref_view = await book_view(SimpleNamespace(store=await full_run("A")), "A", times[-1], False)  # type: ignore[arg-type]
+    ref_view = await book_view(SimpleNamespace(store=ref_store), "A", times[-1], False)  # type: ignore[arg-type]
     assert ref_view["engine"]["new_entries_stopped"] is None
     assert ref_view["free_slots"] == PARAMS_A.slots - len(ref_view["open"]) > 0
 

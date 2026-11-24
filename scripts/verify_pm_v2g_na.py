@@ -19,6 +19,7 @@ A ``late_entry`` is split further by :func:`early_reason` (filters of the rule, 
 'Defined' = 'ok' + 'missing'; an early resolution or close of a market can only make a defined point 'missing', never
 'n/a' (the bar uses the scheduled ``end_ts``).
 Output: aggregate counters and coarse hour buckets only; no line names a market, an asset, a week or an exact value.
+Only 'n/a' (fixed at entry) is split by market kind; 'ok' / 'missing' / 'pending' are given for all kinds together.
 
 Usage: uv run python scripts/verify_pm_v2g_na.py [--db PATH] [--date YYYY-MM-DD | --now UNIX]
 """
@@ -122,12 +123,12 @@ def account(
     rule: EntryRule | None = None,
     acc: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Counters for ``positions``: +24 h status (the report's), 'n/a' by cause, by kind, by hours entry -> end and by
-    hours the market was in the collector before its end; with ``period_by_mkt`` also :func:`early_reason` of every
-    'late_entry'. Only labels and counts are returned."""
+    """Counters for ``positions``: +24 h status (the report's, all kinds together), 'n/a' by cause, 'n/a' by kind, by
+    hours entry -> end and by hours the market was in the collector before its end; with ``period_by_mkt`` also
+    :func:`early_reason` of every 'late_entry'. Only labels and counts are returned; only 'n/a' is split by kind."""
     status: Counter = Counter()
     cause: Counter = Counter()
-    by_kind: dict[str, Counter] = defaultdict(Counter)
+    na_kind: Counter = Counter()
     entry_h: Counter = Counter()
     listed_h: Counter = Counter()
     early: Counter = Counter()
@@ -136,9 +137,11 @@ def account(
         mk = by_mkt.get(str(p["market_id"]), [])
         _, s = _horizon_status(p, mk, PRIMARY_H, now_ts)  # value discarded: label only
         status[s] += 1
-        by_kind[str(p["kind"])][s] += 1
         if s != "n/a":
             continue
+        # only 'n/a' (fixed at entry) is split by kind: a touch 'missing' usually means an early close, i.e. the level
+        # was hit, so 'ok' / 'missing' / 'pending' by kind would leak the sign before the verdict (review 454, item 1)
+        na_kind[str(p["kind"])] += 1
         mts = [int(r["ts"]) for r in mk]
         c = na_cause(p, mts, collector_ts)
         cause[c] += 1
@@ -153,7 +156,7 @@ def account(
         "n": len(positions),
         "status": dict(status),
         "na_cause": dict(cause),
-        "by_kind": {k: dict(v) for k, v in sorted(by_kind.items())},
+        "na_by_kind": dict(sorted(na_kind.items())),
         "na_entry_to_end_h": dict(entry_h),
         "na_cause_by_entry_h": dict(cause_h),
         "na_listed_before_end_h": dict(listed_h),
@@ -195,7 +198,7 @@ def render(name: str, a: Mapping[str, Any]) -> list[str]:
         + (f" = {na / n:.0%}" if n else "")
         + f"; missing share of defined (ok+missing) {st.get('missing', 0)}/{defined}",
         f"  n/a by cause: {_fmt(a['na_cause'], CAUSES)} (sum {sum(a['na_cause'].values())})",
-        "  status by kind: " + "; ".join(f"{k}: {_fmt(v, ('n/a', 'pending', 'ok', 'missing'))}" for k, v in a["by_kind"].items()),
+        f"  n/a by kind: {_fmt(a['na_by_kind'])}",
         f"  n/a by hours entry -> end: {_fmt(a['na_entry_to_end_h'], order)}",
         f"  n/a by cause / hours entry -> end: {_fmt(a['na_cause_by_entry_h'])}",
         f"  n/a by hours first collector row -> end: {_fmt(a['na_listed_before_end_h'], order)}",

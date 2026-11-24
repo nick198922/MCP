@@ -783,7 +783,7 @@ def test_a_v2_independent_scan_agrees_with_the_shadow():
 
 PM_ALLOWED = {
     "позицій", "тижнів входу (кластери)", "днів розв'язання", "з них уже минуло", "частки close / late / missing",
-    "частка missing на +24 год", "частка n/a на +24 год",
+    "частка missing на +24 год", cp.PM_NA_KEY, cp.PM_OK_KEY,
 }  # fmt: skip
 
 
@@ -793,14 +793,16 @@ def test_polymarket_exposes_counters_only(monkeypatch):
     def fake_v1(rows, outcomes, now_s, t0):
         return {
             "positions": {"n": 7, "entry_weeks": 2, "resolution_days": 5, "resolution_days_ended": 3, "edge_median": secret},
-            "sources": {"close_shares": {"close": 0.5, "late": 0.25, "missing": 0.25}, "h24_share_missing": 0.1},
+            "sources": {"close_shares": {"close": 0.5, "late": 0.25, "missing": 0.25}, "h24_share_missing": 0.1,
+                        "h24": {"n/a": 5, "ok": 1, "missing": 1}},
             "sd_per_position": {"h24": {"n": 7, "sd": secret}}, "results": {"mean": secret}, "mean_clv": secret,
         }  # fmt: skip
 
     def fake_v2(rows, outcomes, now_s, t0, *, v1_t0):
         return {
             "positions": {"n": 2, "entry_weeks": 1, "resolution_days": 1, "edge_median": secret},
-            "sources": {"h24_share_na": 0.5, "h24_share_missing": 0.0}, "power": {"sd_position": secret, "mde_now": secret},
+            "sources": {"h24_share_na": 0.5, "h24_share_missing": 0.0, "h24": {"n/a": 1, "ok": 1}},
+            "power": {"sd_position": secret, "mde_now": secret},
             "sd_per_position": {"h24": {"sd": secret}},
         }  # fmt: skip
 
@@ -808,6 +810,10 @@ def test_polymarket_exposes_counters_only(monkeypatch):
     monkeypatch.setattr(cp, "weekly_v2g", fake_v2)
     rows = cp.polymarket_forward([{"ts": 1}], [], NOW)
     assert [r["key"] for r in rows] == ["pm:v1", "pm:v2g"]
+    v1c, v2c = rows[0]["counters"], rows[1]["counters"]
+    assert v1c[cp.PM_OK_KEY] == 1 and v1c[cp.PM_NA_KEY] == "71 %"  # n/a 5 of all 7 positions, same base as v2-g
+    assert v2c[cp.PM_OK_KEY] == 1 and v2c[cp.PM_NA_KEY] == "50 %"
+    assert "за означенням" in cp.PM_NA_KEY and "26 год" in cp.PM_NA_KEY
     for r in rows:
         assert r["embargo"] and r["verdict"] == cp.EARLY and r["metric"] is None and r["band"] is None
         assert set(r["counters"]) <= PM_ALLOWED

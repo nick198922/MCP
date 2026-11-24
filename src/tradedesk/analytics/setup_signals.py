@@ -57,7 +57,8 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   >= 1 ATR); the entry is a limit resting at the POB's high for 90 days (indicator ``rest_until_ms``), stop
   ``course_pob.pob_stop`` "pob" (min(POB low, level - 0.5 ATR) - 0.1 ATR, ATR14 of the break bar), target 2R, held up
   to 20 bars. Shorts: the same on mirrored prices. **Rejected by the backtest** (no better than a random level at the
-  same distance, ``docs/verification/2026-10-17-course-step5-s17.md``); opt-in name "S17", not traded by the demo.
+  same distance, ``docs/verification/2026-10-17-course-step5-s17.md``); opt-in name "S17", on the demo since
+  2026-10-31 on 1d only, by the owner's decision (version v10).
   History limit on 4h: the break window is 180 days = 1080 bars of 4h, so with the demo's 1000 bars (minus the
   100-bar warm-up, about 150 days) a POB whose impulse is 150..180 days old gives no live signal although the
   backtest took it: the live detector misses some signals (never adds false ones). The full window needs at least

@@ -40,7 +40,17 @@ __all__ = [
     "trade_delta",
     "summarize",
     "verdict",
+    "TERMINAL",
+    "select_signal_window",
+    "week_key",
+    "t_cdf",
+    "t_ppf",
+    "cluster_t",
+    "verdict_v2",
 ]
+
+# Demo statuses after which a row never changes again (anything else, e.g. 'open', blocks a signal_ts window).
+TERMINAL = frozenset({"closed", "missed", "rejected", "orphaned"})
 
 
 def atr_at(bars: Bars, signal_ts: int, n: int = ATR_N) -> float | None:
@@ -179,5 +189,139 @@ def verdict(s: dict[str, Any], *, min_n: int = 30, mde_max: float = 0.30, band: 
     if hi < 0:
         return "✗"
     if -band < lo and hi < band:
+        return "≈"
+    return "◯"
+
+
+# ---------------------------------------------------------------- protocol v2 (S39 re-run, registration 2026-11-25)
+
+
+def select_signal_window(
+    rows: Sequence[dict[str, Any]], setups: Sequence[str], signal_before: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split the rows of ``setups`` signalled before ``signal_before`` (ms UTC) into (closed with a ``closed_ts``,
+    other terminal rows, blocking rows: not terminal, or closed without ``closed_ts``). The window is usable only with no
+    blocking rows; then the selection depends on rows signalled before the boundary only, never on later ones."""
+    closed, other, block = [], [], []
+    for r in rows:
+        if r.get("setup") not in setups or int(r["signal_ts"]) >= signal_before:
+            continue
+        st = str(r.get("status"))
+        if st == "closed" and r.get("closed_ts") is not None:
+            closed.append(r)
+        elif st in TERMINAL and st != "closed":
+            other.append(r)
+        else:
+            block.append(r)
+    return closed, other, block
+
+
+GOLD_BASES = frozenset({"XAUT", "PAXG"})  # tokenised gold: its beta is not the crypto market factor of the mechanism
+
+
+def is_gold(symbol: str) -> bool:
+    """True for a tokenised-gold symbol ('XAUT/USDT:USDT', 'PAXG', ...), by its base asset."""
+    return symbol.split("/")[0].upper() in GOLD_BASES
+
+
+def placebo_horizon_end(rows: Sequence[dict[str, Any]], tf_ms: dict[str, int], hold: Any) -> int | None:
+    """Latest placebo horizon over ``rows``: max(signal_ts + bar length + ``hold(setup, timeframe)``) in ms, None for no
+    rows. Before it, some placebo of the window is still ``open`` (marked to market)."""
+    ends = [int(r["signal_ts"]) + tf_ms[r["timeframe"]] + int(hold(r["setup"], r["timeframe"])) for r in rows]
+    return max(ends) if ends else None
+
+
+def week_key(ts_ms: int) -> int:
+    """ISO-week bucket (Monday 00:00 … Sunday 24:00 UTC) of a ms timestamp: 1970-01-01 was a Thursday."""
+    return (int(ts_ms) // DAY_MS + 3) // 7
+
+
+def t_cdf(t: float, df: int) -> float:
+    """Exact Student-t CDF for an integer ``df`` >= 1 (Abramowitz & Stegun 26.7.3-4, finite series)."""
+    if df < 1:
+        raise ValueError("df must be >= 1")
+    th = math.atan(abs(t) / math.sqrt(df))
+    s, c2 = math.sin(th), math.cos(th) ** 2
+    if df % 2 == 1:
+        acc, term = 0.0, math.cos(th)
+        for j in range(1, df - 1, 2):  # powers 1, 3, …, df - 2
+            acc += term
+            term *= (j + 1) / (j + 2) * c2
+        a = 2 / math.pi * (th + s * acc) if df > 1 else 2 * th / math.pi
+    else:
+        acc, term = 0.0, 1.0
+        for j in range(0, df - 1, 2):  # powers 0, 2, …, df - 2
+            acc += term
+            term *= (j + 1) / (j + 2) * c2
+        a = s * acc
+    return 0.5 + 0.5 * a if t >= 0 else 0.5 - 0.5 * a
+
+
+def t_ppf(p: float, df: int) -> float:
+    """Student-t quantile by bisection on :func:`t_cdf` (|error| < 1e-9)."""
+    if not 0 < p < 1:
+        raise ValueError("p must be in (0, 1)")
+    if p < 0.5:
+        return -t_ppf(1 - p, df)
+    lo, hi = 0.0, 1.0
+    while t_cdf(hi, df) < p:
+        hi *= 2
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if t_cdf(mid, df) < p else (lo, mid)
+        if hi - lo < 1e-10:
+            break
+    return (lo + hi) / 2
+
+
+def cluster_t(values: Sequence[float], clusters: Sequence[Any]) -> dict[str, Any]:
+    """Cluster-robust (CR1) inference on the mean: SE² = G/(G−1) · Σ_g (Σ_{i∈g} (x_i − x̄))² / n², t with G − 1
+    degrees of freedom: 95 % CI, one-sided p for mean > 0, MDE80 = (t_{0.975} + t_{0.80}) · SE. None below 2 clusters."""
+    x = [float(v) for v in values]
+    n = len(x)
+    groups: dict[Any, float] = {}
+    out: dict[str, Any] = {"n": n, "clusters": len(set(clusters)), "mean": sum(x) / n if n else None}
+    out.update(se=None, df=None, ci=None, p_gt0=None, mde80=None)
+    g = out["clusters"]
+    if n == 0 or g < 2:
+        return out
+    mu = out["mean"]
+    for v, c in zip(x, clusters, strict=True):
+        groups[c] = groups.get(c, 0.0) + (v - mu)
+    se = math.sqrt(g / (g - 1) * sum(s * s for s in groups.values())) / n
+    df = g - 1
+    q = t_ppf(0.975, df)
+    p = (1 - t_cdf(mu / se, df)) if se > 0 else (0.0 if mu > 0 else 1.0)
+    out.update(se=se, df=df, ci=[mu - q * se, mu + q * se], p_gt0=p, mde80=(q + t_ppf(0.80, df)) * se)
+    return out
+
+
+def verdict_v2(
+    boot: dict[str, Any],
+    ct: dict[str, Any],
+    *,
+    min_n: int = 30,
+    min_clusters: int = 10,
+    mde_max: float = 0.30,
+    band: float = 0.30,
+    p_holm: float | None,
+) -> str:
+    """Rule of the 2026-11-25 registration, on the day-clustered bootstrap ``boot`` (:func:`summarize`) and the
+    day-clustered CR1 t ``ct`` (:func:`cluster_t`) of the same values. n < ``min_n`` -> 'descriptive'; fewer than
+    ``min_clusters`` clusters, a missing CI, or max(MDE80 of both) > ``mde_max`` -> '◯'; both lower bounds > 0 and the
+    Holm-adjusted p < 0.05 -> '✓'; both upper bounds < 0 -> '✗'; both CIs inside (−band, +band) -> '≈'; otherwise '◯'.
+    ``p_holm`` is required: None (the setup was not in the Holm family) never gives '✓' (amendment 2026-11-24)."""
+    if boot.get("n", 0) < min_n:
+        return "descriptive"
+    if boot.get("clusters", 0) < min_clusters or boot.get("ci") is None or ct.get("ci") is None:
+        return "◯"
+    if max(boot["mde80"], ct["mde80"]) > mde_max:
+        return "◯"
+    (bl, bh), (tl, th) = boot["ci"], ct["ci"]
+    if bl > 0 and tl > 0 and p_holm is not None and p_holm < 0.05:
+        return "✓"
+    if bh < 0 and th < 0:
+        return "✗"
+    if -band < min(bl, tl) and max(bh, th) < band:
         return "≈"
     return "◯"

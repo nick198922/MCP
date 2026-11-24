@@ -114,6 +114,81 @@ def test_summarize_and_verdict() -> None:
     assert one["ci"] is None and one["mean"] == pytest.approx(1.5) and dp.verdict({**one, "n": 30}) == "◯"
 
 
+def test_t_distribution_against_tables() -> None:
+    assert dp.t_cdf(0.0, 3) == pytest.approx(0.5)
+    assert dp.t_cdf(1.0, 1) == pytest.approx(0.75)  # Cauchy
+    assert dp.t_cdf(2.0, 2) == pytest.approx(0.5 + 0.5 * 2 / (6**0.5))  # closed form for df 2
+    for p, df, q in ((0.975, 1, 12.7062), (0.975, 3, 3.18245), (0.975, 12, 2.17881), (0.80, 12, 0.87261), (0.975, 60, 2.00030)):
+        assert dp.t_ppf(p, df) == pytest.approx(q, abs=2e-4)
+    assert dp.t_ppf(0.025, 3) == pytest.approx(-dp.t_ppf(0.975, 3))
+    assert dp.t_cdf(-1.5, 7) == pytest.approx(1 - dp.t_cdf(1.5, 7))
+
+
+def test_cluster_t_analytic() -> None:
+    # clusters a: [1, 1], b: [3, 3]; mean 2; residual sums -2, +2; SE = sqrt(2/1 * 8) / 4 = 1; df 1
+    s = dp.cluster_t([1.0, 1.0, 3.0, 3.0], ["a", "a", "b", "b"])
+    assert s["mean"] == pytest.approx(2.0) and s["se"] == pytest.approx(1.0) and s["df"] == 1
+    assert s["ci"] == pytest.approx([2 - 12.7062, 2 + 12.7062], abs=1e-3)
+    assert s["p_gt0"] == pytest.approx(1 - dp.t_cdf(2.0, 1))
+    assert s["mde80"] == pytest.approx(dp.t_ppf(0.975, 1) + dp.t_ppf(0.80, 1))
+    assert dp.cluster_t([1.0, 2.0], ["d", "d"])["ci"] is None
+
+
+def test_week_key_iso_monday() -> None:
+    mon = 1795392000000  # 2026-11-23 00:00 UTC, a Monday
+    assert dp.week_key(mon) == dp.week_key(mon + 7 * dp.DAY_MS - 1)  # … Sunday 23:59:59.999
+    assert dp.week_key(mon - 1) == dp.week_key(mon) - 1  # Sunday 22.11 belongs to the previous week
+
+
+def test_select_signal_window_causal() -> None:
+    b = 1_000
+    rows = [
+        {"setup": "S39", "signal_ts": 10, "status": "closed", "closed_ts": 50},
+        {"setup": "S39", "signal_ts": 20, "status": "missed", "closed_ts": None},
+        {"setup": "S38", "signal_ts": 30, "status": "open", "closed_ts": None},
+        {"setup": "S39", "signal_ts": 2_000, "status": "open", "closed_ts": None},
+    ]
+    closed, other, block = dp.select_signal_window(rows, ("S39",), b)
+    assert [r["signal_ts"] for r in closed] == [10] and len(other) == 1 and block == []
+    later = rows[:3] + [
+        {"setup": "S39", "signal_ts": 2_000, "status": "closed", "closed_ts": 9_000},
+        {"setup": "S39", "signal_ts": b, "status": "open"},
+    ]
+    assert dp.select_signal_window(later, ("S39",), b) == (closed, other, block)  # rows at / after the boundary never count
+    _, _, blk = dp.select_signal_window([*rows, {"setup": "S39", "signal_ts": 5, "status": "open"}], ("S39",), b)
+    assert len(blk) == 1
+    _, _, blk = dp.select_signal_window([{"setup": "S39", "signal_ts": 5, "status": "closed", "closed_ts": None}], ("S39",), b)
+    assert len(blk) == 1
+
+
+def test_verdict_v2() -> None:
+    ok_b = {"n": 37, "clusters": 13, "ci": [0.05, 0.4], "mde80": 0.25}
+    ok_t = {"ci": [0.02, 0.45], "mde80": 0.28}
+    v = lambda b, t, p=0.01: dp.verdict_v2(b, t, p_holm=p)  # noqa: E731
+    assert v(ok_b, ok_t) == "✓"
+    assert v(ok_b, ok_t, 0.06) == "◯"
+    assert v(ok_b, ok_t, None) == "◯"  # not in the Holm family: never ✓ (amendment 2026-11-24)
+    with pytest.raises(TypeError):
+        dp.verdict_v2(ok_b, ok_t)  # type: ignore[call-arg]  # p_holm is required
+    assert v(ok_b, {**ok_t, "ci": [-0.01, 0.45]}) == "◯"  # the t interval must agree
+    assert v(ok_b, {**ok_t, "mde80": 0.31}) == "◯"  # gate on the larger MDE80
+    assert v({**ok_b, "clusters": 9}, ok_t) == "◯"
+    assert v({**ok_b, "n": 29}, ok_t) == "descriptive"
+    assert v({**ok_b, "ci": [-0.4, -0.1]}, {**ok_t, "ci": [-0.45, -0.02]}, None) == "✗"
+    assert v({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.25]}) == "≈"
+    assert v({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.31]}) == "◯"
+
+
+def test_gold_and_placebo_horizon() -> None:
+    assert dp.is_gold("XAUT/USDT:USDT") and dp.is_gold("paxg") and not dp.is_gold("SOL/USDT:USDT")
+    tf = {"4h": 4 * 3_600_000, "1d": 86_400_000}
+    hold = lambda s, t: 7 * 86_400_000 if t == "4h" else 30 * 86_400_000  # noqa: E731
+    rows = [{"setup": "S39", "timeframe": "4h", "signal_ts": 0}, {"setup": "S3", "timeframe": "1d", "signal_ts": -10 * 86_400_000}]
+    assert dp.placebo_horizon_end(rows, tf, hold) == 21 * 86_400_000  # the 1d trade: −10 d + 1 d + 30 d
+    assert dp.placebo_horizon_end(rows[:1], tf, hold) == 4 * 3_600_000 + 7 * 86_400_000
+    assert dp.placebo_horizon_end([], tf, hold) is None
+
+
 def test_draw_excludes_signal_coin_and_prefix_stable() -> None:
     pool = [f"C{i}" for i in range(100)]
     k3, k10 = draw_coins("link-1", pool, 3), draw_coins("link-1", pool, 10)

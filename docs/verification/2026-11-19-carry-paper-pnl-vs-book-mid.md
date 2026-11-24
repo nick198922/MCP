@@ -1,6 +1,6 @@
 # Carry A / B: P&L паперу за закриттям бару проти mid книги (пункт 383a)
 
-Дата: 2026-11-19. Реєстрація: [картка, «Попередня реєстрація — пункт 383a»](../ideas/IDEA-20261102-standing-improvements.md), закомічена окремо до чисел (572377da). Прогін: `uv run python scripts/verify_carry_paper_mid.py --date 2026-11-19`; повний вивід — `~/.cache/tradedesk-agents/carry_paper_mid/result_2026-11-19.json`. Лише читання (БД `mode=ro`), `execution/` і рушій не змінено.
+Дата: 2026-11-19. Реєстрація: [«Попередня реєстрація — пункт 383a»](../history/STANDING-IMPROVEMENTS-done.md) (з 19.11 в архіві закритих пунктів картки IDEA-20261102-standing-improvements), закомічена окремо до чисел (572377da). Прогін: `uv run python scripts/verify_carry_paper_mid.py --date 2026-11-19`; повний вивід — `~/.cache/tradedesk-agents/carry_paper_mid/result_2026-11-19.json`. Лише читання (БД `mode=ro`), `execution/` і рушій не змінено.
 
 ## Вердикт (за реєстрацією)
 | Стратегія | n (закриті, повні книги) | Δ = P_mid − P_model, середнє | 95 % ДІ t | Вердикт |

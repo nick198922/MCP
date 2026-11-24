@@ -1,7 +1,7 @@
 """Item 383a: paper carry A / B price P&L at the bar close (engine) vs at the recorded book mid, same open / close sides.
 
 Reads the collector DB READ-ONLY (``mode=ro``): ``cp_position``, ``cp_log`` and ``cp_cycle`` through
-``checkpoint_report.load_carry``. No network. Registration: ``docs/ideas/IDEA-20261102-standing-improvements.md``,
+``checkpoint_report.load_carry``. No network. Registration: ``docs/history/STANDING-IMPROVEMENTS-done.md`` (archived standing card),
 «Попередня реєстрація — пункт 383a». ``--smoke`` prints only counts and consistency checks (no outcome metric).
 
     uv run python scripts/verify_carry_paper_mid.py [--date 2026-11-19] [--smoke]

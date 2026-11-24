@@ -1,8 +1,9 @@
 """Carry B criterion (e): is a leg-price gap > 0.5 % an engine defect or a market property (item 383, descriptive).
 
 Pure functions on the engine's candidate rows (``cp_cycle.candidates``: ``price_a`` Binance USD-M, ``price_b`` Bybit,
-per cycle) and independent venue bars (``[open_ms, open, high, low, close, volume]``). The registration (card
-IDEA-20261102-standing-improvements, «Попередня реєстрація — пункт 383») fixes the thresholds below before the data:
+per cycle) and independent venue bars (``[open_ms, open, high, low, close, volume]``). The registration (archived
+standing card docs/history/STANDING-IMPROVEMENTS-done.md, «Попередня реєстрація — пункт 383») fixes the thresholds below
+before the data:
 
 - R1 frozen leg: one leg's price equal over >= ``FROZEN_ROWS`` consecutive rows while the other changes, or the venue's
   bar behind a row has zero volume (an explicit 0; an unknown volume stays None and is not zero);

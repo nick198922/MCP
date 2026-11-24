@@ -1140,6 +1140,10 @@ def a_v2_forward(
 PM_V1_NAME = "Папір Polymarket v1 (заморожений)"
 PM_V2G_NAME = "Папір Polymarket v2-g (поправка H8)"
 PM_MIN_NOTE = "мінімум для вердикту: ≥ 20 днів розв'язання і ≥ 10 тижневих кластерів"
+# 'n/a' at +24 h is the registered definition (market ends < 26 h after entry), not lost data
+# (docs/verification/2026-11-24-pm-v2g-na-accounting.md); 'ok' is the effective n of the primary metric.
+PM_NA_KEY = "частка n/a на +24 год (вхід < 26 год до кінця, за означенням)"
+PM_OK_KEY = "позицій з точкою +24 год (ok)"
 
 
 def _pm_row(key: str, name: str, gate_s: int, now_ms: int, counters: dict[str, Any]) -> dict[str, Any]:
@@ -1161,13 +1165,15 @@ def polymarket_forward(rows: Sequence[Mapping[str, Any]], outcomes: Sequence[Map
     if rows and now_s >= T0_TS:
         d = weekly_descriptive(rows, outcomes, now_s, T0_TS)
         p, src = d["positions"], d["sources"]
-        shares = src.get("close_shares") or {}
+        shares, h24 = src.get("close_shares") or {}, src.get("h24") or {}
         v1 = {
             "позицій": p["n"],
             "тижнів входу (кластери)": p["entry_weeks"],
             "днів розв'язання": p["resolution_days"],
             "з них уже минуло": p["resolution_days_ended"],
             "частки close / late / missing": " / ".join(_pc(shares.get(k)) for k in ("close", "late", "missing")),
+            PM_OK_KEY: h24.get("ok", 0),
+            PM_NA_KEY: _pc(h24.get("n/a", 0) / p["n"] if p["n"] else None),  # same base as v2-g: all positions
             "частка missing на +24 год": _pc(src.get("h24_share_missing")),
         }
     v2: dict[str, Any] = {"позицій": 0}
@@ -1178,7 +1184,8 @@ def polymarket_forward(rows: Sequence[Mapping[str, Any]], outcomes: Sequence[Map
             "позицій": p["n"],
             "тижнів входу (кластери)": p["entry_weeks"],
             "днів розв'язання": p["resolution_days"],
-            "частка n/a на +24 год": _pc(src.get("h24_share_na")),
+            PM_OK_KEY: (src.get("h24") or {}).get("ok", 0),
+            PM_NA_KEY: _pc(src.get("h24_share_na")),
             "частка missing на +24 год": _pc(src.get("h24_share_missing")),
         }
     return [

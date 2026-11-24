@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from verify_pm_v2g_na import NEED_S, account, bucket, early_reason, has_gap, na_cause  # noqa: E402
+from verify_pm_v2g_na import NEED_S, account, bucket, early_reason, has_gap, na_cause, render  # noqa: E402
 
 from tradedesk.analytics.pm_gap_paper import HOUR_S, EntryRule  # noqa: E402
 
@@ -72,11 +72,40 @@ def test_account_counts_na_and_pending_without_prices():
     assert a["status"] == {"n/a": 2, "pending": 1}
     assert a["na_cause"] == {"listed_late": 1, "late_entry": 1}
     assert sum(a["na_cause"].values()) == a["status"]["n/a"]
-    assert a["by_kind"] == {"above": {"n/a": 1, "pending": 1}, "touch": {"n/a": 1}}
+    assert a["na_by_kind"] == {"above": 1, "touch": 1}  # the pending 'above' is not split by kind
     assert a["na_entry_to_end_h"] == {"<6": 1, "6-12": 1}
     assert a["na_cause_by_entry_h"] == {"listed_late/<6": 1, "late_entry/6-12": 1}
     assert a["na_listed_before_end_h"] == {"12-24": 1, ">=48": 1}
     assert a["late_entry_early_reason"] == {}  # no period rows given
+
+
+def _leaves(x):
+    if isinstance(x, dict):
+        for v in x.values():
+            yield from _leaves(v)
+    else:
+        yield x
+
+
+def test_account_hides_clv_and_splits_only_na_by_kind():
+    """Embargo (review 454, items 1-2): an 'ok' point's CLV is discarded, and a touch 'ok' / 'missing' does not show up
+    in the by-kind split (a touch 'missing' usually means the level was hit)."""
+    ok, miss, na = (_pos(30, "touch", "o") | {"cost": 0.3}, _pos(30, "touch", "m") | {"cost": 0.3}, _pos(5, "touch", "a"))
+    by_mkt = {
+        "o": [
+            {"ts": END - 30 * HOUR_S, "yes_bid": 0.6713, "yes_ask": 0.6913},
+            {"ts": END - 6 * HOUR_S, "yes_bid": 0.6713, "yes_ask": 0.6913},
+        ],
+        "m": [{"ts": END - 30 * HOUR_S, "yes_bid": 0.6713, "yes_ask": 0.6913}],  # no row near +24 h
+        "a": [{"ts": END - 20 * HOUR_S}, {"ts": END - 5 * HOUR_S}],
+    }
+    a = account([ok, miss, na], by_mkt, HOURLY, END)
+    assert a["status"] == {"ok": 1, "missing": 1, "n/a": 1}
+    assert a["na_by_kind"] == account([na], by_mkt, HOURLY, END)["na_by_kind"] == {"touch": 1}
+    assert all(isinstance(v, int) and not isinstance(v, bool) for v in _leaves(a))  # counters only, no CLV / price
+    text = "\n".join(render("v2-g", a))
+    assert "missing 1" in text and "touch 1" in text
+    assert not any(s in text for s in ("0.38", "0.68", "3813", "6813", "0.3"))  # CLV 0.3813, mid 0.6813, cost 0.3
 
 
 def test_early_reason_labels():

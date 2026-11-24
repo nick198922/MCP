@@ -105,7 +105,7 @@ def counts(db: str, setups: tuple[str, ...], signal_before: int) -> int:
             print(
                 f"     signals {iso(int(closed[0]['signal_ts']))} … {iso(max(int(r['signal_ts']) for r in closed))} UTC, "
                 f"last close {iso(max(int(r['closed_ts']) for r in closed))} UTC, placebo horizon ends "
-                f"{iso(max(int(r['signal_ts']) + TF_MS[r['timeframe']] + hold_ms(s, r['timeframe']) for r in closed))} UTC"
+                f"{iso(dp.placebo_horizon_end(closed, TF_MS, hold_ms) or 0)} UTC"
             )
     return 0
 
@@ -190,12 +190,12 @@ async def evaluate(t: dict[str, Any], perps: list, turn: dict, fetch: dvb.Fetch,
     }
     pool = pool_for(sig // DAY_MS * DAY_MS, perps, turn, d.symbol)
     row["pool_n"] = len(pool)
-    coins = draw_coins(d.link_id, pool, K_WIDE)
-    pl = []
-    for c in coins:
-        cb, cp = await coin_bars(fetch, c, tf, sig, hold, now)
-        pl.append(
-            {
+    seen: dict[str, dict[str, Any]] = {}  # coin -> outcomes: the no-gold draw reuses coins of the main draw
+
+    async def one(c: str) -> dict[str, Any]:
+        if c not in seen:
+            cb, cp = await coin_bars(fetch, c, tf, sig, hold, now)
+            seen[c] = {
                 "coin": c,
                 **{
                     str(f): dataclasses.asdict(
@@ -204,8 +204,13 @@ async def evaluate(t: dict[str, Any], perps: list, turn: dict, fetch: dvb.Fetch,
                     for f in fees_k
                 },
             }
-        )
-    row["placebo"] = pl
+        return seen[c]
+
+    row["placebo"] = [await one(c) for c in draw_coins(d.link_id, pool, K_WIDE)]
+    # descriptive (amendment 2026-11-24): the same draw on the pool without tokenised gold
+    pool_ng = [c for c in pool if not dp.is_gold(c)]
+    row["pool_gold"] = len(pool) - len(pool_ng)
+    row["placebo_ng"] = [await one(c) for c in draw_coins(d.link_id, pool_ng, K_WIDE)] if row["pool_gold"] else row["placebo"]
     return row
 
 
@@ -223,7 +228,13 @@ async def collect(
         perps = await crypto_perps(rt, b)
         t0 = time.time()
         turn = await day_turnovers(perps, fday, span[0], span[1], now) if span[1] >= span[0] else {}
-        meta = {"perps": len(perps), "turnover_s": round(time.time() - t0, 1)}
+        # the pool depends on the listing at run time (draw = hash % pool size): record when and what was listed
+        meta = {
+            "perps": len(perps),
+            "turnover_s": round(time.time() - t0, 1),
+            "run_wall_ms": int(time.time() * 1000),
+            "perps_list": [s for s, _ in perps],
+        }
         out = []
         t1 = time.time()
         for i, r in enumerate(rows):
@@ -240,15 +251,15 @@ async def collect(
 
 
 def deltas(
-    rows: list[dict[str, Any]], k: int, fee: str = "1.0", *, sim: bool = False, skip_open: bool = False
+    rows: list[dict[str, Any]], k: int, fee: str = "1.0", *, sim: bool = False, skip_open: bool = False, key: str = "placebo"
 ) -> list[tuple[float, int, dict]]:
     """(Δ, signal day, row) of every usable trade: demo R (or the signal coin simulated, ``sim``) − mean of the first
-    ``k`` placebos with an R."""
+    ``k`` placebos with an R (``key``: 'placebo', or 'placebo_ng' for the draw on the pool without tokenised gold)."""
     out = []
     for r in rows:
         if r["status"] != "ok":
             continue
-        pls = [p[fee] for p in r["placebo"][:k]]
+        pls = [p[fee] for p in r[key][:k]]
         if skip_open and any(p["status"] == "open" for p in pls):
             continue
         base = r["sim_signal"][fee]["r"] if sim else r["r_demo"]
@@ -353,6 +364,13 @@ def line_v2(name: str, ds: list[tuple[float, int, dict]], min_cl: int = 10) -> t
 def report_v2(rows: list[dict[str, Any]], meta: dict[str, Any], now: int, label: str, setups: tuple[str, ...]) -> list[str]:  # noqa: PLR0915
     """Registered tables of the 2026-11-25 registration (protocol v2): K = 10 is the main benchmark."""
     out = [f"demo vs placebo, protocol v2, {label}, now {iso(now)} UTC ({now}), perps {meta.get('perps')}, K main {K_WIDE}"]
+    wall = meta.get("run_wall_ms")
+    pools = [int(r["pool_n"]) for r in rows if r.get("pool_n") is not None]
+    out.append(
+        f"run at {iso(int(wall)) if wall else '—'} UTC; listed perps at run {meta.get('perps')}; "
+        f"placebo pool per trade {min(pools) if pools else '—'} … {max(pools) if pools else '—'} "
+        "(pool = perps listed at run time, draw = hash % pool size)"
+    )
     st = Counter((r["setup"], r["status"]) for r in rows)
     out.append(
         "usable / excluded: "
@@ -407,17 +425,16 @@ def report_v2(rows: list[dict[str, Any]], meta: dict[str, Any], now: int, label:
         rows_d += [(f"{s} версія {v}", xs) for v, xs in sorted(by_v.items())]
         own = [(x[2]["r_demo"] - x[2]["sim_signal"]["1.0"]["r"], x[1], x[2]) for x in sub if x[2]["sim_signal"]["1.0"]["r"] is not None]
         rows_d.append((f"{s} R демо − модель монети сигналу", own))
+        ng = [x for x in deltas(rows, K_WIDE, key="placebo_ng") if x[2]["setup"] == s and not dp.is_gold(x[2]["symbol"])]
+        rows_d.append((f"{s} без XAUT / PAXG (угоди і пул плацебо)", ng))
         for name, ds in rows_d:
             out.append(line_v2(name, ds)[0])
-        per_day: dict[int, list[float]] = defaultdict(list)
-        for x in sub:
-            per_day[x[1]].append(x[0])
-        loo = [(d, sum(x[0] for x in sub if x[1] != d) / (len(sub) - len(v))) for d, v in per_day.items() if len(sub) > len(v)]
-        big = max(per_day, key=lambda d: len(per_day[d]))
+        mine = [r for r in rows if r["setup"] == s and r["status"] == "ok"]
         out.append(
-            f"  {s} без одного дня: Δ від {min(v for _, v in loo):+.3f} до {max(v for _, v in loo):+.3f}; "
-            f"найбільший день {iso(big * DAY_MS)[:10]} ({len(per_day[big])} угод), без нього {dict(loo)[big]:+.3f}"
+            f"  {s} XAUT / PAXG: угод з такою монетою сигналу {sum(dp.is_gold(r['symbol']) for r in mine)}; "
+            f"угод, у пулі яких вони були (жереб без них інший) {sum(int(r.get('pool_gold') or 0) > 0 for r in mine)}"
         )
+        out.append(leave_one_day(s, sub))
         by_c: dict[str, list] = defaultdict(list)
         for x in sub:
             by_c[x[2]["symbol"].split("/")[0]].append(x[0])
@@ -429,6 +446,21 @@ def report_v2(rows: list[dict[str, Any]], meta: dict[str, Any], now: int, label:
             + (f"; Cochran Q {q[0]:.2f} df {q[1]}, I² {q[2]:.2f}" if q else "")
         )
     return out
+
+
+def leave_one_day(s: str, sub: list[tuple[float, int, dict]]) -> str:
+    """Leave-one-signal-day-out range of the mean Δ and the mean without the largest day (no row with a single day)."""
+    per_day: dict[int, list[float]] = defaultdict(list)
+    for x in sub:
+        per_day[x[1]].append(x[0])
+    if len(per_day) < 2:
+        return f"  {s} без одного дня: днів {len(per_day)} — рядка нема"
+    loo = {d: sum(x[0] for x in sub if x[1] != d) / (len(sub) - len(v)) for d, v in per_day.items()}
+    big = max(per_day, key=lambda d: len(per_day[d]))
+    return (
+        f"  {s} без одного дня: Δ від {min(loo.values()):+.3f} до {max(loo.values()):+.3f}; "
+        f"найбільший день {iso(big * DAY_MS)[:10]} ({len(per_day[big])} угод), без нього {loo[big]:+.3f}"
+    )
 
 
 def cochran(groups: dict[str, list[float]]) -> tuple[float, int, float] | None:
@@ -543,6 +575,10 @@ def run_v2(db: str, setups: tuple[str, ...], sb: int, cache: Path, now: int, out
         return 2
     rows = window_rows(db, setups, sb)
     if rows is None:
+        return 2
+    horizon = dp.placebo_horizon_end(rows, TF_MS, hold_ms)
+    if horizon is not None and now < horizon:  # with or without --now-ms (amendment 2026-11-24)
+        print(f"refused: now {iso(now)} UTC is before the last placebo horizon {iso(horizon)} UTC (placebos still open)")
         return 2
     label = f"signal_ts < {iso(sb)} UTC"
     print(f"{label}; closed rows {len(rows)}; now {iso(now)} ({now})", flush=True)

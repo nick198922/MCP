@@ -216,6 +216,21 @@ def select_signal_window(
     return closed, other, block
 
 
+GOLD_BASES = frozenset({"XAUT", "PAXG"})  # tokenised gold: its beta is not the crypto market factor of the mechanism
+
+
+def is_gold(symbol: str) -> bool:
+    """True for a tokenised-gold symbol ('XAUT/USDT:USDT', 'PAXG', ...), by its base asset."""
+    return symbol.split("/")[0].upper() in GOLD_BASES
+
+
+def placebo_horizon_end(rows: Sequence[dict[str, Any]], tf_ms: dict[str, int], hold: Any) -> int | None:
+    """Latest placebo horizon over ``rows``: max(signal_ts + bar length + ``hold(setup, timeframe)``) in ms, None for no
+    rows. Before it, some placebo of the window is still ``open`` (marked to market)."""
+    ends = [int(r["signal_ts"]) + tf_ms[r["timeframe"]] + int(hold(r["setup"], r["timeframe"])) for r in rows]
+    return max(ends) if ends else None
+
+
 def week_key(ts_ms: int) -> int:
     """ISO-week bucket (Monday 00:00 … Sunday 24:00 UTC) of a ms timestamp: 1970-01-01 was a Thursday."""
     return (int(ts_ms) // DAY_MS + 3) // 7
@@ -289,13 +304,13 @@ def verdict_v2(
     min_clusters: int = 10,
     mde_max: float = 0.30,
     band: float = 0.30,
-    p_holm: float | None = None,
+    p_holm: float | None,
 ) -> str:
     """Rule of the 2026-11-25 registration, on the day-clustered bootstrap ``boot`` (:func:`summarize`) and the
     day-clustered CR1 t ``ct`` (:func:`cluster_t`) of the same values. n < ``min_n`` -> 'descriptive'; fewer than
-    ``min_clusters`` clusters, a missing CI, or max(MDE80 of both) > ``mde_max`` -> '◯'; both lower bounds > 0 and (when
-    given) the Holm-adjusted p < 0.05 -> '✓'; both upper bounds < 0 -> '✗'; both CIs inside (−band, +band) -> '≈';
-    otherwise '◯'."""
+    ``min_clusters`` clusters, a missing CI, or max(MDE80 of both) > ``mde_max`` -> '◯'; both lower bounds > 0 and the
+    Holm-adjusted p < 0.05 -> '✓'; both upper bounds < 0 -> '✗'; both CIs inside (−band, +band) -> '≈'; otherwise '◯'.
+    ``p_holm`` is required: None (the setup was not in the Holm family) never gives '✓' (amendment 2026-11-24)."""
     if boot.get("n", 0) < min_n:
         return "descriptive"
     if boot.get("clusters", 0) < min_clusters or boot.get("ci") is None or ct.get("ci") is None:
@@ -303,7 +318,7 @@ def verdict_v2(
     if max(boot["mde80"], ct["mde80"]) > mde_max:
         return "◯"
     (bl, bh), (tl, th) = boot["ci"], ct["ci"]
-    if bl > 0 and tl > 0 and (p_holm is None or p_holm < 0.05):
+    if bl > 0 and tl > 0 and p_holm is not None and p_holm < 0.05:
         return "✓"
     if bh < 0 and th < 0:
         return "✗"

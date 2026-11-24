@@ -164,15 +164,29 @@ def test_select_signal_window_causal() -> None:
 def test_verdict_v2() -> None:
     ok_b = {"n": 37, "clusters": 13, "ci": [0.05, 0.4], "mde80": 0.25}
     ok_t = {"ci": [0.02, 0.45], "mde80": 0.28}
-    assert dp.verdict_v2(ok_b, ok_t) == "✓"
-    assert dp.verdict_v2(ok_b, ok_t, p_holm=0.06) == "◯"
-    assert dp.verdict_v2(ok_b, {**ok_t, "ci": [-0.01, 0.45]}) == "◯"  # the t interval must agree
-    assert dp.verdict_v2(ok_b, {**ok_t, "mde80": 0.31}) == "◯"  # gate on the larger MDE80
-    assert dp.verdict_v2({**ok_b, "clusters": 9}, ok_t) == "◯"
-    assert dp.verdict_v2({**ok_b, "n": 29}, ok_t) == "descriptive"
-    assert dp.verdict_v2({**ok_b, "ci": [-0.4, -0.1]}, {**ok_t, "ci": [-0.45, -0.02]}) == "✗"
-    assert dp.verdict_v2({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.25]}) == "≈"
-    assert dp.verdict_v2({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.31]}) == "◯"
+    v = lambda b, t, p=0.01: dp.verdict_v2(b, t, p_holm=p)  # noqa: E731
+    assert v(ok_b, ok_t) == "✓"
+    assert v(ok_b, ok_t, 0.06) == "◯"
+    assert v(ok_b, ok_t, None) == "◯"  # not in the Holm family: never ✓ (amendment 2026-11-24)
+    with pytest.raises(TypeError):
+        dp.verdict_v2(ok_b, ok_t)  # type: ignore[call-arg]  # p_holm is required
+    assert v(ok_b, {**ok_t, "ci": [-0.01, 0.45]}) == "◯"  # the t interval must agree
+    assert v(ok_b, {**ok_t, "mde80": 0.31}) == "◯"  # gate on the larger MDE80
+    assert v({**ok_b, "clusters": 9}, ok_t) == "◯"
+    assert v({**ok_b, "n": 29}, ok_t) == "descriptive"
+    assert v({**ok_b, "ci": [-0.4, -0.1]}, {**ok_t, "ci": [-0.45, -0.02]}, None) == "✗"
+    assert v({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.25]}) == "≈"
+    assert v({**ok_b, "ci": [-0.1, 0.2]}, {**ok_t, "ci": [-0.15, 0.31]}) == "◯"
+
+
+def test_gold_and_placebo_horizon() -> None:
+    assert dp.is_gold("XAUT/USDT:USDT") and dp.is_gold("paxg") and not dp.is_gold("SOL/USDT:USDT")
+    tf = {"4h": 4 * 3_600_000, "1d": 86_400_000}
+    hold = lambda s, t: 7 * 86_400_000 if t == "4h" else 30 * 86_400_000  # noqa: E731
+    rows = [{"setup": "S39", "timeframe": "4h", "signal_ts": 0}, {"setup": "S3", "timeframe": "1d", "signal_ts": -10 * 86_400_000}]
+    assert dp.placebo_horizon_end(rows, tf, hold) == 21 * 86_400_000  # the 1d trade: −10 d + 1 d + 30 d
+    assert dp.placebo_horizon_end(rows[:1], tf, hold) == 4 * 3_600_000 + 7 * 86_400_000
+    assert dp.placebo_horizon_end([], tf, hold) is None
 
 
 def test_draw_excludes_signal_coin_and_prefix_stable() -> None:

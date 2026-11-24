@@ -60,18 +60,54 @@ def cutoff_ms(s: str) -> int:
     return int(datetime.strptime(s, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
 
 
-def load_trades(db: str, cut: int) -> tuple[list[dict[str, Any]], Counter[tuple[str, str]]]:
-    """(closed S38 / S39 / S40 rows closed before ``cut``, counts of every row by (setup, status) signalled before it)."""
+def read_rows(db: str, setups: tuple[str, ...] = SETUPS) -> list[dict[str, Any]]:
     con = cmn.connect_ro(db)
     try:
         con.row_factory = sqlite3.Row
-        q = f"SELECT * FROM demo_trade WHERE setup IN ({','.join('?' * len(SETUPS))}) ORDER BY signal_ts"
-        rows = [dict(r) for r in con.execute(q, SETUPS)]
+        q = f"SELECT * FROM demo_trade WHERE setup IN ({','.join('?' * len(setups))}) ORDER BY signal_ts"
+        return [dict(r) for r in con.execute(q, setups)]
     finally:
         con.close()
+
+
+def load_trades(db: str, cut: int) -> tuple[list[dict[str, Any]], Counter[tuple[str, str]]]:
+    """(closed S38 / S39 / S40 rows closed before ``cut``, counts of every row by (setup, status) signalled before it)."""
+    rows = read_rows(db)
     status = Counter((r["setup"], str(r["status"])) for r in rows if int(r["signal_ts"]) < cut)
     closed = [r for r in rows if r["status"] == "closed" and r.get("closed_ts") is not None and int(r["closed_ts"]) < cut]
     return closed, status
+
+
+def load_window(db: str, setups: tuple[str, ...], signal_before: int) -> tuple[list[dict], list[dict], list[dict]]:
+    """Protocol v2: (closed, other terminal, blocking) rows of ``setups`` signalled before ``signal_before``."""
+    return dp.select_signal_window(read_rows(db, setups), setups, signal_before)
+
+
+def counts(db: str, setups: tuple[str, ...], signal_before: int) -> int:
+    """Counts only (no R, no network): the signal_ts window and the latest boundary with every row in it terminal."""
+    rows = read_rows(db, setups)
+    print(f"now {iso(int(time.time() * 1000))} UTC; rows of {','.join(setups)}: {len(rows)}; boundary {iso(signal_before)} UTC")
+    for s in setups:
+        mine = [r for r in rows if r["setup"] == s]
+        first_block = min((int(r["signal_ts"]) for r in mine if dp.select_signal_window([r], (s,), 1 << 62)[2]), default=None)
+        closed, other, block = dp.select_signal_window(mine, (s,), signal_before)
+        print(
+            f"  {s}: all statuses {dict(Counter(str(r['status']) for r in mine))}; earliest blocking signal "
+            f"{iso(first_block) if first_block is not None else '—'} UTC"
+        )
+        print(
+            f"     window: closed {len(closed)} (r_multiple present {sum(r.get('r_multiple') is not None for r in closed)}), "
+            f"other terminal {dict(Counter(str(r['status']) for r in other))}, blocking {len(block)}; "
+            f"signal days {len({int(r['signal_ts']) // DAY_MS for r in closed})}, ISO weeks {len({dp.week_key(int(r['signal_ts'])) for r in closed})}, "
+            f"tf {dict(Counter(r['timeframe'] for r in closed))}, version {dict(Counter(str(r.get('version')) for r in closed))}"
+        )
+        if closed:
+            print(
+                f"     signals {iso(int(closed[0]['signal_ts']))} … {iso(max(int(r['signal_ts']) for r in closed))} UTC, "
+                f"last close {iso(max(int(r['closed_ts']) for r in closed))} UTC, placebo horizon ends "
+                f"{iso(max(int(r['signal_ts']) + TF_MS[r['timeframe']] + hold_ms(s, r['timeframe']) for r in closed))} UTC"
+            )
+    return 0
 
 
 def open_sources(cache: Path) -> tuple[Runtime, Builder, dvb.Fetch, dvb.DayFetch]:
@@ -136,6 +172,7 @@ async def evaluate(t: dict[str, Any], perps: list, turn: dict, fetch: dvb.Fetch,
         "day": sig // DAY_MS,
         "version": t.get("version"),
         "r_demo": d.r_multiple,
+        "closed_ts_raw": t.get("closed_ts"),
         "be_rule": rule.name,
     }
     bars, path = await coin_bars(fetch, d.symbol, tf, sig, hold, now)
@@ -291,6 +328,109 @@ def report(rows: list[dict[str, Any]], meta: dict[str, Any], now: int) -> list[s
     return out
 
 
+SEEN_CUTOFF = "2026-11-18T17:00"  # protocol v2: trades closed before the 18.11 run were seen there (descriptive split)
+
+
+def line_v2(name: str, ds: list[tuple[float, int, dict]], min_cl: int = 10) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Protocol v2 row: day-clustered bootstrap and CR1 t by day and by ISO week; intervals only from ``min_cl`` days."""
+    vals = [x[0] for x in ds]
+    s = dp.summarize(vals, [x[1] for x in ds], n_boot=N_BOOT, seed=SEED)
+    td = dp.cluster_t(vals, [x[1] for x in ds])
+    tw = dp.cluster_t(vals, [dp.week_key(int(x[2]["signal_ts"])) for x in ds])
+    f = lambda v: "—" if v is None else f"{v:+.3f}"  # noqa: E731
+    g = lambda c: "—" if c is None else f"[{c[0]:+.3f}; {c[1]:+.3f}]"  # noqa: E731
+    txt = f"  {name:<40} n {s['n']:>3} дн {s['clusters']:>3} тиж {tw['clusters']:>2}  Δ {f(s['mean'])}"
+    if s["clusters"] >= min_cl:
+        txt += (
+            f"  boot {g(s['ci'])} MDE80 {f(s['mde80'])} p {s['p_gt0']:.3f} | t_day {g(td['ci'])} MDE80 {f(td['mde80'])} "
+            f"p {td['p_gt0']:.3f} | t_week(df {tw['df']}) {g(tw['ci'])}"
+        )
+    else:
+        txt += "  (< 10 днів: без CI)"
+    return txt, s, td
+
+
+def report_v2(rows: list[dict[str, Any]], meta: dict[str, Any], now: int, label: str, setups: tuple[str, ...]) -> list[str]:  # noqa: PLR0915
+    """Registered tables of the 2026-11-25 registration (protocol v2): K = 10 is the main benchmark."""
+    out = [f"demo vs placebo, protocol v2, {label}, now {iso(now)} UTC ({now}), perps {meta.get('perps')}, K main {K_WIDE}"]
+    st = Counter((r["setup"], r["status"]) for r in rows)
+    out.append(
+        "usable / excluded: "
+        + ", ".join(f"{s} {st[(s, 'ok')]} / {sum(v for (a, b), v in st.items() if a == s and b != 'ok')}" for s in setups)
+    )
+    for k in (K_WIDE, K_MAIN):
+        pst = Counter(p["1.0"]["status"] for r in rows if r["status"] == "ok" for p in r["placebo"][:k])
+        out.append(f"placebo statuses (K={k}): {dict(pst)}")
+    out.append("\nОсновне (Δ = R демо − середнє R десяти плацебо; boot — кластерний бутстреп за днем; t — CR1, df G−1):")
+    main: dict[str, tuple[dict, dict]] = {}
+    for s in setups:
+        txt, sm, td = line_v2(s, [x for x in deltas(rows, K_WIDE) if x[2]["setup"] == s])
+        main[s] = (sm, td)
+        out.append(txt)
+    elig = [s for s in setups if main[s][0]["n"] >= MIN_N and main[s][0]["clusters"] >= 10 and main[s][1]["p_gt0"] is not None]
+    adj = dict(zip(elig, holm([max(main[s][0]["p_gt0"], main[s][1]["p_gt0"]) for s in elig]), strict=True)) if elig else {}
+    out.append(
+        "Вердикти: "
+        + ", ".join(
+            f"{s} {dp.verdict_v2(*main[s], min_n=MIN_N, mde_max=MDE_MAX, band=BAND, p_holm=adj.get(s))}"
+            + (f" (Holm p {adj[s]:.3f}, family {len(elig)})" if s in adj else "")
+            for s in setups
+        )
+    )
+    seen_cut = cutoff_ms(SEEN_CUTOFF)
+    out.append("\nОписово:")
+    for s in setups:
+        sub = [x for x in deltas(rows, K_WIDE) if x[2]["setup"] == s]
+        if not sub:
+            continue
+        rd = [x[2]["r_demo"] for x in sub]
+        rp = [x[2]["r_demo"] - x[0] for x in sub]
+        out.append(f"  {s}: середнє R демо {sum(rd) / len(rd):+.3f}, середнє плацебо K=10 {sum(rp) / len(rp):+.3f}")
+        rows_d = [
+            (f"{s} K=3", [x for x in deltas(rows, K_MAIN) if x[2]["setup"] == s]),
+            (f"{s} без плацебо 'open'", [x for x in deltas(rows, K_WIDE, skip_open=True) if x[2]["setup"] == s]),
+            (f"{s} Δ_sim (монета сигналу в моделі)", [x for x in deltas(rows, K_WIDE, sim=True) if x[2]["setup"] == s]),
+            (f"{s} Δ_sim комісії x1.5", [x for x in deltas(rows, K_WIDE, "1.5", sim=True) if x[2]["setup"] == s]),
+            (f"{s} без топ-3 |Δ|", sorted(sub, key=lambda x: -abs(x[0]))[3:]),
+        ]
+        days = sorted({x[1] for x in sub})
+        half = days[len(days) // 2] if days else 0
+        rows_d += [
+            (f"{s} перша половина днів", [x for x in sub if x[1] < half]),
+            (f"{s} друга половина днів", [x for x in sub if x[1] >= half]),
+            (f"{s} бачені 18.11 (закриті < {SEEN_CUTOFF})", [x for x in sub if int(x[2]["closed_ts_raw"]) < seen_cut]),
+            (f"{s} нові", [x for x in sub if int(x[2]["closed_ts_raw"]) >= seen_cut]),
+        ]
+        by_v: dict[str, list] = defaultdict(list)
+        for x in sub:
+            by_v[str(x[2]["version"])].append(x)
+        rows_d += [(f"{s} версія {v}", xs) for v, xs in sorted(by_v.items())]
+        own = [(x[2]["r_demo"] - x[2]["sim_signal"]["1.0"]["r"], x[1], x[2]) for x in sub if x[2]["sim_signal"]["1.0"]["r"] is not None]
+        rows_d.append((f"{s} R демо − модель монети сигналу", own))
+        for name, ds in rows_d:
+            out.append(line_v2(name, ds)[0])
+        per_day: dict[int, list[float]] = defaultdict(list)
+        for x in sub:
+            per_day[x[1]].append(x[0])
+        loo = [(d, sum(x[0] for x in sub if x[1] != d) / (len(sub) - len(v))) for d, v in per_day.items() if len(sub) > len(v)]
+        big = max(per_day, key=lambda d: len(per_day[d]))
+        out.append(
+            f"  {s} без одного дня: Δ від {min(v for _, v in loo):+.3f} до {max(v for _, v in loo):+.3f}; "
+            f"найбільший день {iso(big * DAY_MS)[:10]} ({len(per_day[big])} угод), без нього {dict(loo)[big]:+.3f}"
+        )
+        by_c: dict[str, list] = defaultdict(list)
+        for x in sub:
+            by_c[x[2]["symbol"].split("/")[0]].append(x[0])
+        bigc = {c: v for c, v in by_c.items() if len(v) >= 3}
+        q = cochran(bigc)
+        out.append(
+            f"  {s} монет {len(by_c)} на {len(sub)} угод; з ≥ 3 угодами: {len(bigc)}; "
+            + ", ".join(f"{c} n{len(v)} {sum(v) / len(v):+.2f}" for c, v in sorted(bigc.items()))
+            + (f"; Cochran Q {q[0]:.2f} df {q[1]}, I² {q[2]:.2f}" if q else "")
+        )
+    return out
+
+
 def cochran(groups: dict[str, list[float]]) -> tuple[float, int, float] | None:
     """Cochran's Q and I² of group means (inverse-variance weights from each group's own variance)."""
     ms, ws = [], []
@@ -363,11 +503,68 @@ def run(db: str, cut: int, cache: Path, now: int, out_dir: Path) -> int:
     return 0
 
 
+def window_rows(db: str, setups: tuple[str, ...], sb: int) -> list[dict[str, Any]] | None:
+    closed, other, block = load_window(db, setups, sb)
+    print(
+        f"signal_ts < {iso(sb)} UTC, setups {','.join(setups)}: closed {len(closed)}, other terminal "
+        f"{dict(Counter(str(r['status']) for r in other))}, blocking {len(block)}",
+        flush=True,
+    )
+    if block:
+        print("refused: the window holds rows that are not terminal yet (registered rule: wait or move the boundary)")
+        return None
+    return closed
+
+
+def smoke_v2(db: str, setups: tuple[str, ...], sb: int, cache: Path, sample: int) -> int:
+    """Coverage only (no R, no Δ) on the last ``sample`` trades of the window."""
+    rows = window_rows(db, setups, sb)
+    if rows is None:
+        return 2
+    pick = rows[-sample:]
+    t0 = time.time()
+    got, meta = asyncio.run(collect(pick, cache, int(time.time() * 1000), (1.0,), day_span(rows)))
+    print(
+        f"sample {len(pick)} trades, {time.time() - t0:.0f}s, perps {meta['perps']}, failures {meta['n_missing']}, peak RSS {cmn.rss_mb():.0f} MB"
+    )
+    for r in got:
+        pl = r.get("placebo", [])
+        print(
+            f"  {r['setup']} {r['symbol'].split('/')[0]:<10} {iso(r['signal_ts'])} status {r['status']}, pool {r.get('pool_n')}, "
+            f"k_atr {'ok' if r.get('k_atr') else '—'}, placebo statuses K=10 {dict(Counter(p['1.0']['status'] for p in pl))}"
+        )
+    print(f"estimate for the run: {len(rows)} trades x {meta['trades_s'] / max(1, len(pick)):.1f}s after the turnover step")
+    return 0
+
+
+def run_v2(db: str, setups: tuple[str, ...], sb: int, cache: Path, now: int, out_dir: Path) -> int:
+    if now > int(time.time() * 1000):
+        print(f"refused: --now-ms {iso(now)} UTC is in the future (the registered run waits for it)")
+        return 2
+    rows = window_rows(db, setups, sb)
+    if rows is None:
+        return 2
+    label = f"signal_ts < {iso(sb)} UTC"
+    print(f"{label}; closed rows {len(rows)}; now {iso(now)} ({now})", flush=True)
+    got, meta = asyncio.run(collect(rows, cache, now, (1.0, 1.5), day_span(rows)))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "rows.json").write_text(
+        json.dumps({"now_ms": now, "signal_before": iso(sb), "protocol": "v2", "meta": meta, "rows": got}, default=str), encoding="utf-8"
+    )
+    txt = "\n".join(report_v2(got, meta, now, label, setups))
+    (out_dir / "report.txt").write_text(txt + "\n", encoding="utf-8")
+    print(txt)
+    print(f"peak RSS {cmn.rss_mb():.0f} MB; rows -> {out_dir / 'rows.json'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--stage", choices=("smoke", "run"), required=True)
+    ap.add_argument("--stage", choices=("counts", "smoke", "run"), required=True)
     ap.add_argument("--db", default=DEFAULT_DB)
-    ap.add_argument("--cutoff", default=CUTOFF)
+    ap.add_argument("--cutoff", default=CUTOFF, help="protocol v1: demo trades closed before this UTC minute")
+    ap.add_argument("--signal-before", default=None, help="protocol v2: trades signalled before this UTC minute, all terminal")
+    ap.add_argument("--setups", default=",".join(SETUPS), help="protocol v2 / counts: comma-separated setups")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
     ap.add_argument("--out", default=DEFAULT_CACHE + "/run")
     ap.add_argument("--now-ms", type=int, default=None)
@@ -375,6 +572,15 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     cut = cutoff_ms(a.cutoff)
     cache = Path(a.cache_dir).expanduser()
+    setups = tuple(s for s in a.setups.split(",") if s)
+    if a.stage == "counts":
+        return counts(a.db, setups, cutoff_ms(a.signal_before) if a.signal_before else int(time.time() * 1000))
+    if a.signal_before:  # protocol v2 (registration 2026-11-25)
+        sb = cutoff_ms(a.signal_before)
+        if a.stage == "smoke":
+            return smoke_v2(a.db, setups, sb, cache, a.sample)
+        now = a.now_ms if a.now_ms is not None else int(time.time() * 1000)
+        return run_v2(a.db, setups, sb, cache, now, Path(a.out).expanduser())
     if a.stage == "smoke":
         return smoke(a.db, cut, cache, a.sample)
     now = a.now_ms if a.now_ms is not None else int(time.time() * 1000)

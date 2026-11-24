@@ -75,3 +75,31 @@ def test_load_trades_read_only(tmp_path: Path) -> None:
     closed, status = M.load_trades(str(db), 10)
     assert [r["link_id"] for r in closed] == ["a"]
     assert status[("S38", "closed")] == 2 and status[("S39", "open")] == 1 and ("S3", "closed") not in status
+
+
+def test_window_v2_by_signal_ts_and_refusal(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db = tmp_path / "d.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE demo_trade (link_id TEXT, setup TEXT, status TEXT, signal_ts INTEGER, closed_ts INTEGER)")
+    con.executemany(
+        "INSERT INTO demo_trade VALUES (?, ?, ?, ?, ?)",
+        [("a", "S39", "closed", 1, 500), ("b", "S39", "missed", 2, None), ("c", "S39", "open", 20, None), ("d", "S38", "open", 1, None)],
+    )
+    con.commit()
+    con.close()
+    rows = M.window_rows(str(db), ("S39",), 10)  # closed long after the boundary still counts: selection is by signal_ts
+    assert rows is not None and [r["link_id"] for r in rows] == ["a"]
+    assert M.window_rows(str(db), ("S39",), 21) is None and "refused" in capsys.readouterr().out
+    future = 4_102_444_800_000  # 2100-01-01 UTC
+    assert M.run_v2(str(db), ("S39",), 10, tmp_path, future, tmp_path / "o") == 2  # --now-ms in the future
+
+
+def test_report_v2_smoke() -> None:
+    rows = [
+        {**_row(i, "S39", (-1) ** i * 1.0, [_pl(0.1 * (i % 3))] * 10, f"C{i % 4}/USDT:USDT"), "closed_ts_raw": i * DAY} for i in range(32)
+    ]
+    txt = "\n".join(M.report_v2(rows, {"perps": 3}, 100 * DAY, "test", ("S39",)))
+    assert "K main 10" in txt and "S39 ◯" in txt and "t_week" in txt and "family 1" in txt and "без одного дня" in txt
+    few = [{**r, "day": r["day"] % 5} for r in rows]  # 5 day clusters: no CI, verdict ◯ by the cluster gate
+    txt = "\n".join(M.report_v2(few, {"perps": 3}, 100 * DAY, "test", ("S39",)))
+    assert "(< 10 днів: без CI)" in txt and "S39 ◯" in txt

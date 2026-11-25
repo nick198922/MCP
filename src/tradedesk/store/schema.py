@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -1041,6 +1041,24 @@ MIGRATIONS: dict[int, list[str]] = {
             failures INTEGER NOT NULL DEFAULT 0,
             reconnects INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (stream, hour_ts)
+        ) WITHOUT ROWID
+        """,
+    ],
+    42: [
+        # Poll markers of the `trader_positions` job (collector/scheduler.py `_collect_trader_positions`; card
+        # IDEA-20261025-hl-whale-liquidation-magnet, recount rules rev. 4). Before its first request a run writes, in one
+        # transaction, ok = 0 for every account of its intended Hyperliquid list; after an account's request succeeded
+        # and its rows were written, ok = 1. Failed and never-reached accounts keep ok = 0; a run whose markers could not
+        # be written polls nobody. From this version `trader_positions` also re-writes, at every run, each Hyperliquid
+        # position worth >= $2.5M (current side, size, value_usd, liq_px) even when it did not change, so it is no longer
+        # a pure change log. Not pruned (the recount needs >= 60 days).
+        """
+        CREATE TABLE IF NOT EXISTS trader_polls (
+            venue TEXT NOT NULL,                   -- 'hyperliquid'
+            ts INTEGER NOT NULL,                   -- unix seconds: the run's ts, the same as its trader_positions rows
+            account TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 0,         -- 1 = the request succeeded and its rows were written; 0 = failed / not reached
+            PRIMARY KEY (venue, ts, account)
         ) WITHOUT ROWID
         """,
     ],

@@ -24,7 +24,8 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
 * ``paper_carry``: a cycle (00/08/16 UTC) counts only with status ``done``; ``skipped`` (missed) and ``failed`` are gaps.
 * ``trader_positions`` is a change log (store ``record_trader_positions``): an hour counts when at least one watched
   position changed. With ~200 Hyperliquid and ~200 Polymarket accounts watched that is every hour (167 of 168 hours for
-  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap.
+  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap. From schema 42 (2026-11-25) every
+  Hyperliquid run also re-writes each position worth >= $2.5M, so a quiet Hyperliquid hour is rarer still.
 * ``traders`` and ``supply`` run every ``collect_*_seconds`` from the service start (not aligned to the day) and key
   their rows by the UTC day of the run; a day is due by its end.
 * ``assistant_paper`` (a paper trade only on a trigger) and ``plan_resolve`` (scores existing plans, writes nothing in a
@@ -183,7 +184,8 @@ SPECS: tuple[Spec, ...] = (
     Spec(
         "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_positions", "ts", HOUR, HOUR,
         group_col="venue", groups=("hyperliquid", "polymarket"), default_on=True,
-        note="hourly change log; an hour counts with >= 1 changed position; both Polymarket boards stored as 'polymarket'",
+        note="hourly change log (plus HL positions >= $2.5M at every run); an hour counts with >= 1 row; both Polymarket "
+        "boards stored as 'polymarket'",
     ),
 )  # fmt: skip
 

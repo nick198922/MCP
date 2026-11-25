@@ -1242,7 +1242,8 @@ def test_carry_journal_counts_only_done_cycles(tmp_path):
 
 def test_trader_positions_journal_is_labelled_as_a_change_log():
     unit = script.CARD_JOURNALS["hl-whale-liquidation-magnet"].unit
-    assert unit.startswith("записів змін позицій HL") and "годинн" not in unit
+    # rows exist only at runs with a change, or (from 25.11) a Hyperliquid position >= $2.5M: runs with rows, not hours
+    assert unit.startswith("запусків із рядками позицій HL") and "годинн" not in unit
 
 
 def test_script_survives_a_missing_db(tmp_path):

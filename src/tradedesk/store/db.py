@@ -792,13 +792,21 @@ class Store:
             out += [r[0] for r in await cur.fetchall() if r[0] not in out]
         return out
 
-    async def record_trader_positions(self, ts: int, venue: str, account: str, positions: list[dict[str, Any]]) -> int:
+    async def record_trader_positions(
+        self, ts: int, venue: str, account: str, positions: list[dict[str, Any]], *, rewrite_min_usd: float | None = None
+    ) -> int:
         """Record what changed in ``account``'s positions since the last observation: every position at the first one
         (baseline), later only those opened, changed (side, or size to 4 significant digits) or closed (side
-        'closed', size 0). Returns the rows written (0: nothing changed)."""
+        'closed', size 0). With ``rewrite_min_usd`` every position whose |value_usd| is at least that is also written
+        when it did not change (its current size, value_usd, liq_px ...: a fresh liq_px at every run); replaying such
+        a repeat changes nothing but those values and the row's ts. The diff of the next observation is unaffected: it
+        compares with the stored last full set. Returns the rows written (0: nothing to write)."""
 
         def key(p: dict[str, Any]) -> str:
             return f"{p['side']}:{float(p.get('size') or 0):.4g}"
+
+        def rewrite(p: dict[str, Any]) -> bool:
+            return rewrite_min_usd is not None and abs(float(p.get("value_usd") or 0)) >= rewrite_min_usd
 
         now = {str(p["market"]): p for p in positions}
         cur = await self.conn.execute(
@@ -811,7 +819,7 @@ class Store:
                 prev = {str(p["market"]): p for p in json.loads(prev_row[1])}
             except (ValueError, TypeError, KeyError, RecursionError):  # RecursionError: a cell nested ~10000 deep (item 361)
                 prev = {}
-        changed = [p for m, p in now.items() if m not in prev or key(prev[m]) != key(p)]
+        changed = [p for m, p in now.items() if m not in prev or key(prev[m]) != key(p) or rewrite(p)]
         closed = [{"market": m, "side": "closed", "size": 0.0, "title": p.get("title")} for m, p in prev.items() if m not in now]
         rows = changed + closed
         digest = "|".join(sorted(f"{m}:{key(p)}" for m, p in now.items())) or "flat"
@@ -845,6 +853,22 @@ class Store:
                 (venue, account, digest, ts, json.dumps(list(now.values()), separators=(",", ":"))),
             )
         return len(rows)
+
+    async def start_trader_polls(self, ts: int, venue: str, accounts: list[str]) -> int:
+        """Poll markers of one collector run, in one transaction: ok = 0 for every account the run intends to poll
+        (written before its first request). Returns the markers written."""
+        if not accounts:
+            return 0
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO trader_polls (venue, ts, account, ok) VALUES (?,?,?,0)", [(venue, ts, a) for a in accounts]
+            )
+        return len(accounts)
+
+    async def set_trader_poll_ok(self, ts: int, venue: str, account: str) -> None:
+        """The run's request for ``account`` succeeded and its position rows are written: its marker becomes ok = 1."""
+        async with self._write():
+            await self.conn.execute("UPDATE trader_polls SET ok = 1 WHERE venue = ? AND ts = ? AND account = ?", (venue, ts, account))
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""

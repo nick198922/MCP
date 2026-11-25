@@ -339,7 +339,9 @@ def replay_positions(
 
     Before ``delta_start`` (schema < 12) each (account, ts) group is the full set ('flat' = empty). From
     ``delta_start`` on, an account's first group is a full baseline and later groups are changes: a row replaces the
-    position of its market, side 'closed' removes it. Returns {account: {market: row}}."""
+    position of its market, side 'closed' removes it. A repeated row of an unchanged position (schema 42: Hyperliquid
+    positions >= $2.5M at every run) only refreshes that row's values (liq_px, value_usd ...). Returns
+    {account: {market: row}}."""
     groups: dict[tuple[int, str], list[Mapping[str, Any]]] = {}
     for r in rows:
         ts = int(r["ts"])
@@ -365,6 +367,14 @@ def replay_positions(
                 cur[market] = dict(r)
         state[account] = cur
     return state
+
+
+def same_size(a: float, b: float) -> bool:
+    """Sizes equal at the log's change granularity: the collector logs a change only when the size differs to 4
+    significant digits (``Store.record_trader_positions``), and since 2026-11-25 it re-writes Hyperliquid positions
+    >= $2.5M at every run with their exact size, so a smaller drift is not a change (also within 1e-4 relative, for
+    sizes either side of a rounding edge)."""
+    return math.isclose(a, b, rel_tol=1e-4) or f"{a:.4g}" == f"{b:.4g}"
 
 
 def signed_notional(p: Mapping[str, Any]) -> float:
@@ -396,7 +406,7 @@ def net_flow(
             sb = (float(pb.get("size") or 0.0) * (1 if pb.get("side") == "long" else -1)) if pb else 0.0
             sa = (float(pa.get("size") or 0.0) * (1 if pa.get("side") == "long" else -1)) if pa else 0.0
             px = mark_price(pa) if pa else (mark_price(pb) if pb else None)
-            if px is None or sa == sb:
+            if px is None or same_size(sa, sb):
                 continue
             flow[m] = flow.get(m, 0.0) + (sa - sb) * px
     return flow
@@ -417,7 +427,7 @@ def position_changes(
             pb, pa = b.get(m), f.get(m)
             sb, sa = float(pb.get("size") or 0.0) if pb else 0.0, float(pa.get("size") or 0.0) if pa else 0.0
             if pb and pa and pb.get("side") == pa.get("side"):
-                if math.isclose(sa, sb, rel_tol=1e-4):
+                if same_size(sa, sb):
                     continue
                 kind = "increased" if sa > sb else "reduced"
             elif pb and pa:

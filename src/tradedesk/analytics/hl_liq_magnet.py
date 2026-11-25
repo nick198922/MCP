@@ -11,7 +11,8 @@ qualifying-size position is unknown, and episodes are counted with ``detect_epis
 bound of what an hourly observer with fresh liq_px would count. Counts on liq_px of any age are descriptive only.
 
 Inputs come from the collector's `trader_positions` change log (rows only when a position's side or size, to 4
-significant digits, changes; see ``Store.record_trader_positions``), the daily `trader_snapshot` (the watch list) and
+significant digits, changes; see ``Store.record_trader_positions``; from schema 42, 2026-11-25, also a row at every run
+for each position worth >= $2.5M, and the `trader_polls` markers), the daily `trader_snapshot` (the watch list) and
 Hyperliquid candles. Units: prices and values in USD, distances as decimals (0.03 = 3 %), times in unix seconds.
 """
 

@@ -13,6 +13,12 @@ Tools that write to the store (WRITE_TOOLS: journal, plans, rules, events, paper
 read (owner 14.11, Q-20261114-1 «Г1»). For a research result the numbers still come from a script under
 ``scripts/verify_*.py`` (reproducible); this is for live checks: what the market looks like now, whether a condition
 of a rule holds, whether a new tool answers.
+
+Only a service that cannot be reached (connect or handshake fails) leads to the in-process server; once connected,
+any failure is reported as it is and nothing is called a second time. Exit codes: 0 the answer is printed;
+2 bad usage, arguments not a JSON object, or no such tool; 3 a write tool, refused; 4 the tool answered with an
+error (e.g. it rejected the arguments), its text is printed; 5 the call failed after connecting (transport or
+protocol error, unreadable response) or the in-process server did not start.
 """
 
 from __future__ import annotations
@@ -47,9 +53,30 @@ WRITE_TOOLS = frozenset(
 )
 
 
-def _data(res: Any) -> Any:
-    data = res.structured_content if res.structured_content is not None else json.loads(res.content[0].text)
-    return data["result"] if isinstance(data, dict) and set(data) == {"result"} else data
+class _NoAnswer(Exception):
+    """The server could not be reached: the connection or the handshake failed, nothing was called."""
+
+
+def _why(e: BaseException) -> str:
+    while isinstance(e, BaseExceptionGroup) and len(e.exceptions) == 1:  # the SDK's task groups wrap the cause
+        e = e.exceptions[0]
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
+def _text(res: Any) -> str:
+    return "\n".join(t for t in (getattr(x, "text", None) for x in res.content) if t is not None)
+
+
+def _render(res: Any) -> str:
+    data = res.structured_content
+    if data is None:
+        text = _text(res)
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return text  # a plain-text answer is printed as it is
+    data = data["result"] if isinstance(data, dict) and set(data) == {"result"} else data
+    return json.dumps(data, ensure_ascii=False, indent=1, default=str)
 
 
 async def _session(c: Client, tool: str | None, args: dict[str, Any], list_only: bool) -> tuple[int, str]:
@@ -64,7 +91,29 @@ async def _session(c: Client, tool: str | None, args: dict[str, Any], list_only:
         near = sorted(n for n in names if tool and (tool in n or n in tool))
         return 2, f"no tool '{tool}'" + (f"; similar: {', '.join(near)}" if near else "; see --list")
     res = await c.call_tool(tool, args)
-    return 0, json.dumps(_data(res), ensure_ascii=False, indent=1, default=str)
+    if res.is_error:
+        return 4, _text(res) or f"'{tool}' returned an error without text"
+    return 0, _render(res)
+
+
+async def _over(target: Any, tool: str | None, args: dict[str, Any], list_only: bool) -> tuple[int, str]:
+    """One session with `target`. Raises _NoAnswer only when it could not be entered (connect or handshake failed);
+    a failure after that is an answer (exit 5): the SDK re-raises it from the session's exit, wrapped in a group."""
+    entered = False
+    result: tuple[int, str] | None = None
+    try:
+        async with Client(target) as c:
+            entered = True
+            result = await _session(c, tool, args, list_only)
+    except Exception as e:  # noqa: BLE001 - reported, never raised out of the script
+        if result is not None:  # the answer is complete; only closing the session failed
+            print(f"[closing the MCP session failed ({_why(e)}); the answer is complete]", file=sys.stderr)
+            return result
+        if not entered:
+            raise _NoAnswer(_why(e)) from e
+        return 5, f"the call failed after connecting to the MCP server: {_why(e)}"
+    assert result is not None
+    return result
 
 
 async def run(tool: str | None, args: dict[str, Any], list_only: bool, local: bool = False, url: str = URL) -> tuple[int, str]:
@@ -72,17 +121,14 @@ async def run(tool: str | None, args: dict[str, Any], list_only: bool, local: bo
         return 3, f"'{tool}' writes to the store: refused (agents read only, Q-20261114-1)"
     if not local:
         try:
-            async with Client(url) as c:
-                return await _session(c, tool, args, list_only)
-        except Exception as e:  # noqa: BLE001 - fall back to an in-process server
-            print(
-                f"[the MCP service at {url} did not answer ({type(e).__name__}); using an in-process server with this clone's store]",
-                file=sys.stderr,
-            )
+            return await _over(url, tool, args, list_only)
+        except _NoAnswer as e:
+            print(f"[the MCP service at {url} did not answer ({e}); using an in-process server with this clone's store]", file=sys.stderr)
     server, rt = build_server()
     try:
-        async with Client(server) as c:
-            return await _session(c, tool, args, list_only)
+        return await _over(server, tool, args, list_only)
+    except _NoAnswer as e:
+        return 5, f"the in-process MCP server did not start: {e}"
     finally:
         await rt.aclose()
 

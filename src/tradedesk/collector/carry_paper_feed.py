@@ -259,8 +259,9 @@ class LiveFeed:
     async def _current(self, b: Builder, venue: str, markets: dict[str, Any]) -> dict[str, dict[str, Any]]:
         cur = await current_funding(self.rt, b, venue, markets)
         if any(x.get("interval_source") == "assumed" for x in cur.values()):
-            # No interval source (Binance fundingInfo failed): do not feed the engine a guessed 8h. With None it falls back to
-            # the spacing of the stored history up to the position's last payment, and current_funding has already warned.
+            # No interval source (Binance fundingInfo failed, or a Bybit row reports none): do not feed the engine a guessed
+            # 8h. With None it falls back to the spacing of the stored history up to the position's last payment;
+            # current_funding has already warned, and the cycle flag is in `missing` (Binance) or `_interval_flags` (Bybit).
             for x in cur.values():
                 if x.get("interval_source") == "assumed":
                     x["interval_hours"] = None
@@ -270,6 +271,18 @@ class LiveFeed:
             x["index"] = float(raw["indexPrice"]) if raw.get("indexPrice") else None
             x["floor"] = None
         return cur
+
+    def _interval_flags(self, venue: str, cur: dict[str, dict[str, Any]], symbols: Any, flags: list[dict[str, Any]]) -> None:
+        """Flag each used symbol (`symbols`: the universe with the held ones) whose current funding interval no source
+        reported, on a venue without an interval list (Bybit in ccxt 4.5; standing card item 461). `current_funding` only
+        warns there, and a warning does not reach the cycle, so without this the engine would get ``interval_hours`` None
+        in a cycle counted complete. A venue with a list (Binance) is left as it was: a failed list read is already one
+        ``provider_missing`` [``funding_intervals:<venue>``] flag for the cycle, so its symbols are not flagged again."""
+        if self.rt.exchanges.lists_funding_intervals(venue):
+            return
+        for s in sorted(symbols):
+            if (cur.get(s) or {}).get("interval_source") == "assumed":
+                flags.append({"symbol": s, "venue": venue, "issue": "funding_interval_unreported"})
 
     async def _gather(self, coros: list[Any], workers: int) -> list[Any]:
         sem = asyncio.Semaphore(workers)
@@ -312,6 +325,7 @@ class LiveFeed:
                 base = s.split("/")[0]
                 m = MULT.match(base)
                 uni[s] = (f"{m.group(2) if m else base}/USDT", int(m.group(1)) if m else 1)
+        self._interval_flags(PERP_VENUE, current, uni, flags)  # Binance has an interval list: no flag (see the method)
 
         async def hist(sym: str) -> tuple[str, list[dict[str, Any]] | None]:
             since = min(t - lb - DAY_MS, opened.get(sym, t) - 3_600_000)
@@ -357,6 +371,8 @@ class LiveFeed:
         flags: list[dict[str, Any]] = []
         opened = {p["state"]["symbol"]: int(p["state"]["open_ts"]) for p in open_positions}
         uni = sorted(set(uni) | {s for s in opened if s in pa and s in pb})
+        self._interval_flags(PERP_VENUE, cur_a, uni, flags)
+        self._interval_flags(BYBIT, cur_b, uni, flags)
         reload = _reload_from(open_positions)
 
         async def hist(sym: str) -> tuple[str, list[Any] | None, list[Any] | None]:

@@ -220,19 +220,26 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
     bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
     if not bulk:
         return {}
+    used = {s: x for s, x in bulk.items() if s.endswith("/USDT:USDT") and (x or {}).get("fundingRate") is not None}
+    # Only a used row (a USDT perp with a rate) without an interval (see _row_interval) needs the venue's interval list.
+    # Rows skipped below do not: a Bybit perp listed after ccxt loaded its market list comes back keyed by its raw id
+    # ("NEWUSDT"). Bybit has no interval list in ccxt (the base method raises NotSupported), so asking there could only
+    # fail into `missing`; a used symbol still without an interval is named in a warning instead (standing card 461).
+    lacking = [s for s, x in used.items() if not _row_interval(x)]
     meta: dict[str, Any] = {}
-    if any(not (x or {}).get("interval") for x in bulk.values()):
+    if lacking and rt.exchanges.lists_funding_intervals(venue):
         meta = await b.guard(f"funding_intervals:{venue}", f"ccxt:{venue}", rt.exchanges.funding_intervals(venue)) or {}
         if not meta:
             b.warn(f"{venue}: funding intervals unavailable; 8h shown (interval_source=assumed) where the venue omits it")
+    elif lacking:
+        names = ", ".join(lacking[:10]) + (f" and {len(lacking) - 10} more" if len(lacking) > 10 else "")
+        b.warn(f"{venue}: funding interval not reported for {len(lacking)} symbols, 8h shown (interval_source=assumed): {names}")
     out: dict[str, dict[str, Any]] = {}
     dropped: list[str] = []
     bad_marks: list[str] = []
-    for sym, x in bulk.items():
-        if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
-            continue
+    for sym, x in used.items():
         m = meta.get(sym) or {}
-        raw_interval = x.get("interval") or m.get("interval")
+        raw_interval = _row_interval(x) or m.get("interval")
         hours = parse_interval_hours(raw_interval)
         # "venue": reported by the venue; "default": the venue's interval list was read and omits the symbol (Binance lists
         # only non-default ones, so 8h); "assumed": no interval source at all (the 8h is a guess).
@@ -267,6 +274,25 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
     _warn_dropped_current(b, venue, dropped)
     _warn_dropped_current(b, venue, bad_marks, what="mark price", fate="shown as null")
     return out
+
+
+def _row_interval(x: dict[str, Any]) -> str | float | None:
+    """A bulk funding row's interval: ccxt's, else Bybit's own ``info.fundingIntervalHour`` from the same ticker row. ccxt
+    takes Bybit's interval from its loaded market list, which lacks a perp listed after the list was loaded; the ticker
+    field is in the answer itself (live 2026-11-25: on all 845 Bybit USDT perps, equal to ccxt's interval on each).
+    The ticker field comes back as hours (a number, which `parse_interval_hours` takes as is); a value outside one minute
+    to one day is not a funding interval and counts as not reported."""
+    if x.get("interval"):
+        return x["interval"]
+    info = x.get("info")
+    h = info.get("fundingIntervalHour") if isinstance(info, dict) else None
+    if isinstance(h, bool) or not isinstance(h, (str, int, float)):
+        return None
+    try:
+        hours = float(h)
+    except (ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        return None
+    return hours if 1 / 60 <= hours <= 24 else None  # NaN and +-inf fail the range too
 
 
 def _warn_dropped_current(b: Builder, venue: str, symbols: list[str], what: str = "current funding rate", fate: str = "left out") -> None:

@@ -1189,7 +1189,9 @@ def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
     assert script.main(["--db", db]) == 0
     text = capsys.readouterr().out
     assert Path(db).read_bytes() == before  # read-only
-    assert f"- {BYBIT}: журнал option_xvenue_snapshot: годинних знімків BTC 3, з 2026-11-01 10:00 до 2026-11-01 12:00 UTC;" in text
+    # hourly BTC snapshots up to the report moment only: ETH, minute rows and later rows are not counted
+    assert script.load_inputs(db, NOW)["journals"][BYBIT] == {"n": 3, "first": base, "last": base + 2 * 3600}
+    assert f"- {BYBIT}:" not in text  # rejected on 25.11: no longer a forward card
     assert f"- {CG}: журнал coingecko_trending: годинних знімків trending 2, з 2026-11-01 20:00 до 2026-11-01 21:00 UTC;" in text
     assert "вердикт: крок 1 (тест) ≈ 2027-01-30" in text  # 01.11 + 90 days
     # the fixture's 35 carry cycles stopped on 2026-10-29 08:00: silent for days, so «без збору» like the empty journals
@@ -1197,7 +1199,7 @@ def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
     assert "forward-paper-carry (останній запис cp_cycle зі статусом done 2026-10-29 08:00 UTC)" in idle
     assert OI not in idle  # rejected on 20.11: no longer a forward card
     assert BYBIT not in idle and CG not in idle and "4321" not in text  # no price of a journal is read
-    assert "| Картки forward: власні журнали | 2 |" in text
+    assert "| Картки forward: власні журнали | 1 |" in text
 
 
 def _carry_journal(tmp_path, statuses):

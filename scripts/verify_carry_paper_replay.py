@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import resource
 import sqlite3
@@ -396,6 +397,8 @@ async def fetch_funding(rt: Any, pace: Pace, cache: Path, venue: str, sym: str, 
     from tradedesk.core.errors import ProviderError
 
     p = _cache_file(cache, venue, sym, "funding", since, until)
+    # _cache_file maps every non-ASCII symbol to the same name (币安人生 / 牛来 -> "_USDT_USDT"): key it by the symbol too
+    p = p.with_name(f"{p.stem}_{hashlib.sha1(sym.encode()).hexdigest()[:10]}.json")
     if p.exists():
         return json.loads(p.read_text())
     for _ in range(2):
@@ -422,7 +425,12 @@ async def fetch_funding(rt: Any, pace: Pace, cache: Path, venue: str, sym: str, 
                   f"{data.get('dropped_rows')}), not cached: not checked", flush=True)  # fmt: skip
             return None
         rows = funding_entries(data.get("rows") or [])
-        p.write_text(json.dumps(rows))
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")  # atomic: a cut-short write never leaves a broken cache file
+        try:
+            tmp.write_text(json.dumps(rows))
+            tmp.replace(p)
+        finally:
+            tmp.unlink(missing_ok=True)
         return rows
     return None
 
@@ -432,6 +440,7 @@ async def fetch_bars(rt: Any, pace: Pace, cache: Path, venue: str, sym: str, sin
     from tradedesk.core.envelope import Builder
 
     p = _cache_file(cache, venue, sym, "bars4h", since, until)
+    p = p.with_name(f"{p.stem}_{hashlib.sha1(sym.encode()).hexdigest()[:10]}.json")  # see fetch_funding
     if p.exists():
         return json.loads(p.read_text())
     for _ in range(2):
@@ -447,7 +456,15 @@ async def fetch_bars(rt: Any, pace: Pace, cache: Path, venue: str, sym: str, sin
             why = [f"{m.reason}: {str(m.detail)[:80]}" for m in b.missing] + [str(w)[:80] for w in b.warnings]
             print(f"  bars {venue} {sym}: unavailable or incomplete ({why}), not cached", flush=True)
             return None
-        p.write_text(json.dumps(bars))
+        if not bars:  # an empty answer (XMR/USDT spot in the interim run) is unavailable too, never cached as a success
+            print(f"  bars {venue} {sym}: empty answer, not cached", flush=True)
+            return None
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")  # atomic, as in fetch_funding
+        try:
+            tmp.write_text(json.dumps(bars))
+            tmp.replace(p)
+        finally:
+            tmp.unlink(missing_ok=True)
         return bars
     return None
 

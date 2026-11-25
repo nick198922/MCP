@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+from pathlib import Path
 
 import ccxt
 import ccxt.async_support as ccxt_async
@@ -12,7 +14,7 @@ from mcp import Client
 from conftest import NOW, FakeEx, make_transports
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, cycle_grid
 from tradedesk.collector.carry_paper_engine import PARAMS_A, PARAMS_B, run_cycle
-from tradedesk.collector.carry_paper_feed import LiveFeed, Pacer, universe_a, universe_b
+from tradedesk.collector.carry_paper_feed import LiveFeed, Pacer, interval_mismatches, universe_a, universe_b
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
@@ -483,6 +485,123 @@ async def test_binance_list_failure_in_b_stays_one_cycle_flag_without_per_symbol
     assert missing == [("funding_intervals:binanceusdm", "network")] and unreported == [], data.flags
 
 
+# Live Bybit rows (ccxt 4.5.85, 2026-11-25): ccxt's "interval" ("8h", from the market list loaded at start) next to the
+# ticker's own info.fundingIntervalHour ("8", a string of hours); TJXUSDT is a raw-id row without ccxt's interval.
+BYBIT_ROWS = json.loads((Path(__file__).parent / "fixtures/bybit_funding_rates_stale_markets_2026-11-25.json").read_text())["rows"]
+USED = ["BTC/USDT:USDT", "SOL/USDT:USDT", "TJXUSDT"]
+
+
+def _rows(**ticker: object) -> dict:
+    rows = copy.deepcopy(BYBIT_ROWS)
+    for sym, h in ticker.items():
+        rows[f"{sym}/USDT:USDT"]["info"]["fundingIntervalHour"] = h
+    return rows
+
+
+def test_interval_mismatch_on_the_live_sample_equal_sources_record_nothing():
+    assert interval_mismatches("bybit", BYBIT_ROWS, BYBIT_ROWS, USED) == []
+
+
+def test_interval_mismatch_records_both_values_in_hours():
+    rows = _rows(BTC="4")  # Bybit moved BTC to 4h after ccxt loaded its market list
+    assert interval_mismatches("bybit", rows, rows, USED) == [
+        {"symbol": "BTC/USDT:USDT", "venue": "bybit", "ccxt_hours": 8.0, "ticker_hours": 4.0}
+    ]
+
+
+def test_interval_mismatch_skips_symbols_the_engine_does_not_use():
+    rows = _rows(BTC="4", SOL="1")
+    assert interval_mismatches("bybit", rows, rows, ["BTC/USDT:USDT"]) == [  # SOL outside the universe and not held
+        {"symbol": "BTC/USDT:USDT", "venue": "bybit", "ccxt_hours": 8.0, "ticker_hours": 4.0}
+    ]
+    assert interval_mismatches("bybit", rows, {}, USED) == []  # no current row reaches the engine (rate dropped)
+
+
+@pytest.mark.parametrize("bad", ["nan", "NaN", "inf", "-4", "0", "1e-05", "1e+08", "abc", "", "8h", True, None, 10**400, ["4"]])
+def test_interval_mismatch_ignores_a_garbage_ticker_field(bad):
+    rows = _rows(BTC=bad)
+    assert interval_mismatches("bybit", rows, rows, USED) == []
+
+
+@pytest.mark.parametrize("bad", [None, "", "abc", "nanh", "0h", "-4h", "100h", True, float("nan"), float("inf")])
+def test_interval_mismatch_ignores_a_garbage_ccxt_interval(bad):
+    rows = _rows(BTC="4")
+    rows["BTC/USDT:USDT"]["interval"] = bad
+    assert interval_mismatches("bybit", rows, rows, USED) == []
+
+
+class TickerIntervalBybitEx(LiveEx):
+    """Bybit as ccxt 4.5 has it: ccxt's interval "8h" (market list) and the ticker's live ``fundingIntervalHour``."""
+
+    fetch_funding_intervals = ccxt_async.Exchange.fetch_funding_intervals
+    btc_ticker: object = "8"
+
+    async def fetch_funding_rates(self, symbols=None):
+        out = await super().fetch_funding_rates()
+        for sym, x in out.items():
+            x["info"] = {"symbol": sym.split("/")[0] + "USDT", "fundingIntervalHour": "8"}
+        out["BTC/USDT:USDT"]["info"]["fundingIntervalHour"] = type(self).btc_ticker
+        out["SOL/USDT:USDT"]["info"]["fundingIntervalHour"] = "1"  # SOL: a Bybit perp outside universe B
+        return out
+
+
+class _CaptureFeed(LiveFeed):
+    async def load(self, params, decision_ts, open_positions, *, held_only=False):
+        self.data = await super().load(params, decision_ts, open_positions, held_only=held_only)
+        return self.data
+
+
+async def _b_cycle(path, btc_ticker: object) -> dict:
+    class Bybit(TickerIntervalBybitEx):
+        history_calls: list = []
+
+    class Binance(LiveEx):
+        history_calls: list = []
+
+    Bybit.btc_ticker = btc_ticker
+    path.mkdir()
+    rt = _rt(lambda ex_id: (Bybit if ex_id == "bybit" else Binance)(ex_id), path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = _CaptureFeed(rt, workers=2, pacer=Pacer(10**6))
+        out = await run_cycle(rt.store, feed, PARAMS_B, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS)
+        cyc = await rt.store.cp_cycle_get("B", CYCLE)
+        logs = {
+            k: [{c: v for c, v in x.items() if c != "id"} for x in await rt.store.cp_logs("B", k)]
+            for k in ("side", "funding", "mark", "close", "event")
+        }
+        return {"out": out, "data": feed.data, "cycle": cyc, "logs": logs, "positions": await rt.store.cp_positions("B")}
+    finally:
+        await rt.aclose()
+
+
+async def test_b_cycle_records_an_interval_mismatch_without_changing_the_engine_or_completeness(tmp_path):
+    same = await _b_cycle(tmp_path / "same", "8")
+    diff = await _b_cycle(tmp_path / "diff", "4")
+    assert diff["out"]["status"] == "done" and diff["out"] == same["out"]
+    # the record: a separate diagnostic field of the cycle payload, not a flag
+    assert diff["cycle"]["payload"]["interval_mismatches"] == [
+        {"symbol": "BTC/USDT:USDT", "venue": "bybit", "ccxt_hours": 8.0, "ticker_hours": 4.0}
+    ]
+    assert "interval_mismatches" not in same["cycle"]["payload"]  # equal sources: the payload is as before
+    # the engine's input is ccxt's interval in both runs, and nothing it decided or wrote differs
+    assert diff["data"].current == same["data"].current
+    assert diff["data"].current["BTC/USDT:USDT"]["b"]["interval_hours"] == 8.0
+    assert diff["data"].flags == same["data"].flags
+    payload = {k: v for k, v in diff["cycle"]["payload"].items() if k != "interval_mismatches"}
+    assert payload == same["cycle"]["payload"]
+    assert payload["complete"] is True and payload["flags"] == []
+    assert {k: v for k, v in diff["cycle"].items() if k != "payload"} == {k: v for k, v in same["cycle"].items() if k != "payload"}
+    assert same["logs"]["side"] and same["positions"]  # the cycle opened a position, so there is something to compare
+    assert diff["logs"] == same["logs"] and diff["positions"] == same["positions"]
+
+
+async def test_b_cycle_ignores_a_garbage_ticker_interval(tmp_path):
+    got = await _b_cycle(tmp_path / "bad", "nan")
+    assert "interval_mismatches" not in got["cycle"]["payload"] and got["data"].interval_mismatches == []
+
+
 async def test_switch_to_4h_makes_a_skipped_payment_visible_in_the_cycle(tmp_path):
     class Ex(IntervalEx):
         history_calls: list = []
@@ -609,6 +728,7 @@ async def test_paper_carry_status_without_store_returns_an_envelope():
         transports=make_transports({}),
         exchange_factory=LiveEx,
     )
+    rt.now = lambda: NOW
     srv, _ = build_server(rt)
     try:
         res = await _call(srv, "paper_carry_status")
@@ -623,6 +743,7 @@ async def test_paper_carry_job_is_opt_in(tmp_path):
     base = dict(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True)
     off = Runtime(Settings(**base), transports=make_transports({}), exchange_factory=LiveEx)
     on = Runtime(Settings(**base, paper_carry_enabled=True), transports=make_transports({}), exchange_factory=LiveEx)
+    off.now = on.now = lambda: NOW
     try:
         assert "paper_carry" not in [j.name for j in build_default_scheduler(off).jobs]
         sched = build_default_scheduler(on)

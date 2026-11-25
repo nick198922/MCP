@@ -100,6 +100,8 @@ class FeedData:
     ``markets``: backtest shape (A: ``{sym: {funding, spot, perp}}``, B: ``{sym: {a, b}}`` with ``bars``).
     ``current``: A ``{sym: {rate, interval_hours, mark, index, next_funding_ts, cap, floor}}``; B the same under
     ``{"a": ..., "b": ...}``. ``spot_symbols``: A ``{sym: (spot symbol, quantity multiplier)}``.
+    ``interval_mismatches``: diagnostic only (B: ccxt's Bybit interval vs the ticker's ``fundingIntervalHour``); written
+    to the cycle payload when not empty, never read by a decision and not a flag, so ``complete`` does not depend on it.
     """
 
     markets: dict[str, dict[str, Any]]
@@ -108,6 +110,7 @@ class FeedData:
     spot_symbols: dict[str, tuple[str, int]] = field(default_factory=dict)
     universe_size: int = 0
     flags: list[dict[str, Any]] = field(default_factory=list)
+    interval_mismatches: list[dict[str, Any]] = field(default_factory=list)
 
 
 class CarryFeed(Protocol):
@@ -601,6 +604,8 @@ async def run_cycle(
         }
         if entries_stopped:
             payload["entries_stopped"] = entries_stopped
+        if data.interval_mismatches:  # diagnostic, not in `flags` (standing card item 462); absent when empty
+            payload["interval_mismatches"] = data.interval_mismatches
         cycle = {
             "strategy": strat, "cycle_ts": cycle_ts, "status": "done", "started_ms": started, "finished_ms": finished,
             "git_sha": git_sha(), "params_hash": params.hash(), "payload": payload,

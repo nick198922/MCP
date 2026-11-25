@@ -7,7 +7,15 @@ under ``--cache-dir``. Definitions: the card's «Попередня реєстр
 ``tradedesk.analytics.hl_liq_magnet``.
 
     uv run python scripts/verify_hl_liq_magnet_step0.py --smoke          # data checks + pipeline on 8 accounts, no count
+    uv run python scripts/verify_hl_liq_magnet_step0.py --prefetch       # candles of every top-50 coin into the cache, no count
     uv run python scripts/verify_hl_liq_magnet_step0.py --out ~/.cache/tradedesk-agents/hl_liq_magnet/result.json
+
+Exit codes (each has a registered consequence in the card, rev. 3): 0 done (full run: the line ``STEP 0 OUTCOME``);
+3 daily candles of a coin still failing after retries, or a live coin with none in the window that was not listed
+after its end (the top-50 ranking would admit the 51st coin): no count, rerun;
+any other non-zero: a crash; what it means before and after the variant table is printed is in the card. A coin whose
+15m candles fail or do not reach the period start is not an exit: its marks are unknown (None), which only lowers the
+lower bound; it is listed.
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from tradedesk.analytics.hl_liq_magnet import (  # noqa: E402
     detect_episodes,
     exposure_seconds,
     history_covers,
+    listed_after,
     mark_at,
     run_gaps,
     step0_decision,
@@ -44,6 +53,7 @@ from tradedesk.analytics.hl_liq_magnet import (  # noqa: E402
     watchlists_by_day,
 )
 from tradedesk.analytics.smart_money import detect_delta_start  # noqa: E402
+from tradedesk.core.errors import ProviderError  # noqa: E402
 
 DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 CACHE = Path.home() / ".cache" / "tradedesk-agents" / "hl_liq_magnet"
@@ -66,6 +76,7 @@ VARIANTS = {
     "any_0_5": Variant(*BAND5, None),
 }
 PRIMARY = "fresh_1_4"
+RETRY_WAITS = (5, 20, 60)  # seconds before each retry of a candle fetch that raised ProviderError (after Http's own)
 
 
 def _iso(ts: float) -> str:
@@ -100,12 +111,26 @@ async def fetch_candles(rt, coin: str, interval: str, start: int, end: int, cach
             got = read_json(p)
         else:
             got = (await rt.hyperliquid.candles(coin, interval, t * 1000, w_end * 1000 - 1)).data or []
-            if w_end < time.time() - DAY:
+            if got and w_end < time.time() - DAY:  # an empty answer is never cached, so a rerun asks again
                 write_json(p, got)
         out += [c for c in got if t * 1000 <= int(c["t"]) < w_end * 1000]
         t = w_end
     seen: dict[int, dict] = {int(c["t"]): c for c in out}
     return [seen[k] for k in sorted(seen)]
+
+
+async def fetch_retry(rt, coin: str, interval: str, start: int, end: int, cache: Path, span_s: int) -> list[dict]:
+    """``fetch_candles`` retried on ProviderError (a network failure must not look like a missing history); the
+    last failure is raised to the caller, which decides (1d: fatal; 15m: the coin's marks are unknown)."""
+    for i, wait in enumerate((*RETRY_WAITS, None)):
+        try:
+            return await fetch_candles(rt, coin, interval, start, end, cache, span_s)
+        except ProviderError as e:
+            if wait is None:
+                raise
+            print(f"  {interval} {coin}: {e}; retry {i + 1}/{len(RETRY_WAITS)} in {wait}s", flush=True)
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 # --- store -------------------------------------------------------------------------------------------------------
@@ -193,6 +218,7 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
     ap.add_argument("--top-n", type=int, default=100, help="watch list per ranking (collector setting)")
     ap.add_argument("--min-account", type=float, default=500_000.0)
     ap.add_argument("--smoke", action="store_true", help="data checks on a few coins only; no episode metric")
+    ap.add_argument("--prefetch", action="store_true", help="fetch and cache the candles only, then stop; no episode metric")
     a = ap.parse_args()
     cache: Path = a.cache_dir
     end = _ts(a.end)
@@ -225,10 +251,10 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         f"size median={statistics.median(len(x[2]) for x in lists) if lists else 0}"
     )
 
-    from tradedesk.core.errors import ProviderError  # noqa: PLC0415
     from tradedesk.server import build_server  # noqa: PLC0415
 
     _, rt = build_server()
+    failed15: list[str] = []
     try:
         meta = await fetch_meta(rt, cache)
         coins = sorted(r["coin"] for r in meta)
@@ -246,11 +272,31 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         tf = time.time()
         for i, c in enumerate(coins):
             try:
-                turnover[c] = daily_turnover(await fetch_candles(rt, c, "1d", d_start, end, cache, 200 * DAY))
+                turnover[c] = daily_turnover(await fetch_retry(rt, c, "1d", d_start, end, cache, 200 * DAY))
             except ProviderError as e:
-                print(f"  1d {c}: {e}")
+                print(f"FATAL: 1d candles of {c} still fail after {len(RETRY_WAITS)} retries: {e}", flush=True)
+                print("without them the top-50 ranking would admit the 51st coin; no count. Rerun later (cache kept).")
+                return 3
             if i % 40 == 0:
                 print(f"  1d {i + 1}/{len(coins)} {time.time() - tf:.0f}s rss={rss_mb():.0f}MB", flush=True)
+        delisted = {r["coin"] for r in meta if r.get("delisted")}
+        no1d = [c for c in coins if not turnover.get(c)]
+        print(
+            f"coins without any 1d candle in the window: {len(no1d)} ({sum(c in delisted for c in no1d)} delisted): {no1d[:15]}",
+            flush=True,
+        )
+        unexplained: list[str] = []  # live coins with an empty 1d answer that a later listing does not explain
+        for c in (x for x in no1d if x not in delisted):
+            try:
+                later = (await rt.hyperliquid.candles(c, "1d", d_start * 1000, int(time.time()) * 1000)).data or []
+            except ProviderError:
+                later = []
+            if not listed_after(min((int(x["t"]) // 1000 for x in later), default=None), end):
+                unexplained.append(c)
+        if unexplained:
+            print(f"FATAL: live coins without 1d candles in the window: {unexplained[:15]}")
+            print("without them the top-50 ranking would admit the 51st coin; no count. Rerun later (cache kept).")
+            return 3
         days = sorted({r // DAY * DAY for r in runs})
         top_by_day = {d: top_coins_at(turnover, d + 1, TOP_N_COINS, TURNOVER_DAYS) for d in days}
         union = sorted(set().union(*top_by_day.values()) & held) if not a.smoke else coins
@@ -270,9 +316,10 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         tf = time.time()
         for i, c in enumerate(union):
             try:
-                cs = await fetch_candles(rt, c, "15m", start - DAY, end, cache, 30 * DAY)
-            except ProviderError as e:
-                print(f"  15m {c}: {e}")
+                cs = await fetch_retry(rt, c, "15m", start - DAY, end, cache, 30 * DAY)
+            except ProviderError as e:  # registered: marks unknown (None), which only lowers the lower bound
+                print(f"  15m {c}: still failing after retries, its marks are unknown: {e}", flush=True)
+                failed15.append(c)
                 continue
             marks[c] = ([int(x["t"]) // 1000 for x in cs], [float(x["c"]) for x in cs])
             if i % 10 == 0 or a.smoke:
@@ -289,10 +336,11 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         if not history_covers(first15, listing, start, M15):
             short.append((c, _iso(first15) if first15 else "-"))
     print(f"15m history check: {len(union) - len(short)}/{len(union)} coins cover {_iso(start)} (or their listing day)")
-    if short:
-        print(f"ABORT: {len(short)} coins with 15m history starting after the period start: {short[:20]}", flush=True)
-        print("early marks would silently be None and lower the count; the registered period is not shortened (report it)")
-        return 2
+    if short:  # rev. 3: no stop; missing marks are unknown (None) and only lower the bound; reported
+        print(f"  incomplete 15m history (early marks unknown): {len(short)} coins {short[:20]}; fetch failed: {failed15}")
+    if a.prefetch:
+        print(f"prefetch done in {time.time() - t0:.0f}s rss={rss_mb():.0f}MB (candles cached; no replay, no episode metric)")
+        return 0
 
     def top_at(ts: int) -> frozenset[str]:
         return top_by_day.get(ts // DAY * DAY, frozenset())
@@ -348,7 +396,7 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         )  # fmt: skip
         counters.update(cnt)
         for v, var in VARIANTS.items():
-            lb = var.max_liq_age_s is not None  # unknown-heavy variants: lower-bound rule
+            lb = var.max_liq_age_s == 0  # fresh liq_px only: lower-bound rule; 'any age' and '<= 24 h': rule of rev. 1
             for c, ob in obs[v].items():
                 for rf in REFRACTORY:
                     for e in detect_episodes(ob, rf, lower_bound=lb):
@@ -370,8 +418,10 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         return 0
     print(
         f"position-runs >= $3M on top-{TOP_N_COINS}: {counters['in_scope']} (liq_px fresh: {counters['in_scope_fresh']}); "
-        f"liq_px already crossed: {counters['crossed']} (fresh: {counters['crossed_fresh']}); no mark: {counters['no_mark']}; "
-        f"account-runs not polled (pre-v12, no group): {counters['unpolled_runs']}  rss={rss_mb():.0f}MB",
+        f"liq_px already crossed: {counters['crossed']} (fresh: {counters['crossed_fresh']}); no mark: {counters['no_mark']} "
+        f"(logged value >= $3M: {counters['no_mark_big']}, "
+        f"{counters['no_mark_big'] / max(1, counters['in_scope'] + counters['no_mark_big']):.1%} of in-scope + them); "
+        f"account-runs not polled (pre-v12, no group): {counters['unpolled_runs']}/{counters['observed_runs']}  rss={rss_mb():.0f}MB",
         flush=True,
     )
 
@@ -414,13 +464,14 @@ async def main() -> int:  # noqa: C901, PLR0912, PLR0915 - one linear report
         f"  episodes n={len(prim)} per_week={g['per_week']:.2f} per_10d={g['per_10d']:.2f} -> {'pass' if g['passed'] else 'no'}\n"
         f"  coin-day clusters n={g_cl['n']} per_week={g_cl['per_week']:.2f} per_10d={g_cl['per_10d']:.2f} "
         f"-> {'pass' if g_cl['passed'] else 'no'}\n"
-        f"  STEP 0 OUTCOME: {dec['outcome'].upper()}; weeks to 90 events from clusters (upper estimate): "
+        f"  STEP 0 OUTCOME: {dec['outcome'].upper()}; weeks to 90 events from clusters (rough estimate, not a bound): "
         f"{dec['weeks_to_need_clusters']}"
     )
     de = dec["descriptive"]
     wo = de["without_top_account"]
     print(
-        f"  descriptive: UTC days with an episode={de['days']}; top account has {de['top_account_n']} episodes; "
+        f"  descriptive: strict coin-day lower bound={de['coin_days_strict']}; "
+        f"UTC days with an episode={de['days']}; top account has {de['top_account_n']} episodes; "
         f"without it n={wo['n']} ({wo['episodes']['per_week']:.2f}/wk), coin-days={wo['coin_days']} "
         f"({wo['clusters']['per_week']:.2f}/wk); entry interval (last known, start] crosses a UTC day: {span_day}/{len(prim)}"
     )

@@ -13,12 +13,16 @@ from tradedesk.analytics.hl_liq_magnet import (
     Variant,
     account_observations,
     coin_day_clusters,
+    coin_day_clusters_strict,
     daily_turnover,
     detect_episodes,
     exposure_seconds,
     gate,
     history_covers,
+    listed_after,
     mark_at,
+    recount_completeness,
+    recount_outcome,
     replay_account,
     run_gaps,
     signed_distance,
@@ -174,6 +178,13 @@ def test_history_covers_period_start_or_listing_day():
     assert not history_covers(None, None, start)
 
 
+def test_listed_after_explains_only_a_later_listing():
+    end = 100 * DAY
+    assert listed_after(end, end)  # first daily candle opens when the window closes
+    assert not listed_after(end - DAY, end)  # the coin traded inside the window: the empty answer was wrong
+    assert not listed_after(None, end)  # no candle at all for a live coin
+
+
 def _pos(ts, market, side, size, liq):
     return {"ts": ts, "market": market, "side": side, "size": size, "value_usd": None, "liq_px": liq}
 
@@ -181,7 +192,7 @@ def _pos(ts, market, side, size, liq):
 VARS = {"fresh": Variant(0.01, 0.04, 0), "any": Variant(0.01, 0.04, None)}
 
 
-def _observe(groups, runs, delta_start, marks=None, watched=lambda r: True):
+def _observe(groups, runs, delta_start, marks=None, watched=lambda r: True, **kw):
     marks = marks or {}
     return account_observations(
         groups,
@@ -192,6 +203,7 @@ def _observe(groups, runs, delta_start, marks=None, watched=lambda r: True):
         mark=lambda c, r: marks.get((c, r), 100.0),
         variants=VARS,
         min_value=50.0,
+        **kw,
     )
 
 
@@ -296,3 +308,82 @@ def test_step0_decision_needs_episodes_and_coin_day_clusters():
     assert d["descriptive"]["days"] == 8 and d["descriptive"]["top_account_n"] == 5
     assert d["descriptive"]["without_top_account"]["n"] == 3 and not d["descriptive"]["without_top_account"]["episodes"]["passed"]
     assert coin_day_clusters(spread) == 8 and step0_decision([], WEEK)["outcome"] == "unresolved"
+    assert d["descriptive"]["coin_days_strict"] == 2  # no prev_known_ts: windows open to the left, one day per coin
+
+
+def test_observations_poll_markers_decide_polling_in_the_recount_era():
+    h = HOUR
+    runs = [0, h, 2 * h, 3 * h, 4 * h, 5 * h]
+    groups = [(0, [_pos(0, "BTC", "short", 1.0, 103.0)]), (2 * h, [_pos(2 * h, "BTC", "short", 1.0, 103.0)])]
+    watched = lambda r: r not in (4 * h, 5 * h)  # noqa: E731
+    # markers from 2 h on: 2 h (with a refresh row) and 4 h (off the list); 3 h watched but no marker
+    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=watched, polls={2 * h, 4 * h}, polls_from=2 * h)
+    assert [o.ts for o in obs["fresh"]["BTC"]] == [0, h, 2 * h, 3 * h, 4 * h]  # 4 h observed through its marker
+    assert [o.qualifies for o in obs["fresh"]["BTC"]] == [True, None, True, None, None]  # 4 h: polled, liq_px 2 h old
+    assert [o.qualifies for o in obs["any"]["BTC"]] == [True, True, True, None, True]  # 3 h: watched, not polled
+    assert cnt["observed_runs"] == 5 and cnt["unpolled_runs"] == 1
+    # without markers the post-v12 rule infers 3 h as polled and never sees 4 h
+    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=watched)
+    assert [o.qualifies for o in obs["any"]["BTC"]] == [True, True, True, True]
+    assert cnt["unpolled_runs"] == 0
+    # a top-coin position without a mark: counted, and as "big" when its logged value reaches min_value
+    big = [(0, [{"ts": 0, "market": "BTC", "side": "short", "size": 1.0, "value_usd": 100.0, "liq_px": 103.0}])]
+    _, _, cnt = _observe(big, [0], delta_start=0, marks={("BTC", 0): None})
+    assert cnt["no_mark"] == 1 and cnt["no_mark_big"] == 1
+
+
+def test_coin_day_clusters_strict_stabs_every_window():
+    eps = [
+        {"coin": "BTC", "ts": DAY + 10 * HOUR, "prev_known_ts": DAY + 8 * HOUR},  # window [day 0; day 1]
+        {"coin": "BTC", "ts": 2 * DAY + 5 * HOUR, "prev_known_ts": DAY + 20 * HOUR},  # [day 0; day 2]: day 1 stabs it
+        {"coin": "BTC", "ts": 5 * DAY + 1 * HOUR, "prev_known_ts": 4 * DAY + 23 * HOUR},  # [day 3; day 5]
+        {"coin": "ETH", "ts": 5 * DAY, "prev_known_ts": None},  # open to the left
+    ]
+    assert coin_day_clusters(eps) == 4 and coin_day_clusters_strict(eps) == 3
+    assert coin_day_clusters_strict([]) == 0
+
+
+def test_strict_clusters_never_exceed_the_observer_with_all_snapshots():
+    rng = random.Random(11)
+    states = [(False, None), (True, "long"), (True, "short")]
+    for _ in range(1500):
+        full_eps, lb_eps = [], []
+        p_in, p_hide, step = rng.choice([0.1, 0.3, 0.6]), rng.choice([0.2, 0.5, 0.9]), rng.choice([HOUR, 3 * HOUR])
+        for acc in range(rng.randint(1, 4)):
+            coin = rng.choice(["BTC", "ETH"])
+            off = 0 if acc == 0 else rng.randrange(0, DAY, HOUR)
+            data_start = off == 0 and rng.random() < 0.5
+            full = []
+            for i in range(rng.randint(1, 40)):
+                q, side = states[0] if rng.random() > p_in else rng.choice(states[1:])
+                q = None if rng.random() < 0.05 else q
+                full.append(Obs(off + i * step, side, q, first_obs=i == 0, data_start=data_start and i == 0))
+            seen = [Obs(o.ts, o.side, None if rng.random() < p_hide else o.qualifies, o.first_obs, o.data_start) for o in full]
+            full_eps += [{"coin": coin, "ts": e.ts} for e in detect_episodes(full, DAY) if e.kind != "start"]
+            lb_eps += [
+                {"coin": coin, "ts": e.ts, "prev_known_ts": e.prev_known_ts}
+                for e in detect_episodes(seen, DAY, lower_bound=True)
+                if e.kind != "start"
+            ]
+        assert coin_day_clusters_strict(lb_eps) <= coin_day_clusters(full_eps), (full_eps, lb_eps)
+
+
+def test_recount_completeness_and_outcome():
+    ok = {"observed_runs": 100, "unpolled_runs": 4, "in_scope": 50, "in_scope_fresh": 48, "no_mark_big": 0}
+    c = recount_completeness(ok, exposure_s=0.95 * 42 * DAY, calendar_s=42 * DAY)
+    assert c["complete"] and math.isclose(c["polled"], 0.96) and math.isclose(c["known"], 0.96)
+    passed, failed = {"passed": True}, {"passed": False}
+    assert recount_outcome(passed, c) == "pass" and recount_outcome(failed, c) == "kill"
+    # missing data never turns into a kill: poll failures, unknown liq_px / marks, collector gaps
+    for bad, exp, which in (
+        ({**ok, "unpolled_runs": 6}, 0.95, "polled"),
+        ({**ok, "no_mark_big": 3}, 0.95, "known"),
+        ({**ok, "in_scope_fresh": 40}, 0.95, "known"),
+        (ok, 0.85, "exposure"),
+    ):
+        c = recount_completeness(bad, exposure_s=exp * 42 * DAY, calendar_s=42 * DAY)
+        assert c["failed"] == [which] and recount_outcome(failed, c) == "incomplete"
+    # no whale at all with complete polling is a real absence, not missing data
+    none = {"observed_runs": 100, "unpolled_runs": 0}
+    assert recount_outcome(failed, recount_completeness(none, 42 * DAY, 42 * DAY)) == "kill"
+    assert recount_completeness({}, 0.0, 42 * DAY)["failed"] == ["polled", "exposure"]

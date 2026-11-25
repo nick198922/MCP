@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +64,13 @@ def history_covers(first_open_s: int | None, listing_day_s: int | None, start: i
     if listing_day_s is not None:
         need = max(need, listing_day_s + DAY - interval_s)
     return first_open_s <= need
+
+
+def listed_after(first_open_s: int | None, end: int) -> bool:
+    """Whether an empty daily-candle answer for the window ending at ``end`` is explained by a later listing: the
+    coin's first daily candle (``first_open_s``, None when it has none at all) opens at or after ``end``. Otherwise
+    the empty answer would silently drop a coin from the turnover ranking."""
+    return first_open_s is not None and first_open_s >= end
 
 
 def watchlists_by_day(
@@ -230,6 +237,8 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
     variants: Mapping[str, Variant],
     min_value: float,
     gap_s: int = 5400,
+    polls: Collection[int] | None = None,
+    polls_from: int | None = None,
 ) -> tuple[dict[str, dict[str, list[Obs]]], dict[tuple[str, int], dict[str, Any]], Counter[str]]:
     """One account's observations per variant and coin, at every collector run where it was observed.
 
@@ -246,8 +255,16 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
       one). Else True iff 0 < d and lo <= d <= hi; a missing liq_px (Hyperliquid gives none when the position cannot
       be liquidated) or d <= 0 (crossed) is False.
 
+    Recount period (card registration rev. 3): from ``polls_from`` on, the collector logs a marker for every account
+    it polled successfully (``polls``: the runs with this account's marker). Then the account is also observed at a
+    marked run off the reconstructed list, and it counts as polled only at a run with a marker or rows; a watched
+    run without either is not polled (unknown), instead of the inferred "post-v12 = polled" rule.
+
     Returns ({variant: {coin: [Obs]}}, {(coin, r): {d, liq_age_h, n_pos}} for runs where some variant qualifies,
-    counters). Uses only rows at or before each r and marks from ``mark(coin, r)``."""
+    counters). Counters: ``observed_runs`` / ``unpolled_runs`` (account-runs), ``in_scope`` / ``in_scope_fresh``
+    (position-runs >= ``min_value`` on a top coin), ``no_mark`` (a top-coin position without mark) and ``no_mark_big``
+    (those whose logged ``value_usd`` is >= ``min_value``), ``crossed`` / ``crossed_fresh``. Uses only rows at or
+    before each r and marks from ``mark(coin, r)``."""
     obs: dict[str, dict[str, list[Obs]]] = {v: {} for v in variants}
     meta: dict[tuple[str, int], dict[str, Any]] = {}
     cnt: Counter[str] = Counter()
@@ -272,11 +289,17 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
         while nxt is not None and nxt[0] <= r:
             _, state, since = nxt
             nxt = next(states, None)
-        if not (r in rows_at or watched(r)):
+        marked_era = polls_from is not None and r >= polls_from
+        has_marker = marked_era and polls is not None and r in polls
+        if not (r in rows_at or watched(r) or has_marker):
             prev_run = r
             continue
         after_gap = (not first_seen) and (prev_obs_run is None or prev_obs_run != prev_run or r - (prev_run or r) > gap_s)
-        polled = r in rows_at or not (delta_start is None or r < delta_start)
+        if marked_era:
+            polled = has_marker or r in rows_at
+        else:
+            polled = r in rows_at or not (delta_start is None or r < delta_start)
+        cnt["observed_runs"] += 1
         if not polled:
             cnt["unpolled_runs"] += 1
         top = top_at(r)
@@ -294,6 +317,7 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
                 if m is None:
                     q = dict.fromkeys(variants, None)
                     cnt["no_mark"] += 1
+                    cnt["no_mark_big"] += abs(float(p.get("value_usd") or 0)) >= min_value
                 elif abs(float(p.get("size") or 0)) * m < min_value:
                     q = dict.fromkeys(variants, False)
                 else:
@@ -426,12 +450,36 @@ def coin_day_clusters(episodes: Sequence[Mapping[str, Any]]) -> int:
     return len({(str(e["coin"]), int(e["ts"]) // DAY) for e in episodes})
 
 
+def coin_day_clusters_strict(episodes: Sequence[Mapping[str, Any]], refractory_s: int = DAY) -> int:
+    """A strict lower bound of the coin-day clusters an observer with fresh liq_px at every run would count.
+
+    For a lower-bound episode started at s after the last known state p, that observer has an episode on the same
+    coin started in (p - ``refractory_s``; s] (the true entry lies in (p; s] and may be merged into an episode started
+    up to ``refractory_s`` earlier), so its start day lies in [day(p - refractory); day(s)]; with no p the window is
+    open to the left. The observer's (coin, day) set stabs every window, hence it has at least the minimum number of
+    days stabbing all windows of a coin (greedy by right end). Descriptive: the registered cluster gate uses
+    ``coin_day_clusters``, which can be above the observer's count (a delayed detection can move or split a day)."""
+    by_coin: dict[str, list[tuple[float, int]]] = {}
+    for e in episodes:
+        p = e.get("prev_known_ts")
+        lo = float((int(p) - refractory_s) // DAY) if p is not None else float("-inf")
+        by_coin.setdefault(str(e["coin"]), []).append((lo, int(e["ts"]) // DAY))
+    n = 0
+    for windows in by_coin.values():
+        last: int | None = None
+        for lo, hi in sorted(windows, key=lambda w: w[1]):
+            if last is None or lo > last:
+                last, n = hi, n + 1
+    return n
+
+
 def step0_decision(episodes: Sequence[Mapping[str, Any]], exposure_s: float, need: int = 90) -> dict[str, Any]:
     """The registered step-0 decision on the primary (fresh liq_px, lower-bound) episodes: the same ``gate`` must pass
     for the episodes AND for their coin-day clusters. Outcome 'pass', else 'unresolved' (history cannot reject: the
     log keeps liq_px only from size changes, so the count is a lower bound). Weeks to ``need`` events are taken from
-    the clusters (an upper estimate of the forward's time, since the rate is a lower bound). Descriptive extras: day
-    clusters over all coins and the gate without the account with most episodes."""
+    the clusters: a rough estimate of the forward's time, not a strict upper bound (the cluster count is not a strict
+    lower bound, see ``coin_day_clusters_strict``, and the future rate may differ). Descriptive extras: day clusters
+    over all coins, the strict coin-day lower bound and the gate without the account with most episodes."""
     ep = gate(len(episodes), exposure_s, need=need)
     cl = gate(coin_day_clusters(episodes), exposure_s, need=need)
     accounts = Counter(str(e["account"]) for e in episodes)
@@ -445,6 +493,7 @@ def step0_decision(episodes: Sequence[Mapping[str, Any]], exposure_s: float, nee
         "weeks_to_need_clusters": cl["weeks_to_need"],
         "descriptive": {
             "days": len({int(e["ts"]) // DAY for e in episodes}),
+            "coin_days_strict": coin_day_clusters_strict(episodes),
             "top_account_n": top_n,
             "without_top_account": {
                 "n": len(rest),
@@ -454,3 +503,46 @@ def step0_decision(episodes: Sequence[Mapping[str, Any]], exposure_s: float, nee
             },
         },
     }
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# recount on new collector data (registration rev. 3, outcome 2 of step 0)
+
+RECOUNT_DAYS = 42  # calendar length of the recount period (6 weeks)
+
+
+def recount_completeness(
+    counters: Mapping[str, int],
+    exposure_s: float,
+    calendar_s: float,
+    *,
+    min_polled: float = 0.95,
+    min_known: float = 0.95,
+    min_exposure: float = 0.90,
+) -> dict[str, Any]:
+    """Whether the recount period's data are complete enough for a low count to mean a low rate (else the recount is
+    'incomplete', never a kill). Three shares, all must reach their minimum:
+
+    - polled: observed account-runs with a successful poll (marker or rows) / observed account-runs;
+    - known: position-runs >= $3M on a top coin with a liq_px written at that run / (all such position-runs + top-coin
+      positions without a mark whose logged value is >= $3M); vacuously 1.0 when there is no such position at all
+      (with polling complete, that is a real absence of whales, not missing data);
+    - exposure: ``exposure_s`` / ``calendar_s`` (collector gaps)."""
+    observed = int(counters.get("observed_runs", 0))
+    polled = 1.0 - int(counters.get("unpolled_runs", 0)) / observed if observed else 0.0
+    denom = int(counters.get("in_scope", 0)) + int(counters.get("no_mark_big", 0))
+    known = int(counters.get("in_scope_fresh", 0)) / denom if denom else 1.0
+    expo = exposure_s / calendar_s if calendar_s > 0 else 0.0
+    shares = {"polled": polled, "known": known, "exposure": expo}
+    mins = {"polled": min_polled, "known": min_known, "exposure": min_exposure}
+    failed = [k for k in shares if shares[k] < mins[k]]
+    return {**shares, "failed": failed, "complete": not failed}
+
+
+def recount_outcome(decision: Mapping[str, Any], completeness: Mapping[str, Any]) -> str:
+    """Registered outcome of the recount: 'incomplete' (data not complete: no verdict, a missing measurement never
+    counts as a low rate), else 'pass' when ``step0_decision`` passed both gates, else 'kill' (either gate failed:
+    the step-0 kill criterion)."""
+    if not completeness.get("complete"):
+        return "incomplete"
+    return "pass" if decision.get("passed") else "kill"

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -237,7 +237,7 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
     variants: Mapping[str, Variant],
     min_value: float,
     gap_s: int = 5400,
-    polls: Collection[int] | None = None,
+    polls: Mapping[int, bool] | None = None,
     polls_from: int | None = None,
 ) -> tuple[dict[str, dict[str, list[Obs]]], dict[tuple[str, int], dict[str, Any]], Counter[str]]:
     """One account's observations per variant and coin, at every collector run where it was observed.
@@ -255,23 +255,31 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
       one). Else True iff 0 < d and lo <= d <= hi; a missing liq_px (Hyperliquid gives none when the position cannot
       be liquidated) or d <= 0 (crossed) is False.
 
-    Recount period (card registration rev. 3): from ``polls_from`` on, the collector logs a marker for every account
-    it polled successfully (``polls``: the runs with this account's marker). Then the account is also observed at a
-    marked run off the reconstructed list, and it counts as polled only at a run with a marker or rows; a watched
-    run without either is not polled (unknown), instead of the inferred "post-v12 = polled" rule.
+    Recount period (card registration, recount rules rev. 4): from ``polls_from`` on, the collector writes, in one
+    transaction before its first request of a run, a marker for every account on its intended list with status
+    not-ok, and flips it to ok when that account's request succeeded (``polls``: {run ts: ok} of this account's
+    markers). There the reconstructed watch list is NOT used (``watched`` is ignored): the account is observed at r
+    iff it has a marker (any status) or rows at r, and polled iff the marker is ok or it has rows at r (rows are
+    written only after a successful request). An account with a not-ok marker and no rows (failed request, or a run
+    that stopped before reaching it) is observed and not polled: unknown everywhere, and it counts in
+    ``unpolled_runs``. An account without a marker and rows (off the intended list) is not observed; when it returns,
+    its next observation is ``after_gap``. Rows without a marker are counted (``rows_unmarked``): the markers then do
+    not cover the intended list, and ``recount_completeness`` calls the data incomplete. In this era the account is
+    observed from its first marker even before its first group (an ok poll without rows and no prior state = flat),
+    so call it for every account with a marker, also one without any rows.
 
     Returns ({variant: {coin: [Obs]}}, {(coin, r): {d, liq_age_h, n_pos}} for runs where some variant qualifies,
     counters). Counters: ``observed_runs`` / ``unpolled_runs`` (account-runs), ``in_scope`` / ``in_scope_fresh``
     (position-runs >= ``min_value`` on a top coin), ``no_mark`` (a top-coin position without mark) and ``no_mark_big``
-    (those whose logged ``value_usd`` is >= ``min_value``), ``crossed`` / ``crossed_fresh``. Uses only rows at or
-    before each r and marks from ``mark(coin, r)``."""
+    (those whose logged ``value_usd`` is >= ``min_value``), ``crossed`` / ``crossed_fresh``, ``rows_unmarked``. Uses
+    only rows and markers at or before each r and marks from ``mark(coin, r)``."""
     obs: dict[str, dict[str, list[Obs]]] = {v: {} for v in variants}
     meta: dict[tuple[str, int], dict[str, Any]] = {}
     cnt: Counter[str] = Counter()
-    if not groups:
+    if not groups and polls_from is None:
         return obs, meta, cnt
     rows_at = {int(ts) for ts, _ in groups}
-    first_ts = int(groups[0][0])
+    first_ts = int(groups[0][0]) if groups else None
     held = sorted({str(r.get("market")) for _, rs in groups for r in rs if r.get("market")})
     data_start = runs[0] if runs else None
     states = iter(replay_account(groups, delta_start))
@@ -283,22 +291,26 @@ def account_observations(  # noqa: C901, PLR0912, PLR0913 - one linear replay, a
     first_seen = True
     for r in runs:
         r = int(r)
-        if r < first_ts:
+        marked_era = polls_from is not None and r >= polls_from
+        if not marked_era and (first_ts is None or r < first_ts):
             prev_run = r
             continue
         while nxt is not None and nxt[0] <= r:
             _, state, since = nxt
             nxt = next(states, None)
-        marked_era = polls_from is not None and r >= polls_from
-        has_marker = marked_era and polls is not None and r in polls
-        if not (r in rows_at or watched(r) or has_marker):
-            prev_run = r
-            continue
-        after_gap = (not first_seen) and (prev_obs_run is None or prev_obs_run != prev_run or r - (prev_run or r) > gap_s)
         if marked_era:
-            polled = has_marker or r in rows_at
+            marker = polls.get(r) if polls is not None else None
+            if marker is None and r not in rows_at:  # off the intended list at r
+                prev_run = r
+                continue
+            cnt["rows_unmarked"] += marker is None
+            polled = bool(marker) or r in rows_at
         else:
+            if not (r in rows_at or watched(r)):
+                prev_run = r
+                continue
             polled = r in rows_at or not (delta_start is None or r < delta_start)
+        after_gap = (not first_seen) and (prev_obs_run is None or prev_obs_run != prev_run or r - (prev_run or r) > gap_s)
         cnt["observed_runs"] += 1
         if not polled:
             cnt["unpolled_runs"] += 1
@@ -521,22 +533,27 @@ def recount_completeness(
     min_exposure: float = 0.90,
 ) -> dict[str, Any]:
     """Whether the recount period's data are complete enough for a low count to mean a low rate (else the recount is
-    'incomplete', never a kill). Three shares, all must reach their minimum:
+    'incomplete', never a kill). Three shares, all must reach their minimum, and one integrity condition:
 
-    - polled: observed account-runs with a successful poll (marker or rows) / observed account-runs;
+    - polled: observed account-runs with a successful poll (ok marker or rows) / observed account-runs (rules rev. 4:
+      observed = any marker, ok or not, or rows; the denominator is the collector's intended list, so an account it
+      meant to poll but never reached still counts, as not polled);
     - known: position-runs >= $3M on a top coin with a liq_px written at that run / (all such position-runs + top-coin
       positions without a mark whose logged value is >= $3M); vacuously 1.0 when there is no such position at all
       (with polling complete, that is a real absence of whales, not missing data);
-    - exposure: ``exposure_s`` / ``calendar_s`` (collector gaps)."""
+    - exposure: ``exposure_s`` / ``calendar_s`` (collector gaps);
+    - unmarked (rev. 4): no account-run with rows but without a marker (``rows_unmarked`` == 0); otherwise the markers
+      do not cover the intended list and an unreached account could be invisible, so the data are incomplete."""
     observed = int(counters.get("observed_runs", 0))
     polled = 1.0 - int(counters.get("unpolled_runs", 0)) / observed if observed else 0.0
     denom = int(counters.get("in_scope", 0)) + int(counters.get("no_mark_big", 0))
     known = int(counters.get("in_scope_fresh", 0)) / denom if denom else 1.0
     expo = exposure_s / calendar_s if calendar_s > 0 else 0.0
+    unmarked = int(counters.get("rows_unmarked", 0))
     shares = {"polled": polled, "known": known, "exposure": expo}
     mins = {"polled": min_polled, "known": min_known, "exposure": min_exposure}
-    failed = [k for k in shares if shares[k] < mins[k]]
-    return {**shares, "failed": failed, "complete": not failed}
+    failed = [k for k in shares if shares[k] < mins[k]] + (["unmarked"] if unmarked else [])
+    return {**shares, "rows_unmarked": unmarked, "failed": failed, "complete": not failed}
 
 
 def recount_outcome(decision: Mapping[str, Any], completeness: Mapping[str, Any]) -> str:

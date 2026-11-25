@@ -312,20 +312,40 @@ def test_step0_decision_needs_episodes_and_coin_day_clusters():
 
 
 def test_observations_poll_markers_decide_polling_in_the_recount_era():
+    """Recount rules rev. 4: a marker (ok or not) for every account the collector meant to poll; the reconstructed
+    watch list is not used from ``polls_from`` on."""
     h = HOUR
-    runs = [0, h, 2 * h, 3 * h, 4 * h, 5 * h]
-    groups = [(0, [_pos(0, "BTC", "short", 1.0, 103.0)]), (2 * h, [_pos(2 * h, "BTC", "short", 1.0, 103.0)])]
-    watched = lambda r: r not in (4 * h, 5 * h)  # noqa: E731
-    # markers from 2 h on: 2 h (with a refresh row) and 4 h (off the list); 3 h watched but no marker
-    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=watched, polls={2 * h, 4 * h}, polls_from=2 * h)
-    assert [o.ts for o in obs["fresh"]["BTC"]] == [0, h, 2 * h, 3 * h, 4 * h]  # 4 h observed through its marker
-    assert [o.qualifies for o in obs["fresh"]["BTC"]] == [True, None, True, None, None]  # 4 h: polled, liq_px 2 h old
-    assert [o.qualifies for o in obs["any"]["BTC"]] == [True, True, True, None, True]  # 3 h: watched, not polled
-    assert cnt["observed_runs"] == 5 and cnt["unpolled_runs"] == 1
-    # without markers the post-v12 rule infers 3 h as polled and never sees 4 h
-    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=watched)
-    assert [o.qualifies for o in obs["any"]["BTC"]] == [True, True, True, True]
-    assert cnt["unpolled_runs"] == 0
+    runs = [0, h, 2 * h, 3 * h, 4 * h, 5 * h, 6 * h, 7 * h]
+    groups = [
+        (0, [_pos(0, "BTC", "short", 1.0, 103.0)]),
+        (2 * h, [_pos(2 * h, "BTC", "short", 1.0, 103.0)]),  # refresh row at an ok marker
+        (6 * h, [_pos(6 * h, "ETH", "short", 1.0, 103.0)]),  # rows at a not-ok marker (stopped before the flip)
+        (7 * h, [_pos(7 * h, "ETH", "short", 2.0, 102.0)]),  # rows without a marker
+    ]
+    # 3 h: on the reconstructed list, no marker, no rows -> off the intended list, not observed (rev. 3: unpolled)
+    # 4 h: not-ok marker, no rows (failed request or never reached) -> observed, not polled
+    # 5 h: ok marker, no rows -> polled, BTC unchanged with a 3 h old liq_px
+    polls = {2 * h: True, 4 * h: False, 5 * h: True, 6 * h: False}
+    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=lambda r: True, polls=polls, polls_from=2 * h)
+    btc = obs["fresh"]["BTC"]
+    assert [o.ts for o in btc] == [0, h, 2 * h, 4 * h, 5 * h, 6 * h, 7 * h]
+    assert [o.after_gap for o in btc] == [False, False, False, True, False, False, False]
+    assert [o.qualifies for o in btc] == [True, None, True, None, None, None, None]
+    assert [o.qualifies for o in obs["any"]["BTC"]] == [True, True, True, None, True, True, True]
+    assert [o.qualifies for o in obs["fresh"]["ETH"]] == [False, False, False, None, False, True, True]
+    assert cnt["observed_runs"] == 7 and cnt["unpolled_runs"] == 1 and cnt["rows_unmarked"] == 1
+    # the history path (no markers) is unchanged: the reconstructed list decides, post-v12 runs count as polled
+    obs, _, cnt = _observe(groups, runs, delta_start=0, watched=lambda r: r != 3 * h)
+    assert [o.ts for o in obs["any"]["BTC"]] == [0, h, 2 * h, 4 * h, 5 * h, 6 * h, 7 * h]
+    assert cnt["unpolled_runs"] == 0 and "rows_unmarked" not in cnt
+    # an account the collector meant to poll and never logged rows for still enters the completeness denominator
+    _, _, cnt = _observe([], runs, delta_start=0, polls={2 * h: True, 3 * h: False}, polls_from=2 * h)
+    assert cnt["observed_runs"] == 2 and cnt["unpolled_runs"] == 1
+    assert _observe([], runs, delta_start=0)[2] == {}
+    # an ok marker before the account's first group (no prior state) is a known flat book
+    late = [(4 * h, [_pos(4 * h, "BTC", "short", 1.0, 103.0)])]
+    obs, _, _ = _observe(late, runs, delta_start=0, polls={2 * h: True, 4 * h: True}, polls_from=2 * h)
+    assert [(o.ts, o.qualifies) for o in obs["fresh"]["BTC"]] == [(2 * h, False), (4 * h, True)]
     # a top-coin position without a mark: counted, and as "big" when its logged value reaches min_value
     big = [(0, [{"ts": 0, "market": "BTC", "side": "short", "size": 1.0, "value_usd": 100.0, "liq_px": 103.0}])]
     _, _, cnt = _observe(big, [0], delta_start=0, marks={("BTC", 0): None})
@@ -380,6 +400,7 @@ def test_recount_completeness_and_outcome():
         ({**ok, "no_mark_big": 3}, 0.95, "known"),
         ({**ok, "in_scope_fresh": 40}, 0.95, "known"),
         (ok, 0.85, "exposure"),
+        ({**ok, "rows_unmarked": 1}, 0.95, "unmarked"),  # markers do not cover the intended list (rev. 4)
     ):
         c = recount_completeness(bad, exposure_s=exp * 42 * DAY, calendar_s=42 * DAY)
         assert c["failed"] == [which] and recount_outcome(failed, c) == "incomplete"

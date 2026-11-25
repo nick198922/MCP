@@ -1048,3 +1048,127 @@ def test_spot_mapping_comes_from_the_journal():
 
     logs = [side("spot", "PEPE/USDT", 1000), side("perp", "1000PEPE/USDT:USDT", 1)]
     assert v.spot_map(logs) == {"1000PEPE/USDT:USDT": ("PEPE/USDT", 1000)}
+
+
+# ---------- runner cache key / empty bars / atomic write (interim review, finding 2 and remarks 3-4) ----------
+
+_SYMS = ("币安人生/USDT:USDT", "牛来/USDT:USDT")  # both map to "_USDT_USDT" in _cache_file
+_SINCE = 2_000 * H8
+_UNTIL = _SINCE + 3 * DAY
+
+
+class _PerSymbol:
+    """Provider methods whose answer differs by symbol: funding rate and bar close = 1, 2, ... by the symbol's index."""
+
+    def __init__(self, *, empty_bars: bool = False) -> None:
+        self.empty_bars = empty_bars
+        self.calls: list[str] = []
+
+    def _x(self, sym: str) -> float:
+        return float(_SYMS.index(sym) + 1)
+
+    async def funding_rate_history_range(self, venue: str, sym: str, since: int, until: int, **_: Any) -> Fetched:
+        self.calls.append(sym)
+        rows = [{"timestamp": t, "fundingRate": self._x(sym) * 1e-4} for t in range(since, until + 1, H8)]
+        ev = Evidence(provider="fake", tool="test", args={"pages": 1})
+        return Fetched({"rows": rows, "complete": True, "truncated": False, "dropped_rows": 0}, ev)
+
+    async def ohlcv(self, venue: str, sym: str, tf: str, limit: int, since: int, until: int) -> Fetched:
+        self.calls.append(sym)
+        c = self._x(sym)
+        rows = [] if self.empty_bars else [[t, c, c, c, c, 1.0] for t in range(since, until + 1, 4 * 3_600_000)]
+        return Fetched(rows[:limit], Evidence(provider="fake", tool="test", args={}))
+
+
+def _pace(v: Any) -> Any:
+    clock = _Clock(_UNTIL + H8 + 3_600_000)  # outside the engine's window
+    return v.Pace(None, sleep=clock.sleep, now_ms=clock.now, mono=clock.mono)
+
+
+@pytest.mark.parametrize("kind", ["funding", "bars"])
+def test_runner_cache_is_keyed_by_symbol(tmp_path, kind):
+    """Finding 2: two non-ASCII symbols with one _cache_file name each get their own download and their own cache file."""
+    import asyncio
+
+    v = _runner()
+    fetch, field = (v.fetch_funding, "rate") if kind == "funding" else (v.fetch_bars, "close")
+    venue = cr.PERP_VENUE
+    fake = _PerSymbol()
+    rt, pace = SimpleNamespace(exchanges=fake), _pace(v)
+    for _ in range(2):  # the second round reads the cache only
+        got = [asyncio.run(fetch(rt, pace, tmp_path, venue, s, _SINCE, _UNTIL)) for s in _SYMS]
+        assert {r[field] for r in got[0]} == {1e-4 if kind == "funding" else 1.0}
+        assert {r[field] for r in got[1]} == {2e-4 if kind == "funding" else 2.0}
+    assert fake.calls == list(_SYMS) and len(list(tmp_path.iterdir())) == 2
+
+
+def test_runner_empty_bars_are_unavailable_and_not_cached(tmp_path):
+    """Remark 3: an empty bars answer (XMR/USDT spot in the interim run) is unavailable, never cached as a success."""
+    import asyncio
+
+    v = _runner()
+    rt, pace = SimpleNamespace(exchanges=_PerSymbol(empty_bars=True)), _pace(v)
+    assert asyncio.run(v.fetch_bars(rt, pace, tmp_path, cr.SPOT_VENUE, _SYMS[0], _SINCE, _UNTIL)) is None
+    assert list(tmp_path.iterdir()) == []
+    rt.exchanges.empty_bars = False  # the next run downloads again
+    assert asyncio.run(v.fetch_bars(rt, pace, tmp_path, cr.SPOT_VENUE, _SYMS[0], _SINCE, _UNTIL))
+    assert rt.exchanges.calls == [_SYMS[0]] * 2
+
+
+@pytest.mark.parametrize("kind", ["funding", "bars"])
+def test_runner_cut_short_cache_write_leaves_no_broken_file(tmp_path, monkeypatch, kind):
+    """Remark 4: a write cut short (disk full, killed) leaves no cache file, and the next run downloads cleanly."""
+    import asyncio
+    from pathlib import Path
+
+    v = _runner()
+    fetch = v.fetch_funding if kind == "funding" else v.fetch_bars
+    rt, pace = SimpleNamespace(exchanges=_PerSymbol()), _pace(v)
+    real = Path.write_text
+
+    def cut_short(self: Path, text: str, *a: Any, **k: Any) -> int:
+        real(self, text[: len(text) // 2], *a, **k)
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", cut_short)
+    with pytest.raises(OSError):
+        asyncio.run(fetch(rt, pace, tmp_path, cr.PERP_VENUE, _SYMS[1], _SINCE, _UNTIL))
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.undo()
+    got = asyncio.run(fetch(rt, pace, tmp_path, cr.PERP_VENUE, _SYMS[1], _SINCE, _UNTIL))
+    assert got and got == asyncio.run(fetch(rt, pace, tmp_path, cr.PERP_VENUE, _SYMS[1], _SINCE, _UNTIL))
+    assert len(rt.exchanges.calls) == 2 and [p.suffix for p in tmp_path.iterdir()] == [".json"]
+
+
+class _EmptySpot(_FakeExchanges):
+    """The synthetic source, but the spot venue answers one symbol with an empty list (like XMR/USDT)."""
+
+    def __init__(self, mk: dict[str, Any], empty: str) -> None:
+        super().__init__(mk, "A")
+        self.empty = empty
+
+    async def ohlcv(self, venue: str, sym: str, tf: str, limit: int, since: int, until: int) -> Fetched:
+        if venue == cr.SPOT_VENUE and sym.replace("/USDT", "/USDT:USDT") == self.empty:
+            self.calls += 1
+            return Fetched([], self._ev())
+        return await super().ohlcv(venue, sym, tf, limit, since, until)
+
+
+def test_runner_empty_spot_bars_of_a_candidate_are_lacking_not_cached(tmp_path, monkeypatch, synth_db):
+    """Remark 3 in the run: the symbol still ends in ``lacking`` (◯, no crash), and no ``[]`` file is left in the cache."""
+    import asyncio
+
+    v = _runner()
+    db, mk, last = synth_db["A"]
+    _, d = _first(v.load_journal(str(db), "A"), "open")
+    _patch(monkeypatch, _EmptySpot(mk, d["symbol"]))
+
+    async def no_wait(self: Any, venue: str, kind: str) -> None:
+        return None
+
+    monkeypatch.setattr(v.Pace, "wait", no_wait)
+    res = asyncio.run(v.run_a2(str(db), last, tmp_path, None))
+    assert res["verdict"]["A"] == "◯" and res["a2"]["A"]["summary"]["incomplete"]
+    assert d["symbol"] in res["a2"]["A"]["coverage"]["must"]["lacking"]
+    files = list(tmp_path.iterdir())
+    assert files and all(json.loads(p.read_text()) != [] for p in files)

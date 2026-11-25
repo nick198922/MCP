@@ -48,7 +48,56 @@ def test_write_tools_are_refused_before_any_connection(capsys):
 def test_unreachable_service_falls_back_to_local(capsys):
     code, out = __import__("asyncio").run(mc.run("odds_devig", {"odds": [2.0, 2.0]}, False, url="http://127.0.0.1:9/mcp"))
     assert code == 0 and json.loads(out)["ok"] is True
-    assert "in-process server" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "in-process server" in err and "ConnectError" in err
+
+
+def _service_without_fallback(monkeypatch):
+    """A connected 'service' (an in-process server passed as the URL); building a local server fails the test."""
+    from tradedesk.server import build_server
+
+    server, _ = build_server()
+
+    def no_fallback():
+        raise AssertionError("fell back to the in-process server after the service answered")
+
+    monkeypatch.setattr(mc, "build_server", no_fallback)
+    return server
+
+
+def test_tool_rejecting_arguments_prints_the_error_without_fallback(monkeypatch, capsys):
+    service = _service_without_fallback(monkeypatch)
+    code, out = __import__("asyncio").run(mc.run("perps_oi_history", {"period": "bogus"}, False, url=service))
+    assert code == 4 and "period" in out and "Input should be" in out
+    assert "in-process server" not in capsys.readouterr().err
+
+
+def test_tool_rejecting_arguments_local(capsys):
+    assert mc.main(["perps_oi_history", json.dumps({"period": "bogus"}), "--local"]) == 4
+    assert "Input should be" in capsys.readouterr().out
+
+
+def test_failure_after_connecting_is_reported_without_fallback(monkeypatch, capsys):
+    service = _service_without_fallback(monkeypatch)
+
+    async def broken(self, name, arguments=None, *a, **k):
+        raise RuntimeError("stream closed mid-call")
+
+    monkeypatch.setattr(mc.Client, "call_tool", broken)
+    code, out = __import__("asyncio").run(mc.run("odds_devig", {"odds": [2.0, 2.0]}, False, url=service))
+    assert code == 5 and "RuntimeError: stream closed mid-call" in out
+    assert "in-process server" not in capsys.readouterr().err
+
+
+def test_plain_text_answer_is_printed(monkeypatch, capsys):
+    import mcp_types
+
+    async def plain(self, name, arguments=None, *a, **k):
+        return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text="not json")])
+
+    monkeypatch.setattr(mc.Client, "call_tool", plain)
+    assert mc.main(["odds_devig", "{}", "--local"]) == 0
+    assert capsys.readouterr().out.strip() == "not json"
 
 
 def test_write_tools_exist_on_the_server():

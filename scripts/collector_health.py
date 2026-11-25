@@ -82,7 +82,8 @@ def collect(db: str, switches: dict[str, str], now: int, days: int = ch.WINDOW_D
     cannot be opened."""
     con = connect_ro(db)
     try:
-        return [series(con, spec, g, now, days) for spec in ch.enabled_specs(switches) for g in spec.groups]
+        specs = ch.enabled_specs(switches)
+        return [series(con, spec, g, now, days) for spec in specs for g in ch.spec_groups(spec, switches)]
     finally:
         con.close()
 

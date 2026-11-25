@@ -85,7 +85,7 @@ class BookWallsJob:
         bounded = venue != "bybit"  # Bybit keeps its own top 1000; the others are a snapshot plus diffs
         self.books = {s: Book(bounded=bounded, depth=None if bounded else BYBIT_BOOK_DEPTH) for s in self.symbols}
         self.seq = {s: DiffSequencer(spot=venue == "binance_spot") for s in self.symbols}
-        self.trackers = {s: WallTracker(VENUE_ID[venue], s, min_qty_for(s) or 0.0) for s in self.symbols}
+        self.trackers = {s: WallTracker(VENUE_ID[venue], s, min_qty_for(s, venue) or 0.0) for s in self.symbols}
         self.snapshot_ms: dict[str, int | None] = dict.fromkeys(self.symbols)
         self.retry_ms: dict[str, int] = dict.fromkeys(self.symbols, 0)
         self.last_u: dict[str, int | None] = dict.fromkeys(self.symbols)

@@ -109,6 +109,17 @@ def test_threshold_distance_classify_and_levels():
     assert bw.min_qty_for("BTCUSDT") == bw.MIN_QTY["BTC"] and bw.min_qty_for("SOLUSDT") is None
 
 
+def test_venue_minimums_override_the_common_one():
+    # calibration 2026-11-25: only Binance spot ETH has its own bar; Bybit and Coinbase stay on the common one on purpose
+    assert bw.MIN_QTY_VENUE == {"binance_spot": {"ETH": 375.0}}
+    assert bw.min_qty_for("ETHUSDT", "binance_spot") == 375.0 and bw.min_qty_for("BTCUSDT", "binance_spot") == 25.0
+    assert bw.min_qty_for("BTCUSDT", "bybit") == bw.min_qty_for("BTC-USD", "coinbase") == bw.MIN_QTY["BTC"]
+    assert bw.min_qty_for("ETHUSDT", "binance") == bw.MIN_QTY["ETH"] == bw.min_qty_for("ETHUSDT")
+    assert bw.min_qty_for("SOLUSDT", "binance_spot") is None  # no common minimum: still skipped
+    assert BookWallsJob("binance_spot", ["ETHUSDT"]).trackers["ETHUSDT"].min_qty == 375.0  # the job passes its venue
+    assert BookWallsJob("binance", ["ETHUSDT"]).trackers["ETHUSDT"].min_qty == bw.MIN_QTY["ETH"]
+
+
 def test_withdrawn_wall_far_from_the_mid():
     t, book = _tracker(), _book(extra_bids=[(99.05, 20.0)])
     ev, row = t.on_book(T0, book)

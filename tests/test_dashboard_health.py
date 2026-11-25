@@ -105,7 +105,8 @@ def test_real_features_env_never_raises_on_an_empty_db(tmp_path):
     bare = tmp_path / "bare.sqlite"
     sqlite3.connect(bare).close()
     h = db.load_collector_health(bare, NOW)  # deploy/features.env of the repo
-    expected = sum(len(s.groups) for s in ch.enabled_specs(db._health_module().load_switches()))
+    sw = db._health_module().load_switches()
+    expected = sum(len(ch.spec_groups(s, sw)) for s in ch.enabled_specs(sw))
     assert h["error"] is None and len(h["rows"]) == expected > 0
     assert all(r["status"] == "error" for r in h["rows"])
 

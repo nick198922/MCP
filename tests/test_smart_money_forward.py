@@ -547,9 +547,9 @@ def test_h3_evaluate_and_status_by_replication():  # B4, B3 (b), M1
     good = _rows(40, wallets, lambda i, w: 0.3 + 0.05 * ((i % 5) - 2))
     ev = smf.h3_evaluate(good, unresolved_share=0.0)
     assert ev["criterion_met"] is True and ev["level"] == pytest.approx(smf.DECISION_LEVEL)
-    assert smf.h3_status(ev["criterion_met"], ev["decidable"], None) == "candidate"  # one slice: never 'confirmed'
-    assert smf.h3_status(True, True, True) == "confirmed" and smf.h3_status(True, True, False) == "not_confirmed"
-    assert smf.h3_status(True, False, None) == "undecided"
+    assert smf.h3_status(ev["criterion_met"], ev["decidable"], None, look=1) == "candidate"  # one slice: never 'confirmed'
+    assert smf.h3_status(True, True, True, look=2) == "confirmed" and smf.h3_status(True, True, False, look=2) == "not_confirmed"
+    assert smf.h3_status(True, False, None, look=1) == "undecided"
     # fresh-entry guard: the edge comes only from positions that grew in price before they were seen
     grown = _rows(40, wallets, lambda i, w: -0.2 if i % 2 == 0 else 0.8, fresh=lambda i, w: i % 2 == 0)
     ev2 = smf.h3_evaluate(grown, unresolved_share=0.0)
@@ -578,7 +578,127 @@ def test_h3_sample_by_scheduled_end():  # B2
 def test_h2_decision_coded():  # M3
     ic = {"mean": 0.05, "se": 0.01}
     sp = {"mean": 0.005, "se": 0.001}
-    assert smf.h2_decision(ic, sp, gate=False)["verdict"] == "inconclusive"
-    assert smf.h2_decision(ic, sp, gate=True)["verdict"] == "confirmed"  # 0.05 - 2.64 * 0.01 > 0
-    assert smf.h2_decision({"mean": 0.05, "se": 0.02}, sp, gate=True)["verdict"] == "rejected"  # spread < 1 p.p.
-    assert smf.h2_decision({"mean": 0.05, "se": 0.02}, {"mean": 0.02, "se": 0.005}, gate=True)["verdict"] == "confirmed"
+    kw = {"look": 1, "earlier_decided": False}
+    assert smf.h2_decision(ic, sp, gate=False, **kw)["verdict"] == "inconclusive"
+    assert smf.h2_decision(ic, sp, gate=True, **kw)["verdict"] == "confirmed"  # 0.05 - 2.64 * 0.01 > 0
+    assert smf.h2_decision({"mean": 0.05, "se": 0.02}, sp, gate=True, **kw)["verdict"] == "rejected"  # spread < 1 p.p.
+    assert smf.h2_decision({"mean": 0.05, "se": 0.02}, {"mean": 0.02, "se": 0.005}, gate=True, **kw)["verdict"] == "confirmed"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Review round 2, R1 (2026-11-26, before any outcome): decisions only on the named decisive looks, priors only from the
+# previous one. Each fails on the round-2 code (no DECISIVE_AS_OF / check_prior / look argument).
+
+LOOK = {k + 1: s for k, s in enumerate(smf.DECISIVE_AS_OF)}
+
+
+def test_decisive_looks_constant():
+    assert LOOK == {1: _ts(2026, 11, 25), 2: _ts(2026, 12, 16), 3: _ts(2027, 1, 15)} and smf.DECISIVE_LOOKS == 3
+    assert smf.decisive_look(_ts(2026, 12, 16)) == 2 and smf.decisive_look(_ts(2026, 12, 10)) is None
+    assert smf.decisive_look(_ts(2026, 11, 25, 0, 1)) is None and smf.decisive_look(None) is None
+
+
+def test_h3_status_and_h2_decision_off_decisive_looks():
+    assert smf.h3_status(True, True, None, look=None) == "descriptive"  # e.g. as-of 2026-12-10
+    assert smf.h3_status(True, True, True, look=None) == "descriptive"
+    assert smf.h3_status(True, True, None, look=2) == "descriptive"  # look 2 without the look-1 prior: overlapping sample
+    with pytest.raises(ValueError):
+        smf.h3_status(True, True, True, look=1)
+    ic, sp = {"mean": 0.05, "se": 0.01}, {"mean": 0.005, "se": 0.001}
+    assert smf.h2_decision(ic, sp, gate=True, look=None, earlier_decided=False)["verdict"] == "descriptive"
+    assert smf.h2_decision(ic, sp, gate=True, look=2, earlier_decided=None)["verdict"] == "descriptive"  # unknown history
+    assert smf.h2_decision(ic, sp, gate=True, look=2, earlier_decided=True)["verdict"] == "descriptive"  # decided at look 1
+    assert smf.h2_decision(ic, sp, gate=True, look=2, earlier_decided=False)["verdict"] == "confirmed"
+
+
+def _prior(as_of_s, *, status="candidate", stopped=False, prior_as_of_s=None, fp=None) -> dict:
+    return {"as_of_s": as_of_s, "prior_as_of_s": prior_as_of_s, "stopped": stopped, "status": {"overall": status, "crypto": status},
+            "registration": smf.registration_fingerprint() if fp is None else fp, "overall": True, "crypto": True}  # fmt: skip
+
+
+def test_check_prior_rules():
+    fp = smf.registration_fingerprint()
+    assert smf.check_prior(None, _ts(2026, 12, 10), fp) is None  # no prior: the status rule handles it
+    assert smf.check_prior(_prior(LOOK[1]), LOOK[2], fp) is None  # the valid pair (1 -> 2)
+    assert smf.check_prior(_prior(_ts(2026, 11, 15)), LOOK[1], fp) is not None  # a non-decisive early look
+    assert smf.check_prior(_prior(LOOK[1]), _ts(2026, 12, 10), fp) is not None  # current as-of not decisive
+    assert smf.check_prior(_prior(LOOK[1]), LOOK[3], fp) is not None  # not neighbours (1 -> 3)
+    assert smf.check_prior(_prior(LOOK[1]), LOOK[1], fp) is not None  # the same look
+    assert smf.check_prior(_prior(LOOK[1], stopped=True), LOOK[2], fp) is not None  # stopped by the Gamma check
+    assert smf.check_prior(_prior(LOOK[1], status="descriptive"), LOOK[2], fp) is not None
+    assert smf.check_prior(_prior(LOOK[1], status=None), LOOK[2], fp) is not None
+    other = smf.registration_fingerprint({"h3": [0.0]})
+    assert smf.check_prior(_prior(LOOK[1], fp=other), LOOK[2], fp) is not None  # different registered parameters
+    assert smf.check_prior(_prior(LOOK[2]), LOOK[3], fp) is not None  # look-2 prior run without its own prior
+    assert smf.check_prior(_prior(LOOK[2], prior_as_of_s=LOOK[1], status="not_confirmed"), LOOK[3], fp) is None
+
+
+def test_early_close_m7():
+    end = _ts(2026, 11, 15)
+    assert smf.early_close(end, end - 86400 - 1) and not smf.early_close(end, end - 86400) and not smf.early_close(end, None)
+    assert not smf.early_close(None, end)
+
+
+def _h3_at(runner, tmp_path: Path, markets: list, events: list, as_of_s: int, prior=None) -> dict:
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    (tmp_path / "gamma").mkdir(exist_ok=True)
+    (tmp_path / "gamma" / "batch_00000.json").write_text(json.dumps({"tokens": [], "markets": markets}))
+    return runner.h3_block(SimpleNamespace(pm_events=events, as_of_s=as_of_s), tmp_path, prior)
+
+
+def _replication_case():
+    """40 markets ending 2026-12-01 (inside the (1 -> 2) window), 10 wallets, all won: the criterion holds."""
+    mk = [_gm(f"t{i}", "2026-12-01T00:00:00Z", "2026-12-02T00:00:00Z") for i in range(40)]
+    ev = [
+        _ev(_ts(2026, 11, 20), f"w{k}", f"t{i}", p=(0.3, 0.4, 0.5)[(i + k) % 3], entry=(0.3, 0.4, 0.5)[(i + k) % 3])
+        for i in range(40)
+        for k in range(10)
+    ]
+    return mk, ev
+
+
+def test_runner_r1_priors_and_looks(tmp_path):
+    runner = _load_runner()
+    mk, ev = _replication_case()
+    good = {**_prior(LOOK[1]), "registration": runner.registration(), "h2_decided_at_s": None}
+    res = _h3_at(runner, tmp_path, mk, ev, LOOK[2], good)
+    assert res["overall"]["criterion_met"] is True and res["overall"]["status"] == "confirmed"  # the valid pair still works
+    assert _h3_at(runner, tmp_path, mk, ev, _ts(2026, 12, 10))["overall"]["status"] == "descriptive"  # not decisive
+    assert _h3_at(runner, tmp_path, mk, ev, LOOK[2])["overall"]["status"] == "descriptive"  # look 2 without a prior
+    for bad, as_of in (
+        ({**good, "as_of_s": _ts(2026, 11, 15)}, LOOK[1]),  # the review's scenario: never 'confirmed' on slice 1
+        ({**good, "as_of_s": _ts(2026, 11, 15)}, LOOK[2]),
+        (good, LOOK[3]),  # non-neighbouring pair 11-25 -> 01-15
+        ({**good, "stopped": True}, LOOK[2]),
+        (good, _ts(2026, 12, 10)),
+    ):
+        with pytest.raises(ValueError, match="refused"):
+            _h3_at(runner, tmp_path, mk, ev, as_of, bad)
+    stopped_body = {"as_of_s": LOOK[1], "registration": runner.registration(), "h3": {"data_quality": {}, "stopped": True}}
+    assert runner.prior_from_body(stopped_body)["stopped"] is True
+    with pytest.raises(ValueError, match="stopped"):
+        runner.accepted_prior(runner.prior_from_body(stopped_body), LOOK[2])
+
+
+def test_runner_m7_early_close_row_is_descriptive(tmp_path):
+    runner = _load_runner()
+    mk = [_gm("a", "2026-11-15T00:00:00Z", "2026-11-05T00:00:00Z"), _gm("b", "2026-11-10T00:00:00Z", "2026-11-10T02:00:00Z")]
+    ev = [_ev(_ts(2026, 11, 1), "w", "a"), _ev(_ts(2026, 11, 1), "v", "b")]
+    res = _h3_at(runner, tmp_path, mk, ev, LOOK[1])
+    assert res["overall_early_close"] == {"markets": 1, "of": 2} and res["overall"]["main"]["n"] == 2  # counted, not dropped
+
+
+def test_runner_full_json_round_trips_as_a_prior(tmp_path):
+    runner = _load_runner()
+    db = tmp_path / "store.sqlite"
+    _stub_store(db)
+    cache = tmp_path / "cache"
+    _stub_cache(cache)
+    prep = runner.Prep(runner.cmn.connect_ro(db), datetime(2026, 11, 25, tzinfo=UTC), tmp_path / "no_stage0")
+    res = json.loads(json.dumps(runner.full(prep, cache, seed=1, no_fetch=True), default=str))
+    assert res["look"] == 1 and res["prior_as_of_s"] is None and res["h1"]["decision"] == "not_coded"
+    prior = runner.prior_from_body(res)
+    assert runner.accepted_prior(prior, LOOK[2]) is prior and prior["h2_decided_at_s"] in (None, LOOK[1])
+    with pytest.raises(ValueError, match="refused"):
+        runner.full(prep, cache, seed=1, no_fetch=True, prior={**prior, "as_of_s": _ts(2026, 11, 15)})

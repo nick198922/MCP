@@ -637,7 +637,9 @@ def perm_p(sig: list[float], out: list[float], seed: int, n: int = N_PERM) -> fl
     return (hits + 1) / (n + 1)
 
 
-def h1_block(prep: Prep, cache: Path, name: str, periods: list[tuple[date, date]], field: str, seed: int) -> dict[str, Any]:
+def h1_block(
+    prep: Prep, cache: Path, name: str, periods: list[tuple[date, date]], field: str, seed: int, look: int | None = None
+) -> dict[str, Any]:
     emit(
         f"### {name}: {'30' if name == 'H1' else '7'}-денні неперекривні періоди (сигнал {field} на d, наслідок {field} на кінці / account_value(d))"
     )
@@ -710,11 +712,21 @@ def h1_block(prep: Prep, cache: Path, name: str, periods: list[tuple[date, date]
             f"sd між періодами {f4(s['sd'], met == 'd')}, sd для воріт {f4(sd, met == 'd')}, MDE {f4(mde_v, met == 'd')} → ворота "
             f"({f4(GATES[f'{key}_{met}'], met == 'd')}) {'пройдено' if gate else 'НЕ пройдено'}"
         )
+    # R1: no H1 / H1w verdict is coded; the gate lines above are read for a decision only on a decisive look
+    res["decision"] = "descriptive" if look is None else "not_coded"
+    emit(
+        f"- рішення {name}: "
+        + (
+            "`descriptive` (as-of не вирішальний; рядки вище — лише опис)"
+            if look is None
+            else "у коді не ухвалюється (правило реєстрації 17.10 застосовується у звіті)"
+        )
+    )
     emit("")
     return res
 
 
-def h2_block(prep: Prep, cache: Path) -> dict[str, Any]:
+def h2_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     emit("### H2: потік сильних акаунтів за 24 год → дохідність монети мінус BTC (закриття d → закриття d + h)")
     closes = {
         c: daily_closes(load_cached(cache, "candles", c), prep.as_of_s)
@@ -748,11 +760,17 @@ def h2_block(prep: Prep, cache: Path) -> dict[str, Any]:
         )
     # M3: the registered H2 rule, coded (h = 7 only; CI bounds at the corrected level, 2 routes x 3 looks)
     r7 = res["h7"]
-    dec = smf.h2_decision(r7["ic"], r7["spread_net"], r7["gate"])
+    # R1: decided once, on the first decisive look with the gate passed; other looks and as-ofs are descriptive
+    look = smf.decisive_look(prep.as_of_s)
+    before = None if prior is None else prior.get("h2_decided_at_s")
+    earlier = False if look == 1 else (None if prior is None else before is not None)
+    dec = smf.h2_decision(r7["ic"], r7["spread_net"], r7["gate"], look=look, earlier_decided=earlier)
+    dec["decided_at_s"] = prep.as_of_s if dec["verdict"] in ("confirmed", "rejected") else before
     res["decision"] = dec
     emit(
         f"- рішення H2 (h = 7, зареєстроване правило, CI {dec['level'] * 100:.2f} %): {dec['verdict']}; нижня межа IC {f4(dec['ic_lo'])}, "
         f"спреду після витрат {f4(dec['spread_lo'], True)}; `rejected` діє лише для прочитання «вхід від денного закриття d»"
+        + ("" if before is None else f"; рішення вже ухвалено на зрізі {datetime.fromtimestamp(before, UTC):%Y-%m-%d}")
     )
     # M4 sensitivity (descriptive, no effect on the verdict): entry at d 01:00 (1h candle), exit d + h 01:00, strong
     # set from snapshot rows written before the day's run
@@ -790,6 +808,8 @@ def h3_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> di
     decisive slice ({"as_of_s", "overall", "crypto"} = criterion met there): then the main sample is the replication
     window (endDate after the previous slice's as-of − 7 days)."""
     emit("### H3: нові позиції топ-гаманців Polymarket (edge = outcome − p_obs − 0.01)")
+    prior = accepted_prior(prior, prep.as_of_s)  # R1: before any market is read
+    look = smf.decisive_look(prep.as_of_s)
     gm = gamma_map(cache)
     cand = [e for e in prep.pm_events if e["in_range"]]
     # m3: market data quality, before any outcome is read
@@ -828,8 +848,8 @@ def h3_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> di
         if mk is None:
             samples["no_market"] += 1
             continue
-        close = smf.gamma_close_ts(mk)
-        s = smf.h3_sample(e["ts"], smf.gamma_end_ts(mk), close, prep.as_of_s, end_after)
+        close, end = smf.gamma_close_ts(mk), smf.gamma_end_ts(mk)
+        s = smf.h3_sample(e["ts"], end, close, prep.as_of_s, end_after)
         samples[f"{'first' if e['first_pair'] else 'repeat'}:{s}"] += 1
         if s in ("no_end_date", "seen_at_or_after_end", "closed_before_observation", "earlier_slice"):
             continue
@@ -841,6 +861,7 @@ def h3_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> di
                 "y": y,
                 "why": why,
                 "close": close,
+                "end": end,
                 "cluster": str(mk.get("conditionId") or e["title"] or e["market"]),
                 "edge": None if y is None else smf.h3_edge(y, e["p_obs"]),
             }
@@ -871,10 +892,16 @@ def h3_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> di
             f"ринків {len(mk_unres)} → частка {'—' if share is None else f'{share:.4f}'} (без рішення > {smf.H3_UNRESOLVED_MAX}); "
             "причини: " + ", ".join(f"{k} {v}" for k, v in sorted(Counter(r["why"] for r in unres).items()))
         )
+        # m7 (descriptive, enters no decision): main-sample markets that closed > 1 day before their current endDate
+        early = {r["cluster"] for r in main_all if smf.early_close(r["end"], r["close"])}
+        res[f"{rk}_early_close"] = {"markets": len(early), "of": len(mk_all)}
+        emit(
+            f"- {label}: ринків основної вибірки з closedTime < endDate − 1 доба (дострокові закриття, m7, описово): {len(early)} з {len(mk_all)}"
+        )
         main = [r for r in main_all if r["y"] is not None]
         ev = smf.h3_evaluate(main, unresolved_share=share, level=level)
         prior_met = None if prior is None else bool(prior.get(rk))
-        status = smf.h3_status(ev["criterion_met"], ev["decidable"], prior_met)
+        status = smf.h3_status(ev["criterion_met"], ev["decidable"], prior_met, look=look)
         res[rk] = {**ev, "status": status}
         m = ev["main"]
         emit(
@@ -888,10 +915,18 @@ def h3_block(prep: Prep, cache: Path, prior: dict[str, Any] | None = None) -> di
         emit(
             f"  - частка найбільшого гаманця {f4(ev['max_wallet_share'])} (< 0.25: {'так' if ev['concentration_ok'] else 'ні'}); "
             f"критерій виконано: {'так' if ev['criterion_met'] else 'ні'} → статус **{status}**"
-            + ("" if prior is not None else " (один зріз: максимум `candidate`, `confirmed` лише реплікацією)")
+            + (
+                " (as-of не вирішальний: лише опис)"
+                if look is None
+                else ""
+                if prior is not None
+                else " (один зріз: максимум `candidate`, `confirmed` лише реплікацією)"
+            )
         )
+        if status == "descriptive":  # R1: no interpretation off a decisive look
+            res[rk]["excluded"] = False
         emit(
-            f"  - верхня межа CI < +0.03: {'так' if ev['excluded'] else 'ні'} (інтерпретація «зареєстрований ефект виключено на цьому вікні», не `rejected`; статус картки не змінюється)"
+            f"  - верхня межа CI < +0.03: {'так' if res[rk]['excluded'] else 'ні'} (інтерпретація «зареєстрований ефект виключено на цьому вікні», не `rejected`; статус картки не змінюється)"
         )
         res[f"{rk}_main_95"] = summary(f"{label}, основна, CI 95 % (описово)", main)
         res[f"{rk}_repeats"] = summary(
@@ -974,20 +1009,48 @@ def fetch_plan(prep: Prep) -> dict[str, list[str]]:
     return {"portfolio": sorted(missing), "candles": coins, "candles1h": coins, "gamma": tokens}
 
 
-def load_prior(path: str | None) -> dict[str, Any] | None:
-    """The previous decisive slice's full-stage JSON -> {"as_of_s", "overall", "crypto"} (criterion met there)."""
-    if not path:
-        return None
-    body = cmn.read_json(Path(path).expanduser())
+def registration() -> dict[str, Any]:
+    """R1: the registered parameters of this runner and the analytics module; a prior must carry the same."""
+    return smf.registration_fingerprint(
+        {"runner": {"start": START.isoformat(), "h2_first": H2_FIRST.isoformat(), "h2_horizons": list(H2_HORIZONS), "top_n": TOP_N,
+                    "run_lag_s": RUN_LAG_S, "pm_v2_first_run": PM_V2_FIRST_RUN, "retro_sd": RETRO_SD, "gates": GATES}}
+    )  # fmt: skip
+
+
+def prior_from_body(body: dict[str, Any]) -> dict[str, Any]:
+    """The previous decisive slice's full-stage JSON -> the fields :func:`smf.check_prior` needs, plus the criterion
+    per ranking (met there) and the look at which H2 was decided (None = not yet)."""
     h3 = body.get("h3") or {}
+    as_of = body.get("as_of_s")
     return {
-        "as_of_s": int(body["as_of_s"]),
+        "as_of_s": None if as_of is None else int(as_of),
+        "prior_as_of_s": body.get("prior_as_of_s"),
+        "stopped": bool(h3.get("stopped")) or not h3,
+        "registration": body.get("registration"),
+        "status": {rk: (h3.get(rk) or {}).get("status") for rk in ("overall", "crypto")},
         "overall": bool((h3.get("overall") or {}).get("criterion_met")),
         "crypto": bool((h3.get("crypto") or {}).get("criterion_met")),
+        "h2_decided_at_s": ((body.get("h2") or {}).get("decision") or {}).get("decided_at_s"),
     }
 
 
+def load_prior(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    return prior_from_body(cmn.read_json(Path(path).expanduser()))
+
+
+def accepted_prior(prior: dict[str, Any] | None, as_of_s: int) -> dict[str, Any] | None:
+    """R1: refuse (ValueError) a prior that :func:`smf.check_prior` does not accept."""
+    why = smf.check_prior(prior, as_of_s, registration())
+    if why is not None:
+        raise ValueError(f"--h3-prior-json refused: {why}")
+    return prior
+
+
 def full(prep: Prep, cache: Path, seed: int, no_fetch: bool, prior: dict[str, Any] | None = None) -> dict[str, Any]:
+    prior = accepted_prior(prior, prep.as_of_s)
+    look = smf.decisive_look(prep.as_of_s)
     plan = fetch_plan(prep)
     emit(
         f"план запитів: portfolio {len(plan['portfolio'])}, candles {len(plan['candles'])}, candles1h {len(plan['candles1h'])}, gamma {len(plan['gamma'])}"
@@ -995,14 +1058,30 @@ def full(prep: Prep, cache: Path, seed: int, no_fetch: bool, prior: dict[str, An
     if not no_fetch:
         asyncio.run(fetch(prep, cache, plan))
     emit("")
-    emit(f"## Зріз 1: метрики на {datetime.fromtimestamp(prep.as_of_s, UTC):%Y-%m-%d %H:%M} UTC")
+    emit(f"## Зріз: метрики на {datetime.fromtimestamp(prep.as_of_s, UTC):%Y-%m-%d %H:%M} UTC")
+    emit(look_line(look, prior))
+    emit("")
     return {
         "as_of_s": prep.as_of_s,
-        "h1": h1_block(prep, cache, "H1", prep.h1, "pnl_month", seed),
-        "h1w": h1_block(prep, cache, "H1w", prep.h1w, "pnl_week", seed + 1000),
-        "h2": h2_block(prep, cache),
+        "look": look,
+        "prior_as_of_s": None if prior is None else prior["as_of_s"],
+        "registration": registration(),
+        "h1": h1_block(prep, cache, "H1", prep.h1, "pnl_month", seed, look),
+        "h1w": h1_block(prep, cache, "H1w", prep.h1w, "pnl_week", seed + 1000, look),
+        "h2": h2_block(prep, cache, prior),
         "h3": h3_block(prep, cache, prior),
     }
+
+
+def look_line(look: int | None, prior: dict[str, Any] | None) -> str:
+    if look is None:
+        return (
+            "- **as-of не є вирішальним поглядом** (лише 2026-11-25, 2026-12-16, 2027-01-15 00:00 UTC): усі рядки описові, "
+            "статуси H3 і рішення H2 — `descriptive`"
+        )
+    p = "без попереднього зрізу" if prior is None else f"попередній зріз {datetime.fromtimestamp(prior['as_of_s'], UTC):%Y-%m-%d}"
+    tail = "" if look == 1 or prior is not None else "; без `--h3-prior-json` зрізу k − 1 статуси H3 і рішення H2 — `descriptive`"
+    return f"- вирішальний погляд {look} з {smf.DECISIVE_LOOKS} ({p}){tail}"
 
 
 def main() -> None:
@@ -1018,19 +1097,24 @@ def main() -> None:
     ap.add_argument(
         "--h3-prior-json",
         default=None,
-        help="full-stage JSON of the previous decisive slice: H3 replication window and status (slice 1: none)",
+        help="full-stage JSON of the previous decisive slice (required at looks 2 and 3, refused otherwise): H3 "
+        "replication window and status, whether H2 was already decided (slice 1: none)",
     )
     a = ap.parse_args()
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     out = Path(a.out).expanduser() if a.out else cache / f"{a.stage}.md"
     as_of = datetime.fromisoformat(a.as_of.replace("Z", "+00:00")).astimezone(UTC)
+    try:  # R1: refuse a wrong prior before any data is read
+        prior = accepted_prior(load_prior(a.h3_prior_json), int(as_of.timestamp()))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     with open(out, "w") as fh:
         OUT["fh"] = fh
         emit(f"# smart-money slice 1, stage {a.stage}, as-of {as_of.isoformat()}, seed {a.seed}")
         conn = open_store(a.db, cache)
         prep = Prep(conn, as_of, Path(a.stage0_cache).expanduser())
-        res = coverage(prep) if a.stage == "coverage" else full(prep, cache, a.seed, a.no_fetch, load_prior(a.h3_prior_json))
+        res = coverage(prep) if a.stage == "coverage" else full(prep, cache, a.seed, a.no_fetch, prior)
         emit(f"peak RSS {cmn.rss_mb():.0f} MB")
     cmn.write_json(out.with_suffix(".json"), json.loads(json.dumps(res, default=str)))
     print(f"wrote {out}")

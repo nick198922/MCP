@@ -8,6 +8,7 @@ unix seconds for collector timestamps, ``date`` for UTC days. Time (the as-of cu
 from __future__ import annotations
 
 import bisect
+import json
 import math
 import statistics
 from collections import Counter
@@ -37,6 +38,11 @@ H3_TOP_WALLETS_DROP = 5  # concentration guard: the result must hold without the
 H3_MAX_WALLET_SHARE = 0.25  # concentration guard: no wallet with >= 25 % of the main-sample positions
 DECISIVE_LOOKS = 3  # named decisive looks: slices 1-3 (as-of 2026-11-25, 2026-12-16, 2027-01-15)
 DECISION_LEVEL = 1.0 - 0.05 / (2 * DECISIVE_LOOKS)  # two-sided CI level: 2 rankings (H3) / 2 routes (H2) x 3 looks
+# Review round 2 (R1, 2026-11-26, before any outcome was seen): the named decisive looks as unix s at 00:00 UTC.
+# Any other as-of is descriptive only (no H3 'candidate' / 'confirmed', no H2 decision); replication pairs are
+# neighbours in this tuple: (1 -> 2), (2 -> 3).
+DECISIVE_AS_OF = tuple((date(y, m, d) - date(1970, 1, 1)).days * 86400 for y, m, d in ((2026, 11, 25), (2026, 12, 16), (2027, 1, 15)))
+EARLY_CLOSE_S = 86400  # m7 (descriptive): closedTime < endDate - 1 day
 Z95 = 1.96
 Z80 = 2.8
 
@@ -389,10 +395,23 @@ def nw_summary(values: Sequence[float], lag: int) -> dict[str, Any]:
     return {"n": n, "mean": m, "se": se, "lo": m - Z95 * se, "hi": m + Z95 * se, "mde": Z80 * se}
 
 
-def h2_decision(ic: Mapping[str, Any], spread_net: Mapping[str, Any], gate: bool, level: float = DECISION_LEVEL) -> dict[str, Any]:
+def h2_decision(
+    ic: Mapping[str, Any],
+    spread_net: Mapping[str, Any],
+    gate: bool,
+    level: float = DECISION_LEVEL,
+    *,
+    look: int | None,
+    earlier_decided: bool | None,
+) -> dict[str, Any]:
     """Registered H2 rule for the primary h = 7 (summaries from :func:`nw_summary`): no gate -> 'inconclusive';
     gate passed -> 'confirmed' if mean IC >= 0.03 with the lower CI bound > 0, or the net spread >= 0.01 with the
-    lower bound > 0; else 'rejected'. CI bounds at the multiplicity-corrected two-sided ``level`` (2 routes x 3 looks)."""
+    lower bound > 0; else 'rejected'. CI bounds at the multiplicity-corrected two-sided ``level`` (2 routes x 3 looks).
+
+    R1 (decisive looks only): ``look`` from :func:`decisive_look`; ``earlier_decided`` — whether an earlier decisive
+    look already gave 'confirmed' / 'rejected' (None = unknown: no accepted prior). The decision is taken on the first
+    decisive look with the gate passed, so 'descriptive' when the as-of is not decisive, when an earlier look decided,
+    or when a look >= 2 has no accepted prior (unknown history)."""
     z = z_two_sided(level)
 
     def lo(s: Mapping[str, Any]) -> float | None:
@@ -402,7 +421,59 @@ def h2_decision(ic: Mapping[str, Any], spread_net: Mapping[str, Any], gate: bool
     ic_ok = ic.get("mean") is not None and ic_lo is not None and ic["mean"] >= H2_IC_MIN and ic_lo > 0
     sp_ok = spread_net.get("mean") is not None and sp_lo is not None and spread_net["mean"] >= H2_SPREAD_MIN and sp_lo > 0
     verdict = "inconclusive" if not gate else ("confirmed" if ic_ok or sp_ok else "rejected")
+    if look is None or earlier_decided is True or (look >= 2 and earlier_decided is None):
+        verdict = "descriptive"
     return {"verdict": verdict, "level": level, "ic_lo": ic_lo, "spread_lo": sp_lo, "ic_ok": ic_ok, "spread_ok": sp_ok}
+
+
+def decisive_look(as_of_s: int | None) -> int | None:
+    """1-based index of a named decisive look (:data:`DECISIVE_AS_OF`, exact 00:00 UTC), else None."""
+    return DECISIVE_AS_OF.index(as_of_s) + 1 if as_of_s in DECISIVE_AS_OF else None
+
+
+def registration_fingerprint(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The registered parameters a decision depends on (rounded, JSON-stable); a prior must carry the same."""
+    own = {
+        "decisive_as_of": list(DECISIVE_AS_OF),
+        "decision_level": round(DECISION_LEVEL, 10),
+        "h2": [H2_MIN_COINS, H2_COST_PER_LEG, H2_IC_MIN, H2_SPREAD_MIN],
+        "h3": [H3_FEE, H3_P_MIN, H3_P_MAX, H3_EDGE_MIN, H3_MIN_MARKETS, H3_FRESH_TOL, H3_UMA_GRACE_S, H3_UNRESOLVED_MAX,
+               H3_GAMMA_MISSING_MAX, H3_TOP_WALLETS_DROP, H3_MAX_WALLET_SHARE],
+        "h1": [MIN_VALUE, TOP_FRAC, TOP_DROP_FRAC],
+    }  # fmt: skip
+    out = {**own, **(dict(extra) if extra else {})}
+    return json.loads(json.dumps(out, sort_keys=True))
+
+
+def check_prior(prior: Mapping[str, Any] | None, as_of_s: int, fingerprint: Mapping[str, Any]) -> str | None:
+    """R1: reason to refuse a prior slice (None = accepted or no prior). ``prior`` from the previous slice's full JSON:
+    {"as_of_s", "prior_as_of_s", "stopped", "registration", "status": {ranking: status}}. Accepted only when the current
+    as-of is decisive look k >= 2, the prior's as-of is look k - 1, the prior's H3 was not stopped by the Gamma check,
+    neither ranking's prior status is 'descriptive' or missing, the registered parameters are the same, and a prior
+    that is itself look >= 2 was run with an accepted prior of its own look - 1 (its window is a replication window)."""
+    if prior is None:
+        return None
+    look = decisive_look(as_of_s)
+    if look is None:
+        return "the current as-of is not a decisive look"
+    p_look = decisive_look(prior.get("as_of_s"))
+    if p_look is None or p_look != look - 1:
+        return "the prior's as-of is not the previous decisive look"
+    if prior.get("stopped"):
+        return "the prior's H3 was stopped by the Gamma data check"
+    st = prior.get("status") or {}
+    if any(st.get(rk) in (None, "descriptive") for rk in ("overall", "crypto")):
+        return "the prior has a descriptive or missing H3 status"
+    if prior.get("registration") != fingerprint:
+        return "the prior was run with different registered parameters"
+    if p_look >= 2 and decisive_look(prior.get("prior_as_of_s")) != p_look - 1:
+        return "the prior (look >= 2) was not run with the prior of its own previous look"
+    return None
+
+
+def early_close(end_ts: int | None, close_ts: int | None) -> bool:
+    """m7 (descriptive only): the market closed more than a day before its *current* scheduled ``endDate``."""
+    return end_ts is not None and close_ts is not None and close_ts < end_ts - EARLY_CLOSE_S
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -580,10 +651,18 @@ def h3_evaluate(
     }
 
 
-def h3_status(criterion_met: bool, decidable: bool, prior_met: bool | None) -> str:
+def h3_status(criterion_met: bool, decidable: bool, prior_met: bool | None, *, look: int | None) -> str:
     """Pre-stated rule for repeated looks (slice-1 fix round): 'confirmed' only by replication — the criterion met at
     decisive slice k (``prior_met``) and again on the positions new to slice k + 1; a single slice gives at most
-    'candidate'. 'undecided' when the slice is not decidable (> 5 % unresolved)."""
+    'candidate'. 'undecided' when the slice is not decidable (> 5 % unresolved).
+
+    R1: ``look`` from :func:`decisive_look` ('descriptive' when None); look 1 takes no prior; a look >= 2 without an
+    accepted prior of look k - 1 is 'descriptive' (its main sample overlaps the earlier look's); ``prior_met`` must
+    come from a prior accepted by :func:`check_prior`."""
+    if look is None or (look >= 2 and prior_met is None):
+        return "descriptive"
+    if look == 1 and prior_met is not None:
+        raise ValueError("decisive look 1 takes no prior")
     if not decidable:
         return "undecided"
     if prior_met is None:

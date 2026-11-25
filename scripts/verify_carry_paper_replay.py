@@ -10,6 +10,16 @@ Stages (``--stage``):
           network only through the runtime providers, cached per file under --cache-dir, paced for Binance, waits
           while the engine runs, stops on a second rate-limit answer).
 
+Frozen after the interim run (registration, review R2): ``_a2_book`` except its download calls, ``_coverage``,
+``listed_now``, ``MIN_COVERAGE``, the universe / ``must`` / ``need`` rules, ``spot_map``, ``run_a2``'s verdict (incl. the
+forced ◯ of a timing sample), the guard window, and inside ``fetch_funding`` the rule "an incomplete download is a
+failed one" (``complete is False`` or ``dropped_rows > 0`` -> ``None``, not cached, the symbol is not checked). May
+change for download reliability only: ``Pace``, ``fetch_funding`` (except that rule), ``fetch_bars``, ``PACE_S``,
+``QUIET_MIN``, ``RATE_LIMIT_PAUSE_S``, ``MAX_CYCLE_WAIT_S``. ``code_sha256`` hashes both files of the check and the
+backtest reference code (analytics/carry.py, analytics/carry_rules.py, collector/market_data.py, review R3): a change
+of any of the five after the registration commit -> the report shows both versions, the registration commit's one is
+the main; engine fixes only in ``collector/carry_paper_*``.
+
 The DB is opened READ-ONLY (``mode=ro``): the live collector DB or a copy. Output: a compact table on stdout, the full
 result (every mismatch / divergence) as JSON in --out.
   uv run python scripts/verify_carry_paper_replay.py --stage counts
@@ -123,9 +133,36 @@ def _params(strategy: str) -> Any:
     return PARAMS[strategy]
 
 
-def code_sha256() -> str:
-    """Hash of carry_replay.py: the final report shows it equals the registration commit's version (or says why not)."""
-    return hashlib.sha256(Path(cr.__file__).read_bytes()).hexdigest()[:16]
+CODE_FILES = ("carry_replay.py", "verify_carry_paper_replay.py", "carry.py", "carry_rules.py", "market_data.py")
+
+
+def code_sha256() -> dict[str, str]:
+    """Hashes of both files of the check (carry_replay.py and this runner, whose universe / coverage rules are frozen
+    too) AND of the backtest reference code they call (review R3): analytics/carry.py (``_Leg``, ``_Market``,
+    observers, steps), analytics/carry_rules.py (rules) and collector/market_data.py (``funding_entries``, ``bars_4h``
+    parsing). The final report compares them with the registration commit's versions (or shows both results). Paths
+    are taken next to carry_replay.py, so nothing is imported for this."""
+    pkg = Path(cr.__file__).resolve().parent  # src/tradedesk/analytics
+    files = {
+        "carry_replay.py": pkg / "carry_replay.py",
+        "verify_carry_paper_replay.py": Path(__file__),
+        "carry.py": pkg / "carry.py",
+        "carry_rules.py": pkg / "carry_rules.py",
+        "market_data.py": pkg.parent / "collector" / "market_data.py",
+    }
+    return {k: hashlib.sha256(files[k].read_bytes()).hexdigest()[:16] for k in CODE_FILES}
+
+
+def _sha_line(h: dict[str, str]) -> str:
+    return "sha256 " + ", ".join(f"{k} {v}" for k, v in h.items())
+
+
+def _venue_shares(ig: dict[str, Any]) -> str:
+    """Per-venue funding guard (registered: trips if ANY venue's share of differing legs exceeds the limit)."""
+    return "by venue " + ", ".join(
+        f"{v} {c['legs_with_difference']}/{c['compared']} = {c['share']} (not compared {c['not_compared']}) -> {c['state']}"
+        for v, c in ig.get("by_venue", {}).items()
+    )
 
 
 # ---------- counts ----------
@@ -380,6 +417,10 @@ async def fetch_funding(rt: Any, pace: Pace, cache: Path, venue: str, sym: str, 
             print(f"  funding {venue} {sym}: truncated (a later page failed), not cached", flush=True)
             await pace.rate_limited(venue, "truncated read: a later page failed")
             continue
+        if data.get("complete") is False or int(data.get("dropped_rows") or 0) > 0:  # lost rows would look like feed gaps
+            print(f"  funding {venue} {sym}: incomplete (complete={data.get('complete')}, dropped_rows="
+                  f"{data.get('dropped_rows')}), not cached: not checked", flush=True)  # fmt: skip
+            return None
         rows = funding_entries(data.get("rows") or [])
         p.write_text(json.dumps(rows))
         return rows
@@ -497,6 +538,7 @@ async def _a2_book(rt: Any, pace: Pace, db: str, S: str, as_of_ms: int, cache: P
                 break
     journal_spot = spot_map(j["logs"]) if S == "A" else {}
     markets: dict[str, Any] = {}
+    spot_used: dict[str, str] = {}
     todo = sorted(need & set(fund))
     for i, s in enumerate(todo):
         if S == "A":
@@ -506,6 +548,7 @@ async def _a2_book(rt: Any, pace: Pace, db: str, S: str, as_of_ms: int, cache: P
                 base = s.split("/")[0]
                 m = MULT.match(base)
                 spot_sym, mult = (f"{m.group(2)}/USDT", int(m.group(1))) if m else (f"{base}/USDT", 1)
+            spot_used[s] = spot_sym
             perp = await fetch_bars(rt, pace, cache, cr.PERP_VENUE, s, since, until)
             spot = await fetch_bars(rt, pace, cache, cr.SPOT_VENUE, spot_sym, since, until)
             if perp and spot:
@@ -523,8 +566,19 @@ async def _a2_book(rt: Any, pace: Pace, db: str, S: str, as_of_ms: int, cache: P
                 )
         if i % 25 == 0:
             print(f"  bars {i + 1}/{len(todo)} {time.time() - t0:.0f} s {_rss()}", flush=True)
-    data = cr.a2_data(markets, dl_rows, rows, listed=listed, bar_ms=rules.bar_ms)
     ix = cr.index_logs(j["logs"])
+    # registered cross-symbol guards over the whole window [first cycle - lookback, last decision]: funding legs of the
+    # universe (cp_funding on every leg venue), and every price the engine recorded in the done cycles
+    in_syms = set(syms)
+    integ = cr.funding_integrity(
+        {k: v for k, v in rows.items() if k[1] in in_syms}, dl_rows, lo=first_t - rules.lookback_ms, hi=last_t, listed=listed
+    )
+    prices = cr.price_integrity(S, done, a1["books"], ix, markets, listed=listed)
+    guards = {"funding": integ["state"], "prices": prices["state"]}
+    print(f"  guards: funding legs {integ['legs_with_difference']}/{integ['compared']} differ (not compared "
+          f"{integ['not_compared']}), {_venue_shares(integ)} -> {guards['funding']}; prices {prices['differ']}/{prices['compared']} differ "
+          f"(not compared {prices['not_compared']}) -> {guards['prices']}", flush=True)  # fmt: skip
+    data = cr.a2_data(markets, dl_rows, rows, listed=listed, bar_ms=rules.bar_ms, guards=guards, spot=spot_used)
     res_rows: list[dict[str, Any]] = []
     truncated: list[int] = []
     for c in done:
@@ -552,6 +606,8 @@ async def _a2_book(rt: Any, pace: Pace, db: str, S: str, as_of_ms: int, cache: P
         reasons.append(f"funding for {cov['universe_funding']['have']}/{cov['universe_funding']['n']} of the universe")
     if truncated:
         reasons.append(f"{len(truncated)} cycles with a truncated 'excluded' list not checked")
+    if max_symbols:
+        reasons.append(f"timing sample (--max-symbols {max_symbols}): not a result")
     if reasons:
         summary["incomplete"], summary["passed"] = True, False
     else:
@@ -560,7 +616,9 @@ async def _a2_book(rt: Any, pace: Pace, db: str, S: str, as_of_ms: int, cache: P
         "summary": summary,
         "coverage": cov,
         "truncated_excluded_cycles": truncated,
-        "cp_funding_integrity": cr.funding_integrity({k: v for k, v in rows.items() if k[1] in set(syms)}, dl_rows),
+        "guards": guards,
+        "cp_funding_integrity": integ,
+        "price_integrity": prices,
         "symbols": len(syms), "with_funding": len(fund), "with_bars": len(markets), "seconds": round(time.time() - t0),
         "divergences": [r for r in res_rows if not r["match"]],
     }  # fmt: skip
@@ -591,18 +649,32 @@ async def run_a2(db: str, as_of_ms: int, cache: Path, max_symbols: int | None, *
             await close()
     for S in ("A", "B"):
         a1[S].pop("books", None)
+    verdict = {S: cr.verdict(a1[S], (out.get(S) or {}).get("summary")) for S in ("A", "B")}
+    if max_symbols:  # a timing sample is never a result, whatever it shows
+        verdict = dict.fromkeys(verdict, "◯")
     return {
         "a1": a1,
         "a2": out,
         "a2_stopped": stopped,
+        "timing_sample": bool(max_symbols),
         "code_sha256": code_sha256(),
-        "verdict": {S: cr.verdict(a1[S], (out.get(S) or {}).get("summary")) for S in ("A", "B")},
+        "verdict": verdict,
     }
 
 
+CAVEATS = (
+    "(a.2) 'funding' variant: a symbol without a recorded candidate gets its APR from cp_funding as stored NOW "
+    "(INSERT OR REPLACE, no write time), not as the engine saw it at t.",
+)
+
+
 def show_a2(res: dict[str, Any]) -> None:
+    if res.get("timing_sample"):
+        print("TIMING SAMPLE (--max-symbols): not a result, the verdict is forced to ◯")
     show_a1(res["a1"])
-    print(f"\ncarry_replay.py sha256 {res['code_sha256']}; (a.2) stopped: {res['a2_stopped']}")
+    print(f"\n{_sha_line(res['code_sha256'])}; (a.2) stopped: {res['a2_stopped']}")
+    for c in CAVEATS:
+        print(f"caveat: {c}")
     print("| book | decisions matched (rate) | open/close matched (rate) | divergences by class | skipped cycles | (a.2) | (a) |")
     print("|---|---|---|---|---|---|---|")
     for S, r in res["a2"].items():
@@ -623,9 +695,18 @@ def show_a2(res: dict[str, Any]) -> None:
         print(f"  symbols {r['symbols']}, with funding {r['with_funding']}, with bars {r['with_bars']}, {r['seconds']} s")
         print(f"  coverage must {cov['must']['have']}/{cov['must']['n']}, need {cov['need']['have']}/{cov['need']['n']}, "
               f"universe funding {cov['universe_funding']['have']}/{cov['universe_funding']['n']}; delisted now {cov['delisted_now']}")  # fmt: skip
-        print(f"  cp_funding vs download (descriptive): {ig['compared']} legs, missing in engine {ig['missing_in_engine']}, extra "
-              f"{ig['extra_in_engine']}, rate differs {ig['rate_diff']}, legs with a difference {ig['symbols_with_difference']}; "
-              f"worst {ig['worst'][:5]}")  # fmt: skip
+        pi = r["price_integrity"]
+        print(f"  cp_funding vs download: {ig['legs']} legs in the window, compared {ig['compared']}, not compared "
+              f"{ig['not_compared']}, not listed {ig['not_listed']}; missing in engine {ig['missing_in_engine']}, extra "
+              f"{ig['extra_in_engine']}, rate differs {ig['rate_diff']}; worst {ig['worst'][:5]}")  # fmt: skip
+        print(f"  GUARD funding: legs with a difference {ig['legs_with_difference']}/{ig['compared']} = {ig['share']} "
+              f"(max {ig['max_share']}) pooled -> {ig['pooled_state']}; {_venue_shares(ig)} -> {ig['state']}")  # fmt: skip
+        print(f"  GUARD prices: recorded {pi['recorded']}, compared {pi['compared']}, differ {pi['differ']} (stale "
+              f"{pi['stale']}), not compared {pi['not_compared']} (no bars {pi['not_downloaded']}, no bar at t "
+              f"{pi['download_gap']}), not listed {pi['not_listed']}: share {pi['share']} (max {pi['max_share']}) -> "
+              f"{pi['state']}; worst {pi['worst'][:5]}")  # fmt: skip
+        print(f"  slot competition {s['slot_competition']}; data_hold where the backtest would have STOPPED the set-aside "
+              f"position: {len(s['data_hold_stops'])} {[[_t(c), x] for c, x in s['data_hold_stops'][:20]]}")  # fmt: skip
 
 
 def main() -> None:
@@ -647,7 +728,7 @@ def main() -> None:
         res = run_a1(a.db, a.as_of_ms)
         res = {"a1": res, "code_sha256": code_sha256()}
         show_a1(res["a1"])
-        print(f"\ncarry_replay.py sha256 {res['code_sha256']}")
+        print(f"\n{_sha_line(res['code_sha256'])}")
     else:
         (cache / "data").mkdir(parents=True, exist_ok=True)
         res = asyncio.run(run_a2(a.db, a.as_of_ms, cache / "data", a.max_symbols))

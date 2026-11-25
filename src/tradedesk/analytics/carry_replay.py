@@ -54,6 +54,13 @@ FUNDING_DATA_ISSUES = frozenset(
 ENGINE_DATA_ISSUES = FUNDING_DATA_ISSUES | {"bars_or_funding_unavailable"}
 FUNDING_DIFF_MAX = 2  # (a.2) 'funding_data': at most this many differing payments of the symbol in (t - lookback, t]
 STALE_BARS = 2  # (a.2): a recorded price equal to one of the previous 2 downloaded closes = a bar the engine missed
+# (a.2) cross-symbol guards (registered before any run, review R1): a feed bug that corrupts 1-2 payments (or prices) of
+# MANY symbols passes the per-symbol rule, so the data classes also need the whole window to be clean. Funding: share of
+# compared legs with any difference (``funding_integrity``); prices: share of compared recorded prices that differ from
+# the downloaded close at t (``price_integrity``). Above the share: 'tripped' (data classes -> 'unexplained'); not
+# computable or not decidable because too much was not compared: 'unknown' (data classes -> 'not_checked').
+FUNDING_LEG_SHARE_MAX = 0.02
+PRICE_SHARE_MAX = 0.01
 # Observation keys that come from funding data vs from price bars (mark observation dict, entry tuple positions).
 _F_MARK = {"A": ("payments", "apr"), "B": ("pay_a", "pay_b", "ra", "rb")}
 _P_MARK = {"A": ("perp_high", "spot", "perp"), "B": ("ext_a", "ext_b", "pa", "pb")}
@@ -758,12 +765,16 @@ class A2Data:
     """Inputs of (a.2). ``markets``: downloaded backtest objects with funding AND bars (A ``{sym: _Market}``, B ``{sym:
     (_Leg, _Leg)}``); ``funding``: downloaded funding per ``(venue, symbol)`` (also symbols whose bars failed);
     ``engine``: the engine's stored ``cp_funding`` per ``(venue, symbol)``; ``listed``: symbols listed now on every leg
-    venue (None: unknown, so a symbol missing from the download is 'not_checked', never 'delisted')."""
+    venue (None: unknown, so a symbol missing from the download is 'not_checked', never 'delisted'); ``guards``:
+    ``{"funding": state, "prices": state}`` of the cross-symbol guards (``guard_state``; None: not computed, so every
+    data class is 'not_checked'); ``spot``: A perp symbol -> the spot symbol of its spot leg (provider flags name it)."""
 
     markets: dict[str, Any]
     funding: dict[tuple[str, str], _Leg]
     engine: dict[tuple[str, str], _Leg]
     listed: set[str] | None = None
+    guards: dict[str, str] | None = None
+    spot: dict[str, str] = field(default_factory=dict)
 
 
 def a2_data(
@@ -773,8 +784,10 @@ def a2_data(
     *,
     listed: set[str] | None = None,
     bar_ms: int = 4 * 3_600_000,
+    guards: dict[str, str] | None = None,
+    spot: dict[str, str] | None = None,
 ) -> A2Data:
-    return A2Data(markets, funding_legs(funding_rows, bar_ms), funding_legs(engine_rows, bar_ms), listed)
+    return A2Data(markets, funding_legs(funding_rows, bar_ms), funding_legs(engine_rows, bar_ms), listed, guards, dict(spot or {}))
 
 
 def _venues(strategy: str) -> tuple[str, ...]:
@@ -878,16 +891,17 @@ def classify(row: dict[str, Any], payload: dict[str, Any], facts: dict[str, Any]
     ``downloaded`` (funding and bars of the symbol downloaded), ``listed`` (listed now on every leg venue; None
     unknown), ``resolved_by`` ({'funding' | 'prices' | 'both': bool}: the divergence disappears with the engine's
     funding / prices / both), ``funding`` / ``prices`` / ``extremes`` (``funding_facts`` / ``price_facts`` /
-    ``extreme_facts``). A divergence is never explained by a re-run alone: a data class also needs the concrete input
-    difference, a missed extreme or a stale bar is always 'unexplained', our own failed download is 'not_checked'."""
+    ``extreme_facts``), ``guards`` (``{"funding" | "prices": 'ok' | 'tripped' | 'unknown'}``, missing = 'unknown'),
+    ``spot_symbol`` (A: the spot leg's symbol). A divergence is never explained by a re-run alone: a data class also
+    needs the concrete input difference AND its cross-symbol guard 'ok' ('tripped' -> 'unexplained', 'unknown' ->
+    'not_checked'); a missed extreme or a stale bar is always 'unexplained'; a recorded price of the symbol without a
+    downloaded bar at t turns a data class of a divergence the engine's prices remove ('prices' / 'both') into
+    'not_checked' (it never turns 'unexplained' into 'not_checked'); our failed download is 'not_checked'."""
     sym = row["symbol"]
     if sym in aside_symbols(payload):
         return "data_hold"
     issues = _flag_issues(payload, sym)
-    # a provider failure explains a divergence only when it names the symbol (e.g. 'ohlcv:bybit:X/USDT:USDT'); a
-    # venue-wide one ('markets:...', 'funding_intervals:...') does not explain every decision of the cycle
-    named = any(f.get("issue") == "provider_missing" and sym in str(f.get("field") or "") for f in payload.get("flags") or [])
-    if issues & ENGINE_DATA_ISSUES or named:
+    if issues & ENGINE_DATA_ISSUES or _named(payload, sym, facts.get("spot_symbol")):
         return "engine_data_unavailable"
     if not facts.get("in_engine_universe", True):
         nl = facts.get("new_listing")
@@ -897,16 +911,41 @@ def classify(row: dict[str, Any], payload: dict[str, Any], facts: dict[str, Any]
     ex, pr = facts.get("extremes") or {}, facts.get("prices") or {}
     if ex.get("missed") or pr.get("stale"):
         return "unexplained"
+    rb = facts.get("resolved_by") or {}
+    # no downloaded bar at t for a recorded price (``explains`` is then False, so p_ok is False): the price side cannot
+    # be compared. Only a divergence the engine's PRICES remove ('prices' or 'both') AND that would otherwise get a data
+    # class becomes 'not_checked'; every 'unexplained' / 'not_checked' of the normal rules stays (third review, 3)
+    gap = bool(pr.get("download_gap")) and bool(rb.get("prices") or rb.get("both"))
     f_ok = bool((facts.get("funding") or {}).get("explains"))
     p_ok = bool(pr.get("explains")) and not ex.get("above")
-    rb = facts.get("resolved_by") or {}
+    g = facts.get("guards") or {}
+    fg, pg = g.get("funding", "unknown"), g.get("prices", "unknown")
+    found: list[tuple[str, str]] = []
     if rb.get("funding") and f_ok:
-        return "funding_data"
+        found.append(("funding_data", fg))
     if rb.get("prices") and p_ok:
-        return "price_data"
+        found.append(("price_data", pg))
     if rb.get("both") and f_ok and p_ok:
-        return "funding_and_price_data"
-    return "unexplained"
+        found.append(("funding_and_price_data", "tripped" if "tripped" in (fg, pg) else "ok" if fg == pg == "ok" else "unknown"))
+    for cls, state in found:
+        if state == "ok":
+            return "not_checked" if gap else cls
+    if any(state == "tripped" for _, state in found):
+        return "unexplained"
+    return "not_checked" if found else "unexplained"
+
+
+def _named(payload: dict[str, Any], sym: str, spot: str | None = None) -> bool:
+    """A ``provider_missing`` flag whose field ('<kind>:<venue>:<symbol>') names exactly this symbol (or, for A, its spot
+    leg on the spot venue). A venue-wide one ('markets:...', 'funding_intervals:...') or another symbol that contains
+    this one ('1000PEPE/...' vs 'PEPE/...') does not explain the divergence."""
+    for f in payload.get("flags") or []:
+        if f.get("issue") != "provider_missing":
+            continue
+        parts = str(f.get("field") or "").split(":", 2)
+        if len(parts) == 3 and (parts[2] == sym or (spot is not None and parts[1] == SPOT_VENUE and parts[2] == spot)):
+            return True
+    return False
 
 
 def excluded_symbols(payload: dict[str, Any]) -> set[str]:
@@ -996,14 +1035,8 @@ def replay_a2_cycle(rules: Rules, cycle: dict[str, Any], before: dict[str, Any],
         sym, key = r["symbol"], (r["symbol"], r["action"])
         in_uni, new = _new_listing(data, S, sym, t, lb)
         obj = data.markets.get(sym)
-        recp: list[tuple[str, Any]] = []
-        e = rec["entry"].get(sym)
+        recp = _recorded_prices(S, rec, sym)
         m = rec["mark"].get(sym)
-        legs = ("spot", "perp") if S == "A" else ("a", "b")
-        if e is not None:
-            recp += list(zip(legs, e[1:3] if S == "A" else e[2:4], strict=True))
-        if m is not None:
-            recp += list(zip(legs, (m["spot"], m["perp"]) if S == "A" else (m["pa"], m["pb"]), strict=True))
         facts = {
             "in_engine_universe": in_uni,
             "new_listing": new,
@@ -1014,6 +1047,8 @@ def replay_a2_cycle(rules: Rules, cycle: dict[str, Any], before: dict[str, Any],
             "funding": funding_facts(S, data, sym, t, lb),
             "prices": price_facts(S, obj, recp, t) if obj is not None else None,
             "extremes": extreme_facts(S, obj, book[sym], (m or {}).get("extremes"), t) if obj is not None and sym in book else None,
+            "guards": data.guards,
+            "spot_symbol": data.spot.get(sym),
         }
         out.append({**r, "class": classify(r, pl, facts), "facts": facts})
     # Slot competition: an 'unexplained' OPEN of a symbol with no own input difference (in the engine's universe,
@@ -1032,6 +1067,87 @@ def replay_a2_cycle(rules: Rules, cycle: dict[str, Any], before: dict[str, Any],
     return out
 
 
+def _recorded_prices(strategy: str, rec: dict[str, Any], sym: str) -> list[tuple[str, Any]]:
+    """Every price the engine recorded for ``sym`` this cycle, as ``(leg, price)``: the candidate's prices and the mark
+    (or close side) prices; A legs 'spot' / 'perp', B 'a' / 'b'."""
+    legs = ("spot", "perp") if strategy == "A" else ("a", "b")
+    out: list[tuple[str, Any]] = []
+    e, m = rec["entry"].get(sym), rec["mark"].get(sym)
+    if e is not None:
+        out += list(zip(legs, e[1:3] if strategy == "A" else e[2:4], strict=True))
+    if m is not None:
+        out += list(zip(legs, (m["spot"], m["perp"]) if strategy == "A" else (m["pa"], m["pb"]), strict=True))
+    return out
+
+
+def guard_state(differ: int, compared: int, not_compared: int, max_share: float) -> str:
+    """Registered cross-symbol guard: 'tripped' when differ / compared > max_share; 'unknown' when nothing was compared
+    or when counting every not-compared item as differing would exceed max_share (the share cannot be shown to be
+    small); else 'ok'."""
+    if compared <= 0:
+        return "unknown"
+    if differ / compared > max_share:
+        return "tripped"
+    if (differ + not_compared) / (compared + not_compared) > max_share:
+        return "unknown"
+    return "ok"
+
+
+def price_integrity(
+    strategy: str,
+    cycles: Iterable[dict[str, Any]],
+    books: dict[int, dict[str, Any]],
+    ix: LogIndex,
+    markets: dict[str, Any],
+    *,
+    listed: set[str] | None = None,
+    top: int = 10,
+) -> dict[str, Any]:
+    """(a.2) price guard over ALL recorded prices of the book (every done cycle in ``cycles``; candidates, marks, close
+    sides; ``books`` from ``replay_a1(keep_books=True)``), each against the close of the downloaded bar read at
+    t = cycle_ts + DECISION_DELAY_MS (``price_facts``). ``recorded``: non-null recorded prices of symbols listed now
+    (``listed`` None: all); ``compared``: those with a downloaded bar at t; ``differ``: compared ones that differ or are
+    stale; ``not_compared``: no downloaded bars for the symbol, or no bar at t. ``state`` by ``guard_state`` with
+    ``PRICE_SHARE_MAX``."""
+    tot = {"recorded": 0, "compared": 0, "differ": 0, "stale": 0, "not_downloaded": 0, "download_gap": 0, "not_listed": 0}
+    worst: dict[str, int] = {}
+    for c in cycles:
+        if c["status"] != "done":
+            continue
+        c_ts = int(c["cycle_ts"])
+        before = books[c_ts]
+        rec = recorded_observations(strategy, c["payload"], c_ts, {s: before["tids"][s] for s in before["book"] if s in before["tids"]}, ix)
+        for sym in sorted(set(rec["entry"]) | set(rec["mark"])):
+            recp = [(leg, x) for leg, x in _recorded_prices(strategy, rec, sym) if x is not None]
+            if not recp:
+                continue
+            if listed is not None and sym not in listed:
+                tot["not_listed"] += len(recp)
+                continue
+            tot["recorded"] += len(recp)
+            obj = markets.get(sym)
+            if obj is None:
+                tot["not_downloaded"] += len(recp)
+                continue
+            pf = price_facts(strategy, obj, recp, c_ts + DECISION_DELAY_MS)
+            d = len(pf["diff"]) + len(pf["stale"])
+            tot["compared"] += pf["same"] + d
+            tot["differ"] += d
+            tot["stale"] += len(pf["stale"])
+            tot["download_gap"] += len(pf["download_gap"])
+            if d:
+                worst[sym] = worst.get(sym, 0) + d
+    nc = tot["not_downloaded"] + tot["download_gap"]
+    return {
+        **tot,
+        "not_compared": nc,
+        "share": tot["differ"] / tot["compared"] if tot["compared"] else None,
+        "max_share": PRICE_SHARE_MAX,
+        "state": guard_state(tot["differ"], tot["compared"], nc, PRICE_SHARE_MAX),
+        "worst": [[s, n] for s, n in sorted(worst.items(), key=lambda x: (-x[1], x[0]))[:top]],
+    }
+
+
 def _no_own_difference(f: dict[str, Any]) -> bool:
     pf, ef = f["prices"] or {}, f["extremes"] or {}
     return (
@@ -1044,32 +1160,89 @@ def _no_own_difference(f: dict[str, Any]) -> bool:
 
 
 def funding_integrity(
-    engine_rows: dict[tuple[str, str], list[tuple[int, float]]], dl_rows: dict[tuple[str, str], list[tuple[int, float]]], top: int = 10
+    engine_rows: dict[tuple[str, str], list[tuple[int, float]]],
+    dl_rows: dict[tuple[str, str], list[tuple[int, float]]],
+    top: int = 10,
+    *,
+    lo: int | None = None,
+    hi: int | None = None,
+    listed: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Descriptive (a.2) table: the engine's stored ``cp_funding`` against the download, per (venue, symbol) inside the
-    overlap of both spans: payments missing in the engine, extra in the engine, rates differing > 1e-6 relative."""
-    tot = {"compared": 0, "missing_in_engine": 0, "extra_in_engine": 0, "rate_diff": 0, "symbols_with_difference": 0}
+    """(a.2) table of the engine's stored ``cp_funding`` against the download, and the registered funding guard.
+
+    A leg = a (venue, symbol) key of ``engine_rows`` (the caller passes the book's universe) with >= 1 stored payment in
+    [lo, hi] whose symbol is listed now (``listed`` None: all; others are counted in ``not_listed``). A leg is compared
+    when the download of that key exists and the window [lo, hi] cut to the overlap of both sources' spans holds a
+    payment of either source; there: payments missing in the engine, extra in the engine, rates differing > 1e-6
+    relative. ``not_compared``: legs without a download or without an overlap. ``share`` = legs with any difference /
+    compared, pooled over venues.
+
+    ``by_venue`` (third review, remark 2: a bug on ONE venue must not hide in the pooled share): the same counts per
+    venue that has >= 1 leg (a venue without legs is absent and plays no role), each with its own ``guard_state`` with
+    ``FUNDING_LEG_SHARE_MAX`` (0 compared legs of a venue -> 'unknown'; its ``share`` None). ``pooled_state``: the
+    pooled ``guard_state``. ``state`` (the registered guard) = the most severe of the pooled and every venue state,
+    'tripped' > 'unknown' > 'ok' (no legs at all: the pooled 'unknown')."""
+    lo_ = float("-inf") if lo is None else lo
+    hi_ = float("inf") if hi is None else hi
+    tot = {"legs": 0, "compared": 0, "not_compared": 0, "not_listed": 0, "missing_in_engine": 0, "extra_in_engine": 0, "rate_diff": 0}
+    n_diff = 0
     worst: list[tuple[int, str, str, int, int, int]] = []
-    for key in sorted(set(engine_rows) & set(dl_rows)):
-        e, d = dict(engine_rows[key]), dict(dl_rows[key])
-        if not e or not d:
+    per: dict[str, dict[str, int]] = {}
+    for key in sorted(engine_rows):
+        e_all = dict(engine_rows[key])
+        if not any(lo_ <= k <= hi_ for k in e_all):
             continue
-        lo, hi = max(min(e), min(d)), min(max(e), max(d))
-        e = {k: v for k, v in e.items() if lo <= k <= hi}
-        d = {k: v for k, v in d.items() if lo <= k <= hi}
+        if listed is not None and key[1] not in listed:
+            tot["not_listed"] += 1
+            continue
+        tot["legs"] += 1
+        pv = per.setdefault(key[0], {"legs": 0, "compared": 0, "not_compared": 0, "legs_with_difference": 0})
+        pv["legs"] += 1
+        d_all = dict(dl_rows.get(key) or [])
+        if not d_all:
+            tot["not_compared"] += 1
+            pv["not_compared"] += 1
+            continue
+        a, b = max(lo_, min(e_all), min(d_all)), min(hi_, max(e_all), max(d_all))
+        e = {k: v for k, v in e_all.items() if a <= k <= b}
+        d = {k: v for k, v in d_all.items() if a <= k <= b}
+        if not e and not d:
+            tot["not_compared"] += 1
+            pv["not_compared"] += 1
+            continue
         m, x = len(set(d) - set(e)), len(set(e) - set(d))
         r = sum(not close_enough(e[k], d[k], abs_tol=0.0) for k in set(d) & set(e))
         tot["compared"] += 1
+        pv["compared"] += 1
         tot["missing_in_engine"] += m
         tot["extra_in_engine"] += x
         tot["rate_diff"] += r
         if m or x or r:
-            tot["symbols_with_difference"] += 1
+            n_diff += 1
+            pv["legs_with_difference"] += 1
             worst.append((m + x + r, key[0], key[1], m, x, r))
-    tot["only_in_engine"] = len(set(engine_rows) - set(dl_rows))
-    tot["only_in_download"] = len(set(dl_rows) - set(engine_rows))
-    tot["worst"] = [list(w[1:]) for w in sorted(worst, reverse=True)[:top]]
-    return tot
+    by_venue = {
+        v: {
+            **c,
+            "share": c["legs_with_difference"] / c["compared"] if c["compared"] else None,
+            "state": guard_state(c["legs_with_difference"], c["compared"], c["not_compared"], FUNDING_LEG_SHARE_MAX),
+        }
+        for v, c in sorted(per.items())
+    }
+    pooled = guard_state(n_diff, tot["compared"], tot["not_compared"], FUNDING_LEG_SHARE_MAX)
+    states = [pooled] + [c["state"] for c in by_venue.values()]
+    return {
+        **tot,
+        "legs_with_difference": n_diff,
+        "share": n_diff / tot["compared"] if tot["compared"] else None,
+        "max_share": FUNDING_LEG_SHARE_MAX,
+        "pooled_state": pooled,
+        "by_venue": by_venue,
+        "state": "tripped" if "tripped" in states else "unknown" if "unknown" in states else "ok",
+        "only_in_engine": len(set(engine_rows) - set(dl_rows)),
+        "only_in_download": len(set(dl_rows) - set(engine_rows)),
+        "worst": [list(w[1:]) for w in sorted(worst, reverse=True)[:top]],
+    }
 
 
 def summarize_a2(rows: list[dict[str, Any]], skipped_cycles: int) -> dict[str, Any]:
@@ -1093,6 +1266,17 @@ def summarize_a2(rows: list[dict[str, Any]], skipped_cycles: int) -> dict[str, A
             a: [sum(r["action"] == a for r in rows), sum(r["action"] == a and r["match"] for r in rows)] for a in ("open", "close", "hold")
         },
         "divergences_by_class": by_class,
+        # reported as "slot competition", not as a data class of its own (several roots: the class is the first in order)
+        "slot_competition": {
+            "rows": sum(1 for r in rows if (r.get("facts") or {}).get("slot_competition")),
+            "several_roots": sum(1 for r in rows if len((r.get("facts") or {}).get("slot_competition") or ()) > 1),
+        },
+        # a position set aside whose close the backtest alone would have made by its STOP: the set-aside hides a stop
+        "data_hold_stops": [
+            [r.get("cycle_ts"), r["symbol"]]
+            for r in rows
+            if r.get("class") == "data_hold" and r["action"] == "close" and (r.get("replay") or {}).get("kind") == "stop"
+        ],
         "skipped_cycles": skipped_cycles,
         "passed": rate is not None and rate >= 0.90 and by_class.get("unexplained", 0) == 0,
     }

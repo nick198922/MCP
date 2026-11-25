@@ -1,16 +1,19 @@
-"""Carry A paper book: actual vs modelled leg-side costs by coin, leg, event and size, and reliability (d) by flag.
+"""Carry paper book (A, or B with --strategy B): actual vs modelled leg-side costs by coin, leg, event and size, and reliability (d) by flag.
 
 Descriptive breakdown of criteria (b) and (d) of the paper carry registration (docs/ideas/IDEA-20261017-forward-paper-carry.md);
-registration of the breakdown: docs/verification/2026-11-10-carry-a-cost-breakdown.md. It prints costs and counters
-only: no funding, price or P&L figure of any paper trade is read or printed.
+registrations of the breakdown: A docs/verification/2026-11-10-carry-a-cost-breakdown.md, B (perp-perp, ``pp-paper``)
+docs/verification/2026-11-25-carry-b-cost-breakdown.md. It prints costs and counters only: no funding rate or amount,
+price or P&L figure of any paper trade is read or printed (only the times of stored funding payments).
 
 Reads the collector DB through a READ-ONLY connection (``mode=ro``: no migration, no write, no network, no keys):
 ``cp_log`` rows of kind 'side' and 'event' (type and symbol only), ``cp_cycle`` and the payment times of ``cp_funding``
-for the flagged symbols. ``--smoke`` prints only row counts (no cost ratio, no reliability share). The full output goes
-to ``<cache-dir>/breakdown_<as_of>.json``.
+for the flagged symbols (A: Binance USD-M; B: both perp venues). ``--smoke`` prints only row counts (no cost ratio, no
+reliability share). The full output goes to ``<cache-dir>/breakdown_<as_of>.json``. Strategy A's output is unchanged
+by the B additions (B-only sections are gated by the strategy).
 
     uv run python scripts/verify_carry_a_cost_breakdown.py --smoke
     uv run python scripts/verify_carry_a_cost_breakdown.py
+    uv run python scripts/verify_carry_a_cost_breakdown.py --strategy B --as-of-ms 1795564800000 --smoke
 """
 
 from __future__ import annotations
@@ -30,8 +33,11 @@ from tradedesk.analytics import carry_cost_breakdown as cb  # noqa: E402
 from tradedesk.analytics.carry_report import cost_realism  # noqa: E402
 
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
-DEFAULT_CACHE = Path.home() / ".cache/tradedesk-agents/carry-a-cost-breakdown"
+CACHE_ROOT = Path.home() / ".cache/tradedesk-agents"
 PERP_VENUE = "binanceusdm"
+# Per book: perp venues whose stored payment times are read for flagged symbols, and the cache directory.
+FUNDING_VENUES = {"A": (PERP_VENUE,), "B": (PERP_VENUE, "bybit")}
+CACHE_DIRS = {"A": "carry-a-cost-breakdown", "B": "carry-b-cost-breakdown"}
 
 
 def load(db: str, strategy: str) -> dict[str, Any]:
@@ -58,14 +64,24 @@ def load(db: str, strategy: str) -> dict[str, Any]:
         flagged = sorted(
             {str(f.get("symbol")) for c in cycles for f in (c["payload"].get("flags") or []) if isinstance(f, dict) and f.get("symbol")}
         )
-        funding = {
-            s: [r[0] for r in con.execute("SELECT ts FROM cp_funding WHERE venue = ? AND symbol = ? ORDER BY ts", (PERP_VENUE, s))]
-            for s in flagged
+        funding_by_venue = {
+            v: {
+                s: [r[0] for r in con.execute("SELECT ts FROM cp_funding WHERE venue = ? AND symbol = ? ORDER BY ts", (v, s))]
+                for s in flagged
+            }
+            for v in FUNDING_VENUES.get(strategy, (PERP_VENUE,))
         }
         con.execute("COMMIT")
     finally:
         con.close()
-    return {"sides": sides, "events": events, "cycles": cycles, "n_positions": n_pos, "funding": funding}
+    return {
+        "sides": sides,
+        "events": events,
+        "cycles": cycles,
+        "n_positions": n_pos,
+        "funding": funding_by_venue[PERP_VENUE],
+        "funding_by_venue": funding_by_venue,
+    }
 
 
 def bp(x: Any) -> str:
@@ -96,11 +112,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", default=DEFAULT_DB, help="collector SQLite DB (opened read-only)")
     ap.add_argument("--strategy", default="A")
     ap.add_argument("--as-of-ms", type=int, default=0, help="cut-off UTC ms (default: now)")
-    ap.add_argument("--cache-dir", default=str(DEFAULT_CACHE))
+    ap.add_argument("--cache-dir", default=None, help="default ~/.cache/tradedesk-agents/carry-<a|b>-cost-breakdown")
     ap.add_argument("--smoke", action="store_true", help="row counts only, no cost or reliability figure")
     ap.add_argument("--n-perm", type=int, default=10_000)
     a = ap.parse_args(argv)
     as_of = a.as_of_ms or int(time.time() * 1000)
+    pp = a.strategy == "B"  # perp-perp book: two perp venues, venue-level sections
+    cache_dir = Path(a.cache_dir) if a.cache_dir else CACHE_ROOT / CACHE_DIRS.get(a.strategy, f"carry-{a.strategy.lower()}-cost-breakdown")
     t0 = time.time()
     d = load(a.db, a.strategy)
     recs = cb.side_records(d["sides"], as_of_ms=as_of)
@@ -111,9 +129,20 @@ def main(argv: list[str] | None = None) -> int:
             f"positions {d['n_positions']}; side rows {len(recs)}, with book {sum(x['has_book'] for x in recs)}, coins {len({x['coin'] for x in recs})}"
         )
         print(f"legs {sorted({x['leg'] for x in recs})}, events {sorted({x['event'] for x in recs})}, notionals {notionals}")
+        if pp:
+            counts: dict[str, int] = {}
+            for x in recs:
+                counts[f"{x['venue']}/{x['leg']}/{x['event']}"] = counts.get(f"{x['venue']}/{x['leg']}/{x['event']}", 0) + 1
+            print("sides by venue/leg/event: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+            print(f"trades with sides {len({x['trade_id'] for x in recs})}")
         print(
             f"cycles {len([c for c in d['cycles'] if c['cycle_ts'] <= as_of])}; flagged symbols {len(d['funding'])}; stored payments of them {sum(map(len, d['funding'].values()))}"
         )
+        if pp:
+            print(
+                "stored payments of flagged symbols by venue (<= as_of): "
+                + ", ".join(f"{v} {sum(1 for s in fs.values() for t in s if t <= as_of)}" for v, fs in d["funding_by_venue"].items())
+            )
         print(f"event rows {len(d['events'])}, types {sorted({str(e['type']) for e in d['events']})}")
         return 0
 
@@ -128,10 +157,31 @@ def main(argv: list[str] | None = None) -> int:
     out += table(
         "by coin (ranked by excess)", {c: cb.by_group(recs, lambda x: x["coin"])[c] for c in cb.concentration(recs)["ranked"]}, tot
     )
+    if pp:
+        out += table("by venue", cb.by_group(recs, lambda x: x["venue"]), tot)
     out += table("by leg", cb.by_group(recs, lambda x: x["leg"]), tot)
     out += table("by event", cb.by_group(recs, lambda x: x["event"]), tot)
-    out += table("by leg x event", cb.by_group(recs, lambda x: f"{x['leg']}/{x['event']}"), tot)
+    if pp:
+        out += table("by venue x event", cb.by_group(recs, lambda x: f"{x['venue']}/{x['event']}"), tot)
+        out += table("by venue x leg", cb.by_group(recs, lambda x: f"{x['venue']}/{x['leg']}"), tot)
+    else:
+        out += table("by leg x event", cb.by_group(recs, lambda x: f"{x['leg']}/{x['event']}"), tot)
     out += table("by recorded notional USD", cb.by_group(recs, lambda x: round(x["notional_usd"], 2)), tot)
+    if pp:
+        ds = cb.depth_short_block(recs)
+        out.append("\n== depth part of (b): depth-short sides among sides with a book (registered max 0.10) ==")
+        out.append(
+            f"pooled: with book {ds['with_book']}, depth short {ds['depth_short']}, share {num(ds['share'], 3)} "
+            f"(cost_realism share_depth_short {num(ref.get('share_depth_short'), 3)}); ratio of the depth-short sides on "
+            f"the depth they had {num(ds['thin_ratio'], 3)} (understates their cost)"
+        )
+        for title, key in (("venue", lambda x: x["venue"]), ("event", lambda x: x["event"]), ("coin", lambda x: x["coin"])):
+            out.append(f"by {title}: group | with book | depth short | share | share of all depth-short")
+            out += [
+                f"  {g} | {b['with_book']} | {b['depth_short']} | {num(b['share'], 3)} | {num(b['share_of_short'])}"
+                for g, b in cb.depth_short_by(recs, key).items()
+                if b["depth_short"] or title != "coin"
+            ]
     conc = cb.concentration(recs)
     loo = [v for v in conc["leave_one_out"].values() if v is not None]
     out.append("\n== concentration (pre-registered reading) ==")
@@ -147,9 +197,13 @@ def main(argv: list[str] | None = None) -> int:
         out.append(
             f"m {c['multiplier']}: n {c['n']}, depth short {c['depth_short']}, actual {bp(c['mean_actual'])} bp, ratio {num(c['ratio'], 3)}"
         )
-    perm = cb.coin_permutation(recs, n_perm=a.n_perm)
+    if pp:
+        perm = cb.coin_permutation(recs, n_perm=a.n_perm, stratum=lambda x: (x["venue"], x["event"]))
+    else:
+        perm = cb.coin_permutation(recs, n_perm=a.n_perm)
     out.append(
-        f"\n== heterogeneity across coins (labels permuted within leg x event) == n {perm['n']}, coins {perm['coins']}, p {num(perm['p'], 4)}"
+        f"\n== heterogeneity across coins (labels permuted within {'venue' if pp else 'leg'} x event) == "
+        f"n {perm['n']}, coins {perm['coins']}, p {num(perm['p'], 4)}"
     )
     ts = cb.time_split(recs)
     out.append(
@@ -160,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     out.append(f"\n== sides without a book ({len(nob)}) ==")
     out += [f"{x['coin']} {x['leg']}/{x['event']} {ymd_ms(x['cycle_ts'])}" for x in nob]
 
-    rel = cb.reliability(d["cycles"], as_of_ms=as_of)
+    rel = cb.reliability(d["cycles"], as_of_ms=as_of, key_extra=("field",) if pp else ())
     out.append("\n== reliability (d) ==")
     out.append(
         f"cycles {rel['cycles']}, done {rel['done']}, on time {rel['on_time']} ({num(rel['share_on_time'], 3)}), "
@@ -172,12 +226,25 @@ def main(argv: list[str] | None = None) -> int:
     out.append("incomplete cycles by coin (issue / detail: cycles):")
     out += [f"  {c}: " + "; ".join(f"{k} {v}" for k, v in ks.items()) for c, ks in rel["incomplete_by_coin"].items()]
     out.append("incomplete cycles by UTC day: " + ", ".join(f"{k} {v}" for k, v in rel["incomplete_by_day"].items()))
-    pub = cb.payment_published(rel["flags"], d["funding"], as_of_ms=as_of)
-    out.append("scheduled_payment_missing flags: was the payment stored later?")
-    out += [
-        f"  {x['coin']} {ymd_ms(x['cycle_ts'])} {x['cycle_ts']} {x['key']}: {x['status']}, interval before {num(x['interval_h_before'], 1)} h"
-        for x in pub
-    ]
+    if pp:
+        pub = cb.funding_flag_venues(rel["flags"], d["funding_by_venue"], as_of_ms=as_of)
+        out.append(
+            "held-position funding flags by venue (scheduled payment stored by as_of? largest step in 24 h before; interval in 3 d before):"
+        )
+        for x in pub:
+            per = "; ".join(
+                f"{v} stored {s['stored']} scheduled {'yes' if s['scheduled'] else 'no'} max step {num(s['max_gap_h'], 1)} h "
+                f"interval {num(s['interval_h_before'], 1)} h"
+                for v, s in x["venues"].items()
+            )
+            out.append(f"  {x['coin']} {ymd_ms(x['cycle_ts'])} {x['cycle_ts']} {x['key']}: suspect {x['suspect_venues'] or '-'}; {per}")
+    else:
+        pub = cb.payment_published(rel["flags"], d["funding"], as_of_ms=as_of)
+        out.append("scheduled_payment_missing flags: was the payment stored later?")
+        out += [
+            f"  {x['coin']} {ymd_ms(x['cycle_ts'])} {x['cycle_ts']} {x['key']}: {x['status']}, interval before {num(x['interval_h_before'], 1)} h"
+            for x in pub
+        ]
     ev: dict[str, dict[str, int]] = {}
     for e in d["events"]:
         if e["cycle_ts"] <= as_of:
@@ -189,10 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     out.append(f"\npeak RSS {rss_mb():.0f} MB")
     print("\n".join(out))
-    path = Path(a.cache_dir) / f"breakdown_{as_of}.json"
+    path = cache_dir / f"breakdown_{as_of}.json"
     full = {k: v for k, v in rel.items()}
+    extra = {"depth_short": cb.depth_short_block(recs), "strategy": a.strategy} if pp else {}
     write_json(
-        path, {"as_of": as_of, "text": out, "reliability": full, "published": pub, "concentration": conc, "size": cb.size_curve(recs)}
+        path,
+        {"as_of": as_of, "text": out, "reliability": full, "published": pub, "concentration": conc, "size": cb.size_curve(recs), **extra},
     )
     print(f"written {path}")
     return 0

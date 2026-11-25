@@ -644,10 +644,20 @@ async def _collect_traders(rt: "Runtime") -> int:
     return written
 
 
+# Hyperliquid positions worth at least this (USD, HL positionValue) are re-written at every run even when side and size
+# did not change, so each run has a fresh liq_px for them (card IDEA-20261025-hl-whale-liquidation-magnet, recount
+# rev. 3 item (i): $2.5M against the card's $3M covers the candle-mark vs HL difference).
+TRADER_POSITIONS_REWRITE_USD = 2_500_000.0
+
+
 async def _collect_trader_positions(rt: "Runtime") -> int:
     """Positions of the watched traders (top by month and all-time PnL in the latest snapshot) into `trader_positions`
-    as a change log (baseline, then opened / changed / closed positions). Polymarket: the 100 largest open positions
-    worth >= $100."""
+    as a change log (baseline, then opened / changed / closed positions), plus every Hyperliquid position worth >=
+    `TRADER_POSITIONS_REWRITE_USD` at every run. Polymarket: the 100 largest open positions worth >= $100.
+
+    Hyperliquid poll markers (`trader_polls`, recount rules rev. 4): before the first request, one transaction writes
+    ok = 0 for every account of the run's intended list; an account's marker becomes ok = 1 after its request succeeded
+    and its rows were written. If the markers cannot be written the run polls nobody (it fails)."""
     from ..core.errors import ProviderError  # noqa: PLC0415
     from ..providers.hyperliquid import parse_positions  # noqa: PLC0415
 
@@ -655,7 +665,12 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
     s = rt.settings
     ts = int(rt.now().timestamp())
     written = failed = tried = 0
-    for account in await rt.store.tracked_traders("hyperliquid", s.traders_top_n, s.traders_min_account_usd):
+    hl_accounts = await rt.store.tracked_traders("hyperliquid", s.traders_top_n, s.traders_min_account_usd)
+    try:
+        await rt.store.start_trader_polls(ts, "hyperliquid", hl_accounts)
+    except Exception as e:
+        raise RuntimeError(f"positions: poll markers not written, nobody polled: {e}") from e
+    for account in hl_accounts:
         tried += 1
         try:
             positions = parse_positions((await rt.hyperliquid.clearinghouse_state(account)).data)
@@ -663,7 +678,10 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
             failed += 1
             log.debug("positions hyperliquid %s: %s", account, e)
             continue
-        written += await rt.store.record_trader_positions(ts, "hyperliquid", account, positions)
+        written += await rt.store.record_trader_positions(
+            ts, "hyperliquid", account, positions, rewrite_min_usd=TRADER_POSITIONS_REWRITE_USD
+        )
+        await rt.store.set_trader_poll_ok(ts, "hyperliquid", account)
     pm_accounts: list[str] = []
     for venue in ("polymarket", "polymarket_crypto"):
         pm_accounts += [a for a in await rt.store.tracked_traders(venue, s.traders_top_n) if a not in pm_accounts]

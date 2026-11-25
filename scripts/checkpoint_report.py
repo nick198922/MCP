@@ -125,7 +125,7 @@ CARD_JOURNALS: dict[str, Journal] = {
     "hl-whale-liquidation-magnet": Journal(
         "trader_positions",
         "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM trader_positions WHERE venue = 'hyperliquid' AND ts >= ? AND ts <= ?",
-        "записів змін позицій HL (liq_watch кроку 1 не збудовано)",
+        "запусків із рядками позицій HL (зміни, з 25.11 і щозапускові рядки позицій ≥ $2.5 млн; liq_watch кроку 1 не збудовано)",
         "крок 0: ≥ 5 епізодів за 10 днів; вердикт при ≥ 90 подіях (епізоди визначає крок 0)",
         "дати в картці нема (≈ 12 міс. на 60 подій)",
     ),

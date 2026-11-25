@@ -68,6 +68,14 @@
 - **Наші перевірки:** [oi-confirmed-liquidation-flush](../verification/2026-10-24-oi-confirmed-liquidation-flush.md) — ◯ inconclusive (ворота потужності не пройдено). [toptrader-vs-crowd-divergence](../verification/2026-10-24-toptrader-vs-crowd-divergence.md) — ✗ rejected (IC7 −0.023 [−0.040; −0.006], протилежний знак; топ-трейдери самі по собі IC ≈ 0). Картка [oi-quadrant-squeeze-vs-newlong](../ideas/IDEA-20261024-oi-quadrant-squeeze-vs-newlong.md) відхилена на тріажі. [taker-imbalance-8h-continuation](../verification/2026-10-28-taker-imbalance-8h-continuation.md) — ✗ rejected (4-год тейкер-дисбаланс → 8 год, 28 монет: IC −0.003 [−0.009; +0.003], брутто кошика 3/3 2 б.п.).
 - **Тейкер-колонка `sum_taker_long_short_vol_ratio` (виміряно 28.10 на 49 тис. денних файлів, 28 монет):** це buy/sell обсягів тейкерів за 5 хв (звірено з 1m taker-buy обсягом: медіанна похибка 0.02–0.13 %, у межах 0.1 % лише 47–76 % рядків, тобто зріз, ймовірно, зсунуто на секунди; у сусідніх 5-хв вікон похибка 27–52 %). Порожня в 2022-01…2022-05 (2022Q1 ≈ 1 %, 2022Q2 57 %), у 2021-12 і з 2022Q3 повна. Семантику `create_time` підтверджено на сирих рядках: файл 2024-03-03 ще старий (рядок `ct` = [ct−5хв, ct)), файл 2024-03-04 уже новий ([ct, ct+5хв)); кінець інтервалу = `archive_obs_times`.
 
+## Історія ліквідацій: наскільки глибока (25.11)
+
+Для планування тестів ([LIB-20261123-qivty-digest](../library/LIB-20261123-qivty-digest.md), I2):
+- **Денна:** `liquidations_history` (Coinalyze; Binance або Binance + Bybit), інструмент бере до 365 днів; за [документацією Coinalyze](https://api.coinalyze.net/v1/doc) денні дані не видаляються.
+- **Годинна:** Coinalyze тримає 1 500–2 000 точок інтрадей, тобто для 1h ≈ 62–83 дні (прочитано через пошук, живим викликом не перевірено); інструмент бере для годин ≤ 30 днів. Старішу годинну історію можна лише накопичувати.
+- **Свій колектор** (таблиця `liquidations`, кожна ліквідація): з 17.10; Binance, Bybit (BTC/ETH/SOL), OKX; рядки Bybit / OKX 17–28.10 хибні; у списку чистки `_retention_sweep` таблиці нема. Стріми неповні (нижня межа). Паузи Bybit — [тиша ринку](../verification/2026-11-12-liquidation-gaps-vs-log.md).
+- USD у Coinalyze = монети × close інтервалу.
+
 ## Якість даних і збір: що ламалось (02 – 05.11)
 
 - **Polymarket data-api v1 вимкнено 02.11** (HTTP 410): колектор трейдерів перейшов на `/v2/leaderboard` і `/v2/positions` (курсор, конверт `data` + `pagination`; відповідь без конверта — `ProviderError`, щоб порожня сторінка не закрила всі позиції). Знімків 03–05.11 немає. [Зміна](../changes/2026-11-05-polymarket-data-api-v2.md).

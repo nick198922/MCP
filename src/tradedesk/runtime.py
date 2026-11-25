@@ -93,7 +93,8 @@ class Runtime:
                 transport=tr.get(name),
             )
 
-        self.deribit = Deribit(http("deribit", deribit_mod.BASE_URL, rate=8, burst=10))
+        # ~1 request/s per IP since 2026-11-20 (providers/deribit.py RATE_PER_SECOND); every caller in this process queues here.
+        self.deribit = Deribit(http("deribit", deribit_mod.BASE_URL, rate=deribit_mod.RATE_PER_SECOND, burst=deribit_mod.BURST))
         # Archive host for historical trades of expired instruments (research scripts, not tools).
         self.deribit_history = Deribit(http("deribit_history", deribit_mod.HISTORY_URL, rate=5, burst=5))
         self.hyperliquid = Hyperliquid(

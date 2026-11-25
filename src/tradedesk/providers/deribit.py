@@ -12,6 +12,14 @@ BASE_URL = "https://www.deribit.com/api/v2"
 # Archive host serving the full public trade history (incl. long-expired instruments). Same JSON-RPC
 # shape as BASE_URL; used by research scripts only (see docs/verification/2026-10-14-put-skew.md).
 HISTORY_URL = "https://history.deribit.com/api/v2"
+# Pace of the shared `deribit` client (Runtime). Since the 2026-11-20 maintenance (20:00-21:17 UTC) the public REST
+# without a key answers bursts with HTTP 429 `too_many_requests` (code 10028): a probe from the server on 2026-11-25
+# (scripts/probe_deribit_pace.py, 14 tickers per setting) let about 5 requests through at once and then ~0.9-1 per
+# second; 8/s with a burst of 10 lost 9 of 14, 2/s burst 2 lost 3, 1/s burst 4 and 0.8/s burst 4 lost none. 0.8/s
+# keeps a margin under the venue's refill for long queues (the hourly option_xvenue snapshot, service restarts).
+# docs/changes/2026-11-25-deribit-collector-gaps.md. Read at Runtime construction (tests/conftest.py speeds it up).
+RATE_PER_SECOND = 0.8
+BURST = 4
 
 
 class Deribit:

@@ -16,8 +16,17 @@ and is not stored. When the Deribit summary fails, the Bybit chain picks the exp
 the chosen expiry (e.g. Bybit without daily options) leaves its columns NULL and lands in ``missing``.
 
 Leg sync: the Bybit chain request goes out in the same ``asyncio.gather`` as the Deribit tickers (Bybit first, then the
-Deribit tickers nearest the forward first, all under the Deribit rate limit), so the whole read takes ~0.4-0.6 s (live
-23.10 04:40 UTC). Caveat seen live: Deribit's ticker ``timestamp`` (``d_ts_ms``) is the instrument's last update, not
+Deribit tickers nearest the forward first, all under the Deribit rate limit). The whole read took ~0.4-0.6 s (live
+23.10 04:40 UTC) at the old Deribit pace of 8/s; since 2026-11-25 the shared client paces Deribit at 0.8/s with a burst
+of 4 (providers/deribit.py: from 20.11 bursts got HTTP 429 and about half the Deribit legs were lost), so the tickers of
+one currency take ~15 s and later ones lag the Bybit read by that much (``d_recv_ms`` / ``b_recv_ms`` show it).
+
+Missing legs (schema 43): ``d_miss`` / ``b_miss`` say why a leg is NULL: 'not_listed' (the venue's chain was read and
+has no such strike / type / expiry), the ProviderError reason of that leg's own request ('rate_limited',
+'backend_error', 'network', ...), 'summary:<reason>' (Deribit only: the book summary failed, no ticker was asked) or
+'bad_response' (the ticker answered with something unusable); NULL when the leg is there.
+
+Caveat seen live: Deribit's ticker ``timestamp`` (``d_ts_ms``) is the instrument's last update, not
 the read time: 0.3-5.7 s BEFORE the request was sent at an RTT of ~30 ms (review probe 23.10 ~04:45 UTC, a quiet hour),
 while Bybit's ``time`` (``b_ts_ms``) is its response time; so |b_ts_ms - d_ts_ms| also contains the age of an unchanged
 Deribit quote, not only the read gap. ``d_recv_ms`` / ``b_recv_ms`` measure the read gap itself; which of the two is the
@@ -128,12 +137,18 @@ async def _received(rt: "Runtime", call: Awaitable[Fetched]) -> Fetched:
     return Fetched((f.data, recv), f.evidence)
 
 
+def _reason(b: Builder, field: str) -> str:
+    """The reason ``b.missing`` holds for ``field`` (the latest entry), else 'unknown'."""
+    return next((m.reason for m in reversed(b.missing) if m.field == field), "unknown")
+
+
 async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime, each_side: int) -> list[dict[str, Any]]:
     summary = await b.guard(f"deribit_options:{cur}", "deribit", rt.deribit.book_summary(cur, "option"))
     d_chain, fwd = _deribit_chain(summary, cur)
     if summary is not None and not d_chain:  # an empty or reshaped answer must not pass for "outside the window"
         b.miss(f"deribit_options:{cur}", "deribit", "data_unavailable", "book summary has no parsable option")
         summary = None
+    d_down = f"summary:{_reason(b, f'deribit_options:{cur}')}" if summary is None else None  # d_miss of every row
     expiry = pick_daily_expiry(d_chain, now)
     if summary is not None and expiry is None:
         b.warn(f"{cur}: no Deribit expiry {TAU_MIN_HOURS:g}-{TAU_MAX_HOURS:g} h away (normal between 06:00 and 10:00 UTC)")
@@ -152,6 +167,13 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime, eac
     d_quotes = {
         (k, t): (n, deribit_quote(g[0]), g[1]) for (k, t, n), g in zip(names, got, strict=True) if g is not None and isinstance(g[0], dict)
     }
+    # Why an asked Deribit leg is missing: its ticker's ProviderError reason, or an answer that is not a ticker object.
+    d_failed = {
+        (k, t): _reason(b, f"deribit_ticker:{n}") if g is None else "bad_response"
+        for (k, t, n), g in zip(names, got, strict=True)
+        if (k, t) not in d_quotes
+    }
+    b_down = _reason(b, f"bybit_options:{cur}") if b_got is None else None  # b_miss of every row
     body, b_recv = b_got if b_got is not None else (None, None)
     b_chain, b_ts = _bybit_chain(body, cur, b)
     if summary is None:  # Deribit down: Bybit picks the expiry and the strikes
@@ -192,6 +214,9 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime, eac
                 row[f"b_{key}"] = bq[key] if bq else None
             row["d_recv_ms"] = d_recv if dq else None
             row["b_recv_ms"] = b_recv if bq else None
+            # Why a leg is missing (schema 43; NULL = the leg is there): see the module docstring.
+            row["d_miss"] = None if dq else (d_down or d_failed.get((k, t), "not_listed"))
+            row["b_miss"] = None if bq else (b_down or "not_listed")
             rows.append(row)
     reg = {id(r) for r in registered_rows(rows)}  # the trigger's ATM +- 1 (snapshot_crossings uses the same function)
     for r in rows:

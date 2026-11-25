@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -1061,5 +1061,15 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (venue, ts, account)
         ) WITHOUT ROWID
         """,
+    ],
+    43: [
+        # Why a leg of an option_xvenue row is missing (collector/option_xvenue.py; docs/changes/2026-11-25-deribit-collector-gaps.md):
+        # NULL = the leg is there; 'not_listed' = the venue's chain was read and has no such strike / type / expiry;
+        # a ProviderError reason ('rate_limited', 'backend_error', 'network', 'data_unavailable', ...) = that leg's own
+        # request failed (Deribit ticker, Bybit option chain); 'summary:<reason>' (Deribit only) = the book summary
+        # failed, so no Deribit ticker was asked; 'bad_response' = the ticker answered with something unusable. NULL on
+        # rows written before this column (20-25.11 the Deribit legs mostly went missing to HTTP 429).
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN d_miss TEXT",
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN b_miss TEXT",
     ],
 }

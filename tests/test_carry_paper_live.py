@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import ccxt
+import ccxt.async_support as ccxt_async
 import pytest
 from mcp import Client
 
@@ -400,8 +401,86 @@ async def test_interval_info_failure_leaves_interval_empty_not_a_guessed_8h(tmp_
         data = await LiveFeed(rt, workers=2, pacer=Pacer(10**6)).load(PARAMS_A, CYCLE, [])
         assert data.current["WIF/USDT:USDT"]["interval_hours"] is None
         assert any(f["issue"] == "provider_missing" and f["field"].startswith("funding_intervals") for f in data.flags)
+        assert not [f for f in data.flags if f["issue"] == "funding_interval_unreported"]  # Binance: the one flag above
     finally:
         await rt.aclose()
+
+
+class StaleBybitEx(LiveEx):
+    """Bybit as ccxt 4.5 has it (standing card item 461): no own ``fetch_funding_intervals`` (the base method raises
+    NotSupported), and a perp listed after the market list was loaded comes back keyed by its raw id without an interval."""
+
+    fetch_funding_intervals = ccxt_async.Exchange.fetch_funding_intervals
+    btc_interval: str | None = "8h"
+    sol_interval: str | None = "8h"
+
+    async def fetch_funding_rates(self, symbols=None):
+        out = await super().fetch_funding_rates()
+        out["BTC/USDT:USDT"]["interval"] = type(self).btc_interval
+        out["SOL/USDT:USDT"]["interval"] = type(self).sol_interval  # SOL is a Bybit perp outside universe B (no market)
+        out["TJXUSDT"] = {"symbol": "TJXUSDT", "fundingRate": 0.0, "interval": None, "markPrice": 144.96, "info": {"symbol": "TJXUSDT"}}
+        return out
+
+
+class BinanceListDownEx(LiveEx):
+    async def fetch_funding_intervals(self, symbols=None):
+        raise ccxt.NetworkError("fundingInfo down")
+
+
+async def _load_b_flags(tmp_path, bybit: type, binance: type = LiveEx):
+    rt = _rt(lambda ex_id: (bybit if ex_id == "bybit" else binance)(ex_id), tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        data = await LiveFeed(rt, workers=2, pacer=Pacer(10**6)).load(PARAMS_B, CYCLE, [])
+        unreported = [f for f in data.flags if f["issue"] == "funding_interval_unreported"]
+        missing = [(f["field"], f["reason"]) for f in data.flags if f["issue"] == "provider_missing"]
+        return data, unreported, missing
+    finally:
+        await rt.aclose()
+
+
+@pytest.mark.parametrize("btc_interval", ["8h", None])
+async def test_bybit_without_an_interval_list_flags_only_a_real_gap(tmp_path, btc_interval):
+    class Bybit(StaleBybitEx):
+        history_calls: list = []
+
+    Bybit.btc_interval = btc_interval
+    data, unreported, missing = await _load_b_flags(tmp_path, Bybit)
+    # before: a provider_missing [funding_intervals:bybit] flag from a request that could not succeed (the raw-id row
+    # TJXUSDT sufficed), so the cycle counted as incomplete for criterion (d)
+    assert missing == [], data.flags
+    btc = data.current["BTC/USDT:USDT"]["b"]
+    if btc_interval:
+        assert (btc["interval_hours"], btc["interval_source"]) == (8.0, "venue")
+        assert unreported == []
+    else:  # a used perp with no interval from any source: no guessed 8h for the engine, and the cycle records the gap
+        assert (btc["interval_hours"], btc["interval_source"]) == (None, "assumed")
+        assert unreported == [{"symbol": "BTC/USDT:USDT", "venue": "bybit", "issue": "funding_interval_unreported"}]
+    assert data.current["BTC/USDT:USDT"]["a"]["interval_hours"] == 8.0  # Binance's interval list is still read
+
+
+async def test_bybit_perp_outside_the_universe_without_an_interval_raises_no_flag(tmp_path):
+    class Bybit(StaleBybitEx):
+        history_calls: list = []
+        sol_interval = None
+
+    data, unreported, missing = await _load_b_flags(tmp_path, Bybit)
+    assert "SOL/USDT:USDT" not in data.current  # not a symbol the engine uses
+    assert (unreported, missing) == ([], []), data.flags
+
+
+async def test_binance_list_failure_in_b_stays_one_cycle_flag_without_per_symbol_duplicates(tmp_path):
+    class Bybit(StaleBybitEx):
+        history_calls: list = []
+
+    class Binance(BinanceListDownEx):
+        history_calls: list = []
+
+    data, unreported, missing = await _load_b_flags(tmp_path, Bybit, Binance)
+    assert data.current["BTC/USDT:USDT"]["a"]["interval_source"] == "assumed"
+    assert data.current["BTC/USDT:USDT"]["a"]["interval_hours"] is None
+    assert missing == [("funding_intervals:binanceusdm", "network")] and unreported == [], data.flags
 
 
 async def test_switch_to_4h_makes_a_skipped_payment_visible_in_the_cycle(tmp_path):

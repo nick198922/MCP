@@ -43,10 +43,11 @@ ALLOWED: dict[str, tuple[frozenset[str], str]] = {
     ),
     "providers/exchanges.py": (frozenset({"ccxt"}), "Exchanges._call is the ccxt boundary of invariant 2"),
     "providers/liquidations.py": (
-        frozenset({"websockets"}),
+        frozenset({"websockets", "socket"}),
         "public liquidation WebSocket streams (Binance/Bybit/OKX), lazy import in _ws_consume; Http is HTTP-only "
         "and has no WS client. Used by the collector (collector/scheduler.py), not by MCP tools; bounded by "
-        "max_seconds, no keys in the URLs",
+        "max_seconds, no keys in the URLs. socket: only the AF_INET constant passed to websockets as `family=`, no "
+        "socket is opened here (test_liquidations.py pins that)",
     ),
 }
 

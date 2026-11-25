@@ -1197,6 +1197,13 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Залежить від розміру угод, тож для оцінки краще «% спота».",
         "Гроші не задіяні: це перевірка гіпотези, не результат торгівлі.",
     ),
+    "rec_sim": (
+        "Порівняння з симуляцією",
+        "Угоди методу за ланцюгом: факт мінус очікування його симуляції на вході і проти тесту H1, у % спота.",
+        "Різниця нижче 0 — симуляція завищує (відбір теж дає це). Нижче її 5 % квантиля з 28 перевірних угод до 3 — шум, "
+        "від 4 — хвости, ймовірно, гірші; угоди з квантилем на повній втраті не перевіряються.",
+        "Це перевірка методу, а не сигнал: угод за ним не відкривай.",
+    ),
     "plan_n": (
         "Розв'язано",
         "Скільки планів enter уже оцінено на свічках: ціль, стоп, строк або вхід так і не стався.",
@@ -2288,6 +2295,14 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "долари залежать від розміру угод: суди за «Середнє, % спота».",
         "Плюс",
         "це папір, не гроші: суди за «Середнє, % спота», за методом не торгуй.",
+    ),
+    # item 16 of IDEA-20261018-assistant: the comparison with the simulation; 28 = REC_SIM_MIN_N (more than H1's 27);
+    # from it on the block is descriptive, not a conclusion (what 28 trades detect: analytics.rec_paper, rule 5)
+    "rec_sim": (
+        "Менше 28 угод за ланцюгом",
+        "замало навіть для опису: дивись сирі числа, чекай експірацій.",
+        "Від 28 угод",
+        "лише опис: різниця й її ДІ нижче 0 — симуляція завищує, її числам не вір.",
     ),
     # standing improvements, item 277: «Відкриті зараз», «Угоди» of «Мої угоди» and the «Плани угод асистента» tiles;
     # thresholds from the code only: $100 = rule 1 (RULES_DEPOSIT x RULES_RISK_PCT %), 30 closed trades = JR_SMALL_SAMPLE,
@@ -9036,6 +9051,207 @@ def rec_summary(rows: list[dict]) -> dict:
     }
 
 
+# Stdlib copy of analytics.rec_paper.paper_vs_simulation (its comment block holds the rules, fixed on 2026-11-25 before
+# any comparable trade had settled, and what 28 trades can detect); tests compare the two on the same rows.
+REC_SIM_MIN_N = 28  # analytics.rec_paper.COMPARE_MIN_N: more than the H1 test's 27 trades; descriptive from it, not a conclusion
+REC_Q05_NOMINAL = 0.05
+REC_SHORT_MAX_DAYS, REC_LONG_MIN_DAYS = 21.0, 28.0  # analytics.rec_paper.SHORT_MAX_DAYS / LONG_MIN_DAYS
+REC_LIM_PCT, REC_LIM_R, REC_LIM_USD, REC_LIM_TS = 10.0, 1000.0, 1e9, 253_402_300_799.0  # analytics.rec_paper.LIM_*
+REC_WALK_FORWARD_H1 = {  # analytics.rec_paper.WALK_FORWARD_H1 (docs/verification/2026-10-18-assistant-recommendations.md)
+    "n": 27,
+    "mean_pnl_pct_spot": -0.0059,
+    "ci95_mean_pnl_pct_spot": (-0.0243, 0.0151),
+    "win_share": 0.30,
+    "mean_r_study": -0.12,
+    "ci95_mean_r_study": (-0.63, 0.22),
+    "median_r_study": -1.0,
+}
+
+
+def _rec_mean_ci(xs: list[float], independent: bool) -> tuple[float, float, list[float] | None]:
+    n = len(xs)
+    m = sum(xs) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / (n - 1)) if n > 1 else 0.0
+    h = t975(n - 1) * sd / math.sqrt(n)
+    return m, sd, ([m - h, m + h] if independent and n > 1 else None)
+
+
+def _rec_fin(x: object, lim: float = math.inf) -> float | None:
+    v = _num(x)
+    return v if v is not None and abs(v) <= lim else None
+
+
+def _rec_ts(x: object) -> float | None:
+    v = _rec_fin(x, REC_LIM_TS)
+    return v if v is not None and v >= 0 else None
+
+
+def _rec_horizon(opened: float | None, expiry: float | None) -> str | None:
+    if opened is None or expiry is None or expiry <= opened:
+        return None
+    days = (expiry - opened) / 86400
+    return "short_14d" if days <= REC_SHORT_MAX_DAYS else "long_40d" if days >= REC_LONG_MIN_DAYS else None
+
+
+def _rec_horizon_stats(ts: list[dict], min_n: int, independent: bool) -> dict:
+    acts = [t["actual_pct_spot"] for t in ts]
+    diffs = [t["actual_minus_expected"] for t in ts if t["actual_minus_expected"] is not None]
+    rs = [t["r_study"] for t in ts if t["r_study"] is not None]
+    out: dict = {
+        "n": len(acts),
+        "n_paired": len(diffs),
+        "n_r_study": len(rs),
+        "status": "too_few" if len(acts) < min_n else "descriptive",
+    }
+    if len(acts) >= min_n:
+        m, _, ci = _rec_mean_ci(acts, independent)
+        out.update(mean_pnl_pct_spot=m, ci95_mean_pnl_pct_spot=ci, win_share=sum(1 for v in acts if v > 0) / len(acts))
+    if len(diffs) >= min_n:
+        out["mean_diff"] = sum(diffs) / len(diffs)
+    if len(rs) >= min_n:
+        out["mean_r_study"] = sum(rs) / len(rs)
+    return out
+
+
+def rec_sim_compare(rows: list[dict], min_n: int = REC_SIM_MIN_N) -> dict:
+    """Stdlib copy of analytics.rec_paper.paper_vs_simulation: the settled method chain trades against the method's own
+    simulation at booking and against the H1 walk-forward; P&L as fractions of the entry spot."""
+    groups = rec_groups(rows)
+    parts = {
+        "method_triggered": groups["method_triggered"],
+        "manual": groups["manual"],
+        "other": [x for x in rows if x.get("source") not in ("method", "manual")],
+    }
+    excluded = {
+        k: {
+            "settled": sum(1 for x in v if x.get("status") == "settled"),
+            "open": sum(1 for x in v if x.get("status") == "open"),
+        }
+        for k, v in parts.items()
+    }
+    comp = [x for x in groups["method"] if x.get("status") == "settled"]
+    missing = dict.fromkeys(
+        ("pnl_pct_spot", "spot_forward", "method_mean_pct", "method_q05_pct", "max_loss", "r_study", "holding_period"), 0
+    )
+    trades: list[dict] = []
+    spans: list[tuple[float, float]] = []
+    for x in comp:
+        actual = _rec_fin(x.get("pnl_pct_spot"), REC_LIM_PCT)
+        if actual is None:
+            missing["pnl_pct_spot"] += 1
+            continue
+        spot, fwd = _rec_fin(x.get("spot"), REC_LIM_USD), _rec_fin(x.get("forward"), REC_LIM_USD)
+        conv = fwd / spot if spot is not None and fwd is not None and spot > 0 and fwd > 0 else None
+        mean, q05 = _rec_fin(x.get("method_mean_pct"), REC_LIM_PCT), _rec_fin(x.get("method_q05_pct"), REC_LIM_PCT)
+        r = _rec_fin(x.get("r_study"), REC_LIM_R)
+        opened, expiry = _rec_ts(x.get("opened_ts")), _rec_ts(x.get("expiry_ts"))
+        for key, v in (("spot_forward", conv), ("method_mean_pct", mean), ("method_q05_pct", q05), ("r_study", r)):
+            if v is None:
+                missing[key] += 1
+        if opened is None or expiry is None or expiry <= opened:
+            missing["holding_period"] += 1
+        else:
+            spans.append((opened, expiry))
+        expected = mean * conv if mean is not None and conv is not None else None
+        q05_spot = q05 * conv if q05 is not None and conv is not None else None
+        floor: float | None = None
+        at_floor: bool | None = None
+        if q05_spot is not None and spot is not None:
+            ml = _rec_fin(x.get("max_loss_per_btc"), REC_LIM_USD)
+            if x.get("risk_basis") == "stress_up_30pct":
+                at_floor = False
+            elif x.get("risk_basis") == "max_loss" and ml is not None and ml >= 0:
+                floor = -ml / spot
+                at_floor = q05_spot <= floor
+            else:
+                missing["max_loss"] += 1
+        trades.append(
+            {
+                "id": x.get("id"),
+                "opened_ts": opened,
+                "expiry_ts": expiry,
+                "horizon": _rec_horizon(opened, expiry),
+                "structure": x.get("structure"),
+                "actual_pct_spot": actual,
+                "expected_pct_spot": expected,
+                "actual_minus_expected": None if expected is None else actual - expected,
+                "q05_pct_spot": q05_spot,
+                "loss_floor_pct_spot": floor,
+                "q05_at_floor": at_floor,
+                "below_q05": None if q05_spot is None or at_floor is not False else actual < q05_spot,
+                "r_study": r,
+            }
+        )
+    overlaps = sum(1 for i, a in enumerate(spans) for b in spans[i + 1 :] if a[0] < b[1] and b[0] < a[1])
+    independent = overlaps == 0 and missing["holding_period"] == 0
+    withheld = (
+        None
+        if independent
+        else f"{overlaps} overlapping holding period pair(s)"
+        if overlaps
+        else "a holding period is unknown, overlap cannot be ruled out"
+    )
+    paired = [t["actual_minus_expected"] for t in trades if t["actual_minus_expected"] is not None]
+    with_q = [t["below_q05"] for t in trades if t["below_q05"] is not None]
+    sim: dict = {
+        "n": len(paired),
+        "n_with_q05": len(with_q),
+        "n_below_q05": sum(1 for b in with_q if b),
+        "n_q05_at_floor": sum(1 for t in trades if t["q05_at_floor"]),
+        "nominal_below_q05": REC_Q05_NOMINAL,
+        "status": "too_few" if len(paired) < min_n else "descriptive",
+    }
+    if len(paired) >= min_n:
+        m, sd, ci = _rec_mean_ci(paired, independent)
+        sim.update(
+            mean_actual=sum(t["actual_pct_spot"] for t in trades if t["actual_minus_expected"] is not None) / len(paired),
+            mean_expected=sum(t["expected_pct_spot"] for t in trades if t["actual_minus_expected"] is not None) / len(paired),
+            mean_diff=m,
+            sd_diff=sd,
+            ci95_mean_diff=ci,
+        )
+    if len(with_q) >= min_n:
+        sim.update(share_below_q05=sim["n_below_q05"] / len(with_q), expected_below_q05=REC_Q05_NOMINAL * len(with_q))
+    acts = [t["actual_pct_spot"] for t in trades]
+    rs = [t["r_study"] for t in trades if t["r_study"] is not None]
+    wf: dict = {
+        "reference": {k: list(v) if isinstance(v, tuple) else v for k, v in REC_WALK_FORWARD_H1.items()},
+        "n": len(acts),
+        "n_r_study": len(rs),
+        "status": "too_few" if len(acts) < min_n else "descriptive",
+    }
+    if len(acts) >= min_n:
+        m, sd, ci = _rec_mean_ci(acts, independent)
+        wf.update(
+            mean_pnl_pct_spot=m,
+            sd_pnl_pct_spot=sd,
+            ci95_mean_pnl_pct_spot=ci,
+            win_share=sum(1 for v in acts if v > 0) / len(acts),
+            mean_minus_reference=m - REC_WALK_FORWARD_H1["mean_pnl_pct_spot"],
+        )
+    if len(rs) >= min_n:
+        m, _, ci = _rec_mean_ci(rs, independent)
+        srt = sorted(rs)
+        mid = len(srt) // 2
+        wf.update(mean_r_study=m, ci95_mean_r_study=ci, median_r_study=srt[mid] if len(srt) % 2 else (srt[mid - 1] + srt[mid]) / 2)
+    by_horizon: dict = {
+        h: _rec_horizon_stats([t for t in trades if t["horizon"] == h], min_n, independent) for h in ("short_14d", "long_40d")
+    }
+    by_horizon["n_unclassified"] = sum(1 for t in trades if t["horizon"] is None)
+    return {
+        "min_n": min_n,
+        "comparable": {"settled": len(comp), "open": sum(1 for x in groups["method"] if x.get("status") == "open")},
+        "excluded": excluded,
+        "missing_fields": missing,
+        "overlapping_pairs": overlaps,
+        "ci_withheld": withheld,
+        "vs_method_sim": sim,
+        "vs_walk_forward": wf,
+        "by_horizon": by_horizon,
+        "trades": trades,
+    }
+
+
 def t975(df: int) -> float:
     """Student-t 97.5 % quantile (two-sided 95 % CI); 1.96 for df > 30. Copy of analytics.smart_money.t975."""
     if df < 1:
@@ -10104,6 +10320,130 @@ def _rec_tiles(s: dict, n_open: int) -> str:
     return f"<div class='tiles'>{''.join(tiles)}</div>"
 
 
+def _rec_ci_pc(ci: list | None) -> str:
+    """A 95 % interval of fractions as percent of spot, or why there is none."""
+    if ci is None:
+        return "ДІ не рахується: строки угод перекриваються або невідомі"
+    return f"95 % ДІ [{_pc(100 * ci[0], 2)}; {_pc(100 * ci[1], 2)}]"
+
+
+def block_rec_sim(rows: list[dict]) -> str:
+    """«Порівняння з симуляцією»: rec_sim_compare on the method chain trades. Below REC_SIM_MIN_N it shows counts and the
+    per-trade raw numbers only; from it on, descriptive means (not a conclusion). Rules: analytics.rec_paper."""
+    c = rec_sim_compare(rows)
+    sim, wf = c["vs_method_sim"], c["vs_walk_forward"]
+    ref = wf["reference"]
+    n = c["comparable"]["settled"]
+    out = [
+        f"<h3 style='font-size:14px;margin:10px 0 4px'>Порівняння з симуляцією{_info('rec_sim')}</h3>",
+        "<p class='note'>Лише угоди методу за ланцюгом. Метрика — P&amp;L на 1 BTC у % спота входу. Очікування симуляції "
+        "завищене відбором (метод бере структуру з найкращою оцінкою), тож різниця нижче 0 — очікувана форма: це перевірка "
+        "конвеєра (запис, розрахунок, одиниці), а не методу. Симуляція бере 0.03 % F на ногу в обидва боки, тож її "
+        "очікування нижче приблизно на 0.06 % спота.</p>",
+        "<p class='note'>Від тесту H1 папір відрізняється: тест вирішував лише на 40-денній експірації стреддлу і після "
+        "«без угоди» чи 14-денної угоди пропускав ≈ 40 днів, а папір заходить одразу після своєї експірації й щодня "
+        "перевирішує, тож суміш 14- і 40-денних угод інша (премія стренглу 25Δ на 14 днів ≈ 3.4 % спота, стреддлу на "
+        "40 днів ≈ 9.6 %; тому нижче — розбивка за строком); ДІ тесту — блоковий бутстреп, тут — t, а різниця з тестом "
+        "точкова, без ДІ; інший період (2021–2026 проти 2026+); премія тут — Black-76 на форварді, у тесті — марки на "
+        "споті (≈ базис).</p>",
+        "<p class='note'>Що покажуть 28 угод: лише опис, не висновок. З потужністю 80 % помітний лише грубий розрив: "
+        "≈ 4–6 % спота або ≈ 0.6 R проти нуля чи симуляції, ≈ 6–8 % спота проти H1. Перевагу ≈ +0.2 R, яку тест не "
+        "виключив, журнал не розв'яже: для неї треба ≈ 225 угод ланцюга.</p>",
+    ]
+    lines: list[str] = []
+    if n == 0:
+        lines.append(
+            f"Розрахованих угод методу за ланцюгом ще немає (відкритих: {c['comparable']['open']}): порівнювати нема з чим; "
+            f"описові числа — від {c['min_n']} угод"
+        )
+    elif wf["status"] == "too_few":
+        lines.append(
+            f"Замало навіть для опису: розраховано {wf['n']} угод методу за ланцюгом, середні — від {c['min_n']} "
+            f"(більше, ніж {ref['n']} у тесті H1). Нижче лише кількості й сирі числа"
+        )
+    elif sim["status"] == "too_few":  # enough trades, too few of them carry the booked expectation
+        lines.append(f"Замало угод з очікуванням симуляції для порівняння з нею: {sim['n']}, потрібно ≥ {c['min_n']}")
+    if sim["status"] == "descriptive":
+        lines.append(
+            f"Факт у середньому {_pc(100 * sim['mean_actual'], 2)} спота, очікування симуляції {_pc(100 * sim['mean_expected'], 2)}, "
+            f"різниця {_pc(100 * sim['mean_diff'], 2)} ({_rec_ci_pc(sim['ci95_mean_diff'])}; n = {sim['n']})"
+        )
+    q_parts = []
+    if sim["n_with_q05"]:
+        share = f" — {_share(sim['share_below_q05'])}, очікується ≈ {sim['expected_below_q05']:.1f}" if "share_below_q05" in sim else ""
+        q_parts.append(f"{sim['n_below_q05']} з {sim['n_with_q05']} перевірних{share} (номінально 5 %)")
+    if sim["n_q05_at_floor"]:
+        q_parts.append(f"у {sim['n_q05_at_floor']} квантиль на повній втраті, перевірка неможлива (не в частці)")
+    if q_parts:
+        lines.append("Нижче 5 % квантиля симуляції: " + "; ".join(q_parts))
+    lines.append(
+        f"Тест H1 (walk-forward 2021–2026, n = {ref['n']}): {_pc(100 * ref['mean_pnl_pct_spot'], 2)} спота за угоду, "
+        f"95 % ДІ [{_pc(100 * ref['ci95_mean_pnl_pct_spot'][0], 2)}; {_pc(100 * ref['ci95_mean_pnl_pct_spot'][1], 2)}], "
+        f"у плюсі {_share(ref['win_share'])}, {_r(ref['mean_r_study'])}"
+    )
+    if wf["status"] == "descriptive":
+        r_part = f", {_r(wf['mean_r_study'])} (медіана {_r(wf['median_r_study'])})" if "mean_r_study" in wf else ""
+        lines.append(
+            f"Папір: {_pc(100 * wf['mean_pnl_pct_spot'], 2)} спота за угоду ({_rec_ci_pc(wf['ci95_mean_pnl_pct_spot'])}), "
+            f"у плюсі {_share(wf['win_share'])}{r_part}; n = {wf['n']}"
+        )
+    if c["trades"]:
+        hz = c["by_horizon"]
+        h_parts = []
+        for key, label in (("short_14d", "≈ 14 днів"), ("long_40d", "≈ 40 днів")):
+            g = hz[key]
+            mean = (
+                f" (середнє {_pc(100 * g['mean_pnl_pct_spot'], 2)} спота, {_rec_ci_pc(g['ci95_mean_pnl_pct_spot'])})"
+                if g["status"] == "descriptive"
+                else ""
+            )
+            h_parts.append(f"{label} — {g['n']}{mean}")
+        if hz["n_unclassified"]:
+            h_parts.append(f"строк невідомий чи між смугами — {hz['n_unclassified']}")
+        lines.append(f"За строком угоди (середні — від {c['min_n']} у групі): " + ", ".join(h_parts))
+    if c["overlapping_pairs"]:
+        lines.append(f"Пар угод, строки яких перекриваються: {c['overlapping_pairs']} — вони залежні")
+    ex = c["excluded"]
+    if any(v["settled"] or v["open"] for v in ex.values()):
+        other = (
+            f"; інші джерела — розраховано {ex['other']['settled']}, відкритих {ex['other']['open']}"
+            if ex["other"]["settled"] or ex["other"]["open"]
+            else ""
+        )
+        lines.append(
+            f"Не входять: додаткові угоди методу — розраховано {ex['method_triggered']['settled']}, відкритих "
+            f"{ex['method_triggered']['open']}; ручні — розраховано {ex['manual']['settled']}, відкритих {ex['manual']['open']}{other}"
+        )
+    miss_ua = {
+        "pnl_pct_spot": "P&L",
+        "method_mean_pct": "очікування симуляції",
+        "method_q05_pct": "5 % квантиль",
+        "max_loss": "максимальна втрата",
+        "spot_forward": "спот / форвард",
+        "r_study": "R",
+        "holding_period": "строк угоди",
+    }
+    miss = [f"{miss_ua[k]} — {v}" for k, v in c["missing_fields"].items() if v]
+    if miss:
+        lines.append("Без потрібних полів (пораховано, не в цьому числі): " + ", ".join(miss))
+    out += [f"<p class='note'>{_e(x)}.</p>" for x in lines]
+    if c["trades"]:
+        out.append(
+            "<div class='scroll'><table><tr><th>Відкрито</th><th>Експірація</th><th>Структура</th><th>Факт, % спота</th>"
+            "<th>Очікування</th><th>Різниця</th><th>Нижче 5 % квантиля</th></tr>"
+        )
+        for t in c["trades"][:REC_TABLE_ROWS]:
+            below = "квантиль = повна втрата" if t["q05_at_floor"] else "—" if t["below_q05"] is None else "так" if t["below_q05"] else "ні"
+            vals = [t["actual_pct_spot"], t["expected_pct_spot"], t["actual_minus_expected"]]
+            cells = "".join(f"<td class='num'>{_e(_pc(None if v is None else 100 * v, 2))}</td>" for v in vals)
+            out.append(
+                f"<tr><td class='num'>{_e(_day(t['opened_ts']))}</td><td class='num'>{_e(_day(t['expiry_ts']))}</td>"
+                f"<td>{_e(_clean(t['structure'] or '—', 40))}</td>{cells}<td>{_e(below)}</td></tr>"
+            )
+        out.append("</table></div>")
+    return "".join(out)
+
+
 def block_rec_paper(rows: list[dict] | None) -> str:
     if rows is None:
         return _empty("Таблиці rec_paper у базі ще немає (з'являється зі схемою v16, коли MCP-сервер або колектор відкриють базу).")
@@ -10129,6 +10469,7 @@ def block_rec_paper(rows: list[dict] | None) -> str:
                 f"P&L разом {_usd(s['sum_pnl_usd'], True)}"
             )
         out.append(f"<p class='note'>{_e(line)}.</p>")
+    out.append(block_rec_sim(rows))
     out.append(
         "<div class='scroll'><table style='margin-top:8px'><tr><th>Відкрито</th><th>Структура</th><th>Експірація</th><th>Розмір</th>"
         "<th>Ризик</th><th>Чому</th><th>Стан</th><th>P&amp;L</th><th>% спота</th><th>R</th></tr>"

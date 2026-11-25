@@ -1046,6 +1046,109 @@ def test_rec_paper_main_tiles_use_the_tools_method_group(tmp_path):
     assert "+1.92 %" not in page  # the mixed mean over all five settled trades
 
 
+def _sim_rows(n: int, pattern: list[tuple[bool, float]] | None = None, **kw) -> list[dict]:
+    """Settled method chain trades shaped like rec_paper rows: a long strangle with the live id 1's spot, forward,
+    booked mean / q05 and max loss (its q05 is under its total loss), or a ~14-day straddle whose q05 is testable.
+    Every P&L is reachable (not under the trade's floor)."""
+    pattern = pattern or [(False, -0.01379), (True, -0.058), (False, 0.004), (True, -0.03), (False, 0.09), (True, 0.02), (False, -0.008)]
+    out = []
+    for i in range(n):
+        opened = T0 + i * 40 * 86400
+        straddle, pnl = pattern[i % len(pattern)]
+        out.append(
+            {
+                "id": i,
+                "source": "method",
+                "trigger": "chain",
+                "status": "settled",
+                "structure": "long_straddle" if straddle else "long_strangle10",
+                "spot": 82535.87,
+                "forward": 83021.21,
+                "method_mean_pct": 0.04 if straddle else 0.0603,
+                "method_q05_pct": -0.055 if straddle else -0.01431,
+                "max_loss_per_btc": 5049.52 if straddle else 1138.23,
+                "risk_basis": "max_loss",
+                "pnl_pct_spot": pnl,
+                "r_study": pnl * 82535.87 / (5000.0 if straddle else 1088.71),
+                "opened_ts": opened,
+                "expiry_ts": opened + (14 if straddle else 38) * 86400,
+                **kw,
+            }
+        )
+    return out
+
+
+def test_rec_sim_compare_is_the_analytics_copy_and_renders_by_its_rules(tmp_path):
+    """IDEA-20261018-assistant item 16: the panel's stdlib rec_sim_compare equals analytics.rec_paper.paper_vs_simulation
+    on the same rows (empty, below / at min n, triggered and manual rows mixed in, missing fields, overlap); below min n
+    the block shows counts and raw numbers only; from min n, descriptive means (not a conclusion); a q05 under the
+    trade's total loss is flagged, not tested (the critic's review of 2026-11-25)."""
+    import html
+
+    from tradedesk.analytics import rec_paper as ar
+
+    assert db.REC_SIM_MIN_N == ar.COMPARE_MIN_N == 28 and db.REC_Q05_NOMINAL == ar.Q05_NOMINAL
+    assert db.REC_WALK_FORWARD_H1 == ar.WALK_FORWARD_H1
+    assert db.ACT["rec_sim"][0] == f"Менше {db.REC_SIM_MIN_N} угод за ланцюгом" and db.ACT["rec_sim"][2] == f"Від {db.REC_SIM_MIN_N} угод"
+    n = db.REC_SIM_MIN_N
+    mixed = _sim_rows(n + 2)
+    mixed[0] = {**mixed[0], "method_mean_pct": None}
+    mixed[1] = {**mixed[1], "pnl_pct_spot": None}
+    mixed[2] = {**mixed[2], "expiry_ts": mixed[3]["opened_ts"] + 86400}  # held past the next chain trade's entry
+    mixed += [
+        {**_sim_rows(1)[0], "id": 90, "trigger": "regime", "pnl_pct_spot": 0.5},
+        {**_sim_rows(1)[0], "id": 91, "source": "manual", "trigger": None, "pnl_pct_spot": 0.6},
+        {**_sim_rows(1)[0], "id": 92, "status": "open", "pnl_pct_spot": None},
+        {**_sim_rows(1)[0], "id": 93, "source": None, "pnl_pct_spot": 0.7},  # counted under 'other'
+    ]
+    mixed[4] = {**mixed[4], "max_loss_per_btc": None}  # floor unreadable: counted, not tested
+    mixed[5] = {**mixed[5], "risk_basis": "stress_up_30pct"}  # unbounded loss: no floor
+    mixed[6] = {**mixed[6], "r_study": 1e200, "expiry_ts": mixed[6]["opened_ts"] + 24 * 86400}  # out of bounds; between the bands
+    straddles = _sim_rows(n, [(True, -0.058), (True, 0.02), (True, -0.03), (True, 0.05)])
+    for rows in ([], _sim_rows(n - 1), _sim_rows(n), _sim_rows(2 * n), straddles, mixed):
+        assert db.rec_sim_compare(rows) == ar.paper_vs_simulation(rows)
+    assert (db.REC_SHORT_MAX_DAYS, db.REC_LONG_MIN_DAYS) == (ar.SHORT_MAX_DAYS, ar.LONG_MIN_DAYS)
+    assert (db.REC_LIM_PCT, db.REC_LIM_R, db.REC_LIM_USD, db.REC_LIM_TS) == (ar.LIM_PCT, ar.LIM_R, ar.LIM_USD, ar.LIM_TS)
+    # the block on SQLite rows of the journal tab (the table has no booked mean there: counted, not dropped)
+    data, _ = db.load_journal(_journal_db(tmp_path / "s.sqlite", [], _sample_rec()))
+    assert db.rec_sim_compare(data["rec_paper"]) == ar.paper_vs_simulation(data["rec_paper"])
+    page = db.render_journal(data, None, float(T0 + 10 * 86400))
+    assert "Порівняння з симуляцією" in page and db._info("rec_sim") in page
+    assert "Замало навіть для опису: розраховано 1 угод методу за ланцюгом, середні — від 28 (більше, ніж 27 у тесті H1)" in page
+    assert "Тест H1 (walk-forward 2021–2026, n = 27): −0.59 % спота за угоду, 95 % ДІ [−2.43 %; +1.51 %], у плюсі 30 %, −0.12 R" in page
+    assert "очікування симуляції — 1" in page and "ручні — розраховано 1, відкритих 0" in page
+    # what 28 trades can show, and how the paper differs from H1 (the critic's review of 25.11)
+    page_txt = html.unescape(page)
+    assert "Що покажуть 28 угод: лише опис, не висновок" in page_txt and "≈ 225 угод ланцюга" in page_txt
+    assert "пропускав ≈ 40 днів" in page_txt and "блоковий бутстреп, тут — t" in page_txt and "без ДІ" in page_txt
+    # below min n: no mean, no interval, no share; the raw trade row is there
+    few = html.unescape(db.block_rec_sim(_sim_rows(n - 1)))
+    assert "Замало навіть для опису: розраховано 27" in few
+    assert (
+        "Нижче 5 % квантиля симуляції: 4 з 12 перевірних (номінально 5 %); "
+        "у 15 квантиль на повній втраті, перевірка неможлива (не в частці)"
+    ) in few
+    assert "За строком угоди (середні — від 28 у групі): ≈ 14 днів — 12, ≈ 40 днів — 15." in few
+    assert "Факт у середньому" not in few and "Папір:" not in few and "ДІ [" not in few.split("Тест H1")[0]
+    # id 0: −1.379 % against the booked +6.03 % of the forward = +6.07 % of spot; its q05 is under its total loss
+    assert "<td class='num'>−1.38 %</td><td class='num'>+6.07 %</td><td class='num'>−7.44 %</td><td>квантиль = повна втрата</td>" in few
+    assert "<td>так</td>" in few  # id 1: a straddle below its testable q05
+    # from min n: descriptive means with the t-interval; overlapping holding periods withhold it
+    full = html.unescape(db.block_rec_sim(_sim_rows(n)))
+    assert "Факт у середньому" in full and "95 % ДІ [" in full and "Папір:" in full and "Замало" not in full
+    assert "очікується" not in full  # 12 testable < 28: no share
+    assert "очікується ≈ 1.4" in html.unescape(db.block_rec_sim(straddles))
+    assert "≈ 40 днів — 32 (середнє " in html.unescape(db.block_rec_sim(_sim_rows(2 * n)))
+    ov = html.unescape(db.block_rec_sim(mixed))
+    assert "ДІ не рахується: строки угод перекриваються або невідомі" in ov and "перекриваються: 1" in ov
+    assert "Не входять: додаткові угоди методу — розраховано 1" in ov and "P&L — 1" in ov
+    assert "інші джерела — розраховано 1, відкритих 0" in ov and "максимальна втрата — 1" in ov and "R — 1" in ov
+    assert "строк невідомий чи між смугами — 1" in ov
+    assert "порад" not in few + full + ov  # rule 5: the page says it once, at the bottom
+    empty = db.block_rec_sim([])
+    assert "ще немає (відкритих: 0): порівнювати нема з чим; описові числа — від 28 угод" in empty
+
+
 def test_load_journal_os_error_is_reported_not_raised(tmp_path, monkeypatch):
     p = _journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec())
 

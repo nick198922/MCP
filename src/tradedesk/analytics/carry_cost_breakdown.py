@@ -5,6 +5,8 @@ executed leg side (taker fee + |VWAP - mid| / mid on the recorded book) with the
 over sides whose recorded depth covered the slot notional (``carry_report.cost_realism``). This module splits that
 same ratio by coin, leg, event (open / close) and size, and splits the reliability criterion (d) (share of cycles on
 time and with complete data) by the engine's flags. It changes no criterion: everything here is descriptive.
+Book A: legs spot / perp (one perp venue). Book B (perp-perp): legs long / short on two venues with their own taker
+fees, so the venue is a dimension of its own, and a funding flag may point to either venue (``funding_flag_venues``).
 
 Inputs are ``cp_log`` / ``cp_cycle`` rows as dicts with ``cycle_ts`` (UTC ms) and a parsed ``payload``; every function
 keeps only rows with ``cycle_ts <= as_of_ms``. Costs are decimal fractions of leg notional (0.001 = 0.1 %).
@@ -50,6 +52,7 @@ def side_records(rows: Iterable[Mapping[str, Any]], *, as_of_ms: int) -> list[di
                 "cycle_ts": int(r["cycle_ts"]),
                 "trade_id": str(p.get("trade_id") or r.get("trade_id")),
                 "coin": coin_of(p),
+                "venue": str(p.get("venue")),
                 "leg": str(p.get("leg")),
                 "event": str(p.get("event")),
                 "notional_usd": float(p.get("notional_usd") or 0.0),
@@ -179,6 +182,38 @@ def size_curve(recs: Sequence[Mapping[str, Any]], multipliers: Sequence[float] =
     return out
 
 
+DEPTH_SHORT_MAX = 0.10  # registered second part of (b): at most 10 % of the sides with a book may be depth-short
+
+
+def depth_short_block(recs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The depth part of (b): sides with a book and a modelled cost, how many of them were depth-short (recorded depth
+    did not cover the notional), their share (as ``cost_realism.share_depth_short``), and the ratio of means of the
+    depth-short sides on the depth they had (it understates their real cost)."""
+    usable = [x for x in recs if x["has_book"] and x["model_cost"]]
+    thin = [x for x in usable if x["depth_short"]]
+    a, m = _mean([x["actual_cost"] for x in thin]), _mean([x["model_cost"] for x in thin])
+    return {
+        "with_book": len(usable),
+        "depth_short": len(thin),
+        "share": len(thin) / len(usable) if usable else None,
+        "thin_ratio": a / m if a is not None and m else None,
+    }
+
+
+def depth_short_by(recs: Sequence[Mapping[str, Any]], key: Callable[[Mapping[str, Any]], Any]) -> dict[Any, dict[str, Any]]:
+    """``depth_short_block`` per group of ``key(record)`` plus ``share_of_short``: the group's part of all depth-short
+    sides (None when there are none). Groups in sorted order."""
+    total = depth_short_block(recs)["depth_short"]
+    groups: dict[Any, list[Mapping[str, Any]]] = {}
+    for x in recs:
+        groups.setdefault(key(x), []).append(x)
+    out = {}
+    for g in sorted(groups, key=str):
+        b = depth_short_block(groups[g])
+        out[g] = {**b, "share_of_short": b["depth_short"] / total if total else None}
+    return out
+
+
 def _between_ss(values: Sequence[float], labels: Sequence[str]) -> float:
     grand = math.fsum(values) / len(values)
     groups: dict[str, list[float]] = {}
@@ -187,17 +222,28 @@ def _between_ss(values: Sequence[float], labels: Sequence[str]) -> float:
     return math.fsum(len(g) * (math.fsum(g) / len(g) - grand) ** 2 for g in groups.values())
 
 
-def coin_permutation(recs: Sequence[Mapping[str, Any]], *, n_perm: int = 10_000, seed: int = 20261110) -> dict[str, Any]:
+def _leg_event(x: Mapping[str, Any]) -> Any:
+    return (x["leg"], x["event"])
+
+
+def coin_permutation(
+    recs: Sequence[Mapping[str, Any]],
+    *,
+    n_perm: int = 10_000,
+    seed: int = 20261110,
+    stratum: Callable[[Mapping[str, Any]], Any] = _leg_event,
+) -> dict[str, Any]:
     """Heterogeneity of the per-side ratio actual / model across coins: the between-coin sum of squares against a
-    permutation of coin labels within leg x event strata (a coin keeps its leg / event mix). One-sided p."""
+    permutation of coin labels within strata (default leg x event, so a coin keeps its leg / event mix; for the
+    perp-perp book pass venue x event, since there the venue sets the fee). One-sided p."""
     full = _full(recs)
     if len({x["coin"] for x in full}) < 2:
         return {"n": len(full), "coins": len({x["coin"] for x in full}), "p": None}
     vals = [x["actual_cost"] / x["model_cost"] for x in full]
     labels = [x["coin"] for x in full]
-    strata: dict[tuple[str, str], list[int]] = {}
+    strata: dict[Any, list[int]] = {}
     for i, x in enumerate(full):
-        strata.setdefault((x["leg"], x["event"]), []).append(i)
+        strata.setdefault(stratum(x), []).append(i)
     obs = _between_ss(vals, labels)
     rng = random.Random(seed)
     ge = 0
@@ -241,14 +287,18 @@ def time_split(recs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------------------------------- reliability (d)
 
 
-def _flag_key(f: Mapping[str, Any]) -> str:
-    return str(f.get("issue")) + (f" / {f['detail']}" if isinstance(f.get("detail"), str) else "")
+def _flag_key(f: Mapping[str, Any], extra: Sequence[str] = ()) -> str:
+    key = str(f.get("issue")) + (f" / {f['detail']}" if isinstance(f.get("detail"), str) else "")
+    return key + "".join(f" [{f[k]}]" for k in extra if isinstance(f.get(k), str))
 
 
-def reliability(cycles: Iterable[Mapping[str, Any]], *, as_of_ms: int) -> dict[str, Any]:
+def reliability(cycles: Iterable[Mapping[str, Any]], *, as_of_ms: int, key_extra: Sequence[str] = ()) -> dict[str, Any]:
     """Criterion (d) split by the engine's flags: the share of cycles on time and complete (as ``checkpoint``), the
     incomplete cycles by issue / detail, by coin and by UTC day, and for each issue / detail the share (d) would have
-    without it (descriptive, not a criterion: the registered rule counts every flag)."""
+    without it (descriptive, not a criterion: the registered rule counts every flag).
+
+    ``key_extra``: flag fields appended to the issue / detail key when they are strings (e.g. ``("field",)`` splits
+    'provider_missing' by the provider field that failed; the default keeps the key issue / detail)."""
     cyc = [c for c in cycles if int(c["cycle_ts"]) <= as_of_ms]
     done = [c for c in cyc if c.get("status") == "done"]
     on_time = [c for c in done if (c.get("payload") or {}).get("on_time")]
@@ -263,7 +313,7 @@ def reliability(cycles: Iterable[Mapping[str, Any]], *, as_of_ms: int) -> dict[s
         if p.get("complete"):
             continue
         flags = [f for f in p.get("flags") or [] if isinstance(f, Mapping)]
-        keys = {_flag_key(f) for f in flags} or {"?"}
+        keys = {_flag_key(f, key_extra) for f in flags} or {"?"}
         if p.get("on_time"):
             incomplete_keys.append(keys)
         for k in keys:
@@ -273,7 +323,7 @@ def reliability(cycles: Iterable[Mapping[str, Any]], *, as_of_ms: int) -> dict[s
         seen: set[tuple[str, str]] = set()
         for f in flags:
             coin = str(f.get("symbol") or "-").split("/")[0]
-            k = _flag_key(f)
+            k = _flag_key(f, key_extra)
             flag_rows.append({"cycle_ts": int(c["cycle_ts"]), "symbol": f.get("symbol"), "coin": coin, "key": k})
             if (coin, k) not in seen:
                 seen.add((coin, k))
@@ -322,4 +372,54 @@ def payment_published(
         gaps = sorted(b - a for a, b in zip(prior, prior[1:], strict=False))
         med = gaps[len(gaps) // 2] / 3_600_000 if gaps else None
         out.append({**f, "status": "published_later" if hit else "never_stored", "interval_h_before": med})
+    return out
+
+
+FUNDING_FLAG_ISSUES = ("funding_payment_missing", "funding_gap_confirmed")  # the engine's flags on a held position's funding
+GAP_FACTOR = 1.5  # as carry_rules.funding_gap_issue: consecutive payments more than 1.5 intervals apart are a gap
+
+
+def funding_flag_venues(
+    flags: Iterable[Mapping[str, Any]],
+    funding_by_venue: Mapping[str, Mapping[str, Sequence[int]]],
+    *,
+    as_of_ms: int,
+    interval_ms: int = 8 * 3_600_000,
+    lookback_ms: int = 24 * 3_600_000,
+) -> list[dict[str, Any]]:
+    """Which venue's funding history a held-position funding flag points to (the perp-perp book has two legs, and the
+    engine's flag names the symbol, not the venue).
+
+    For each flag whose key starts with an issue in ``FUNDING_FLAG_ISSUES`` and for each venue of ``funding_by_venue``
+    (venue -> symbol -> stored payment times, UTC ms; payments after ``as_of_ms`` ignored): ``scheduled`` - a payment
+    with ``cycle_ts - 1 min <= ts < cycle_ts + interval_ms`` is stored (by ``as_of_ms``); ``max_gap_h`` - the largest
+    step between consecutive stored payments from the last one at or before ``cycle_ts - lookback_ms`` up to
+    ``cycle_ts`` (None with < 2 payments); ``interval_h_before`` - the median step in the 3 days before the cycle (None
+    with < 2 payments). A venue is ``suspect`` when the scheduled payment is absent or ``max_gap_h`` exceeds
+    ``GAP_FACTOR`` x its interval (8 h when unknown, as the engine's default)."""
+    out = []
+    for f in flags:
+        if str(f.get("key")).split(" ")[0] not in FUNDING_FLAG_ISSUES:
+            continue
+        t, sym = int(f["cycle_ts"]), str(f.get("symbol"))
+        venues: dict[str, dict[str, Any]] = {}
+        for v in sorted(funding_by_venue):
+            ts = sorted(x for x in funding_by_venue[v].get(sym, ()) if x <= as_of_ms)
+            scheduled = any(t - PAYMENT_SLACK_MS <= x < t + interval_ms for x in ts)
+            prior = [x for x in ts if t - 3 * 86_400_000 <= x < t]
+            steps = sorted(b - a for a, b in zip(prior, prior[1:], strict=False))
+            iv_h = steps[len(steps) // 2] / 3_600_000 if steps else None
+            head = [x for x in ts if x <= t - lookback_ms][-1:]
+            seq = head + [x for x in ts if t - lookback_ms < x <= t]
+            max_gap = max((b - a for a, b in zip(seq, seq[1:], strict=False)), default=None)
+            max_gap_h = None if max_gap is None else max_gap / 3_600_000
+            gap = max_gap_h is not None and max_gap_h > GAP_FACTOR * (iv_h or 8.0)
+            venues[v] = {
+                "stored": len(ts),
+                "scheduled": scheduled,
+                "max_gap_h": max_gap_h,
+                "interval_h_before": iv_h,
+                "suspect": (not scheduled) or gap,
+            }
+        out.append({**f, "venues": venues, "suspect_venues": [v for v in venues if venues[v]["suspect"]]})
     return out

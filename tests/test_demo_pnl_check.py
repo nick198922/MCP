@@ -85,6 +85,18 @@ def test_checkpoint_note_only_when_some():
     assert not any("розбіжним P&L" in x for x in cp.build({}, NOW)["notes"])
 
 
+def test_checkpoint_note_names_funding_not_a_partial_close():
+    # docs/verification/2026-11-26-demo-pnl-mismatch.md: the flagged gaps were funding inside closedPnl, not partial closes
+    (note,) = [x for x in cp.build({"demo_trades": [_row("OK"), POWR]}, NOW)["notes"] if x.startswith("Угоди з розбіжним P&L")]
+    assert "часткове закриття" not in note and "ціну й причину виходу перевірити" not in note
+    tail = note[note.rindex("; ") :]
+    assert tail == cp.PNL_MISMATCH_TAIL
+    assert "фандинг (за публічними даними), P&L правильний" in tail  # inferred from public data, as the report says
+    assert "7 угод, закритих до 26.11 16:00 UTC" in tail  # verified only these: an 8th flagged trade is visibly new
+    assert "Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py" in tail  # a new one is not proven
+    assert (Path(__file__).resolve().parent.parent / "scripts" / "verify_demo_pnl_mismatch.py").is_file()
+
+
 # ------------------------------------------------------------------------------------------------------ script
 
 

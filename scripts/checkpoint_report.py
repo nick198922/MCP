@@ -22,7 +22,8 @@ Demo trades still ``open`` more than a day past their hold get a closing note wi
 (``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples. So are the trades the
 demo trader set aside as ``orphaned`` (filled, no position and no close found on the venue): a note names them (item 326).
 Closed demo trades whose recorded P&L disagrees with ``(exit - entry) * qty`` minus fees get a note «Угоди з розбіжним
-P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): their exit price and reason are suspect.
+P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): in the trades checked on 2026-11-26 the gap
+was funding for the holding time (docs/verification/2026-11-26-demo-pnl-mismatch.md), a newly flagged one is unproven.
 Each demo setup row with known fees notes the demo's fees against the backtest fee model (mean ``fee_gap_r``, taker
 entries; ``tradedesk.analytics.checkpoint.demo_fee_note``, item 341), descriptive only. Each demo setup row with n >= 30
 also notes the 95 % CI of its mean R clustered by the signal's UTC day, descriptive as CHECKPOINT registers it (item 343).

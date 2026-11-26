@@ -11,7 +11,9 @@ For a ``closed`` ``demo_trade`` row the expected P&L is ``sign · (exit − entr
 ``fees_usd`` is subtracted only when the row has it. A row is flagged when ``|pnl_usd − expected|`` exceeds
 ``max(TOL_FRAC · entry · qty, TOL_USD)``. Rows missing ``pnl_usd``, ``exit``, ``qty`` or both entry prices, or with
 another side, are not checked (counted by :func:`unchecked`). A disagreement is a sign to look, not proof of a wrong
-R: for a partial close the summed P&L is the venue's and is likely right, the exit price is what is off.
+R. Every trade flagged up to 26.11 was funding (below); a partial close (exit price from the first row only) would show
+here too, but none was found then. A newly flagged trade is not proven either way:
+scripts/verify_demo_pnl_mismatch.py (without ``--cutoff``) checks it against public funding.
 
 Found 26.11 (docs/verification/2026-11-26-demo-pnl-mismatch.md, analytics/demo_pnl_funding.py): every flagged trade
 up to then was funding, not a partial close. Bybit's ``closedPnl`` includes the funding paid or received while the

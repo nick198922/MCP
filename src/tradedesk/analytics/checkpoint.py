@@ -1445,6 +1445,16 @@ def demo_forwards(trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict
     return out
 
 
+# Tail of the P&L-mismatch note. docs/verification/2026-11-26-demo-pnl-mismatch.md: all 7 trades flagged among those
+# closed before 26.11 16:00 UTC were funding inside Bybit's closedPnl (inferred from public data), pnl_usd right; later
+# ones are unproven. The count and the cutoff stay in the text, so a reader can tell that an 8th trade is unverified.
+# One segment with no '; ' inside and <= NOTE_CHARS // 3 of tools/demo_status.py, so its compact cut keeps all of it.
+PNL_MISMATCH_TAIL = (
+    "; P&L у БД ≠ (вихід − вхід)·qty − комісії. 7 угод, закритих до 26.11 16:00 UTC: різниця — фандинг "
+    "(за публічними даними), P&L правильний. Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py"
+)
+
+
 def demo_notes(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[str]:
     """The report's notes on the demo as a whole, in the report's order: three or more setups with «ні» on one side of
     their band (a systemic cause), the stuck ``open`` trades (``stuck_demo``) and the closed trades whose P&L disagrees
@@ -1467,7 +1477,7 @@ def demo_notes(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, 
         notes.append(
             f"Угоди з розбіжним P&L: {len(bad_pnl)} — "
             + ", ".join(f"{t['setup']} {t['symbol']} ({t['recorded']:+.2f} проти {t['expected']:+.2f} USD)" for t in bad_pnl)
-            + "; P&L у БД не збігається з (вихід − вхід)·qty − комісії, схоже на часткове закриття: ціну й причину виходу перевірити"
+            + PNL_MISMATCH_TAIL
         )
     return notes
 

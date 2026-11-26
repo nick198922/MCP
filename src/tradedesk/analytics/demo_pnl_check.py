@@ -2,9 +2,9 @@
 
 Item 140 of docs/ideas/IDEA-20261102-standing-improvements.md. The demo trader sums the venue's closed-pnl rows into
 ``pnl_usd`` (fees included) but takes the exit price from the first row only (execution/demo_trader.py), so a trade
-closed in parts (POWR S12 in docs/verification/2026-11-02-demo-execution-quality.md: +1.16R between the P&L and the
-prices) carries an exit price and reason that describe only part of the position. Such rows are named in
-scripts/checkpoint_report.py so the owner knows which R values to look at; nothing here changes a row.
+closed in parts would carry an exit price and reason that describe only part of the position. Rows whose P&L and prices
+disagree are named in scripts/checkpoint_report.py so the owner knows which R values to look at; nothing here changes a
+row.
 
 For a ``closed`` ``demo_trade`` row the expected P&L is ``sign · (exit − entry) · qty − fees_usd``: ``sign`` is +1 for
 ``long`` and −1 for ``short``, ``entry`` is the average fill (``fill``) or, without one, the planned ``entry``, and
@@ -12,6 +12,13 @@ For a ``closed`` ``demo_trade`` row the expected P&L is ``sign · (exit − entr
 ``max(TOL_FRAC · entry · qty, TOL_USD)``. Rows missing ``pnl_usd``, ``exit``, ``qty`` or both entry prices, or with
 another side, are not checked (counted by :func:`unchecked`). A disagreement is a sign to look, not proof of a wrong
 R: for a partial close the summed P&L is the venue's and is likely right, the exit price is what is off.
+
+Found 26.11 (docs/verification/2026-11-26-demo-pnl-mismatch.md, analytics/demo_pnl_funding.py): every flagged trade
+up to then was funding, not a partial close. Bybit's ``closedPnl`` includes the funding paid or received while the
+position was open, and ``fees_usd`` does not, so a trade held through large funding is flagged with ``pnl_usd`` right.
+That ``closedPnl`` includes funding is inferred from the data (public funding × qty × price matches every flagged gap
+within 0.09 USD), not from venue documentation; docs/verification/2026-11-11-s3-stop-exit-accounting.md had already
+named funding the probable cause.
 """
 
 from __future__ import annotations

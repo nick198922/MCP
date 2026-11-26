@@ -342,7 +342,82 @@ def test_validity_rules(tmp_path: Path) -> None:
     force, _ = v.validity(_prim(200), tmp_path, {"offset_fix": {}})
     assert set(force) == {"K1", "K2", "K3"}
     force, _ = v.validity(_prim(197) + _prim(3, mismatch=True, by_plus=True), tmp_path, {"offset_fix": {"above|1200": 60}})
-    assert force == {}  # the fix is applied once and not re-derived
+    # re-review B: mismatches still explained by +1 min after the +60 s fix -> candle offset undetermined
+    assert set(force) == {"K1", "K2", "K3"} and "offset undetermined" in force["K2"]
+    force, _ = v.validity(_prim(200), tmp_path, {"offset_fix": {"above|1200": 60}})
+    assert force == {}  # the applied fix leaves no mismatch: nothing forced
+
+
+def test_far_mismatch_review_file(tmp_path: Path) -> None:
+    """Re-review A: a far mismatch blocks every gate until far_reviewed.json marks it "nonpay: <reason>"."""
+    rows = _prim(199) + _prim(1, mismatch=True, dist=0.02, market_id="m1")
+    force, _ = v.validity(rows, tmp_path, {"offset_fix": {}})
+    assert set(force) == {"K1", "K2", "K3"} and "BLOCKED: 1 unreviewed" in force["K3"]
+    (tmp_path / "far_reviewed.json").write_text(json.dumps({"m1": "our bug: token swap"}))
+    force, _ = v.validity(rows, tmp_path, {"offset_fix": {}})
+    assert set(force) == {"K1", "K2", "K3"}  # only a "nonpay: ..." record lifts the block
+    (tmp_path / "far_reviewed.json").write_text(json.dumps({"m1": "nonpay: wrong UMA proposal"}))
+    force, lines = v.validity(rows, tmp_path, {"offset_fix": {}})
+    assert force == {} and any("reviewed as non-payment 1" in s for s in lines)
+    force, _ = v.validity(rows + _prim(1, mismatch=True, dist=0.03, market_id="m2"), tmp_path, {"offset_fix": {}})
+    assert set(force) == {"K1", "K2", "K3"} and "BLOCKED: 1 unreviewed" in force["K1"]
+
+
+def _ne_rows(n: int, n_tol: int, n_nonpay: int = 0) -> list[dict]:
+    """n entered events at p5 0.97 paid to the Binance winner; the first n_tol resolved only within tolerance, the
+    last n_nonpay exact but not paid."""
+    rows = []
+    for i in range(n):
+        bad = i >= n - n_nonpay
+        rows.append(
+            {
+                "market_id": f"m{i}",
+                "resolved": 0,
+                "exact_binary": i >= n_tol,
+                "p5": 0.97,
+                "paid": not bad,
+                "paid_7d": not bad,
+                "nonpay": bad,
+            }
+        )
+    return rows
+
+
+def _ne_gates(rs: list[dict], force: dict[str, str] | None = None) -> dict:
+    rets = [x for r in rs if (x := entry_return(r["p5"], paid=r["paid"], hold_s=0)) is not None]
+    return gate_decision([r["p5"] for r in rs], rets, [r["nonpay"] for r in rs], force)
+
+
+def test_nonexact_guard() -> None:
+    """Re-review D: K2 / K3 "pass" only through non-exact resolutions -> undecided; never a kill."""
+    # no non-exact resolution: unchanged, nothing printed
+    rows, force = _ne_rows(200, 0), {}
+    g0 = _ne_gates(rows)
+    g, lines = v.nonexact_guard(rows, g0, _ne_gates, force)
+    assert g == g0 and force == {} and lines == []
+    # 1 non-exact of 200: strict K3 = 0.5 %, K2 still positive -> no change, but listed
+    rows, force = _ne_rows(200, 1), {}
+    g, lines = v.nonexact_guard(rows, _ne_gates(rows), _ne_gates, force)
+    assert force == {} and g["card"] == "forward" and "m0" in lines[0]
+    # 3 non-exact: strict K3 = 1.5 % > 1 % kills, strict K2 = +0.51 % still passes -> only K3 undecided
+    rows, force = _ne_rows(200, 3), {}
+    g0 = _ne_gates(rows)
+    assert all(g0[k]["verdict"] == "pass" for k in ("K1", "K2", "K3"))
+    g, _ = v.nonexact_guard(rows, g0, _ne_gates, force)
+    assert set(force) == {"K3"} and g["K3"]["verdict"] == "undecided" and g["K2"]["verdict"] == "pass"
+    assert g["card"] == "forward-undecided"
+    # 5 non-exact: strict K2 < +0.3 % as well -> K2 and K3 undecided, K1 untouched
+    rows, force = _ne_rows(200, 5), {}
+    g, _ = v.nonexact_guard(rows, _ne_gates(rows), _ne_gates, force)
+    assert set(force) == {"K2", "K3"} and g["K1"]["verdict"] == "pass"
+    # never a kill: a gate that already kills stays a kill, none becomes one
+    rows, force = _ne_rows(200, 5, n_nonpay=3), {}
+    g0 = _ne_gates(rows)
+    assert g0["K3"]["verdict"] == "kill"
+    g, _ = v.nonexact_guard(rows, g0, _ne_gates, force)
+    assert g["K3"]["verdict"] == "kill" and g["card"] == "rejected"
+    for k in ("K1", "K2", "K3"):
+        assert g[k]["verdict"] == g0[k]["verdict"] or g[k]["verdict"] == "undecided"
 
 
 def test_median_cluster_ci() -> None:

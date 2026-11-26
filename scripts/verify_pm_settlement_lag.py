@@ -28,6 +28,7 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from tradedesk.analytics.pm_settlement_lag import (  # noqa: E402
     ENTRY_MAX_ASK,
     FAR_FROM_STRIKE,
     HIST_MISSING_MAX,
+    K2_RETURN_KILL,
     K3_NONPAY_KILL,
     NO_PRICE_MAX,
     candle_variant,
@@ -567,11 +569,36 @@ def validity(prim: list[dict[str, Any]], cache: Path, meta: dict[str, Any]) -> t
         put(ALL_GATES, "events.json was built without the current offset_fix.json: rerun --stage events, history, full")
     else:
         L.append(f"offset fix in force (applied once, not re-derived): {meta.get('offset_fix')}; would-be fix now {fix}")
+        if fix:
+            put(ALL_GATES, f"offset audit still proposes {fix} on the corrected events: candle offset undetermined")
     # (d) mismatches far from the strike cannot be a one-minute shift: token / data error or a real misresolution
     far = [r for r in prim if r["mismatch"] and r["dist"] is not None and r["dist"] > FAR_FROM_STRIKE]
-    if far:
-        put(ALL_GATES, f"BLOCKED: {len(far)} mismatches > {FAR_FROM_STRIKE:.1%} from the strike / previous close, manual review")
+    rp = cache / "far_reviewed.json"  # {market_id: "nonpay: <reason>"}, written only after the manual review
+    reviewed = json.loads(rp.read_text()) if rp.exists() else {}
+    unreviewed = [r for r in far if not str(reviewed.get(str(r.get("market_id")), "")).startswith("nonpay")]
+    L.append(f"far mismatches {len(far)}, reviewed as non-payment {len(far) - len(unreviewed)}: {reviewed}")
+    if unreviewed:
+        put(ALL_GATES, f"BLOCKED: {len(unreviewed)} unreviewed mismatches > {FAR_FROM_STRIKE:.1%} from the strike / previous close")
     return force, L
+
+
+def nonexact_guard(
+    prim: list[dict[str, Any]], g: dict[str, Any], gates: Callable[..., dict[str, Any]], force: dict[str, str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Re-review D: a K2 / K3 "pass" that holds only through resolutions within tolerance but not exactly (1,0)/(0,1)
+    becomes "undecided" (such a quote may be closed-but-unresolved). Never turns anything into "kill"."""
+    L: list[str] = []
+    P = L.append
+    tol = {r["market_id"] for r in prim if r["resolved"] is not None and not r["exact_binary"]}
+    if tol:  # re-review D: a non-exact "resolution" may be a closed-but-unresolved quote
+        strict = [dict(r, paid=False, paid_7d=False, nonpay=True) if r["market_id"] in tol else r for r in prim]
+        gs = gates(strict, force=force)
+        for k in ("K2", "K3"):
+            if g[k]["verdict"] == "pass" and gs[k]["verdict"] == "kill":
+                force[k] = f"pass only through {len(tol)} non-exact resolutions (listed)"
+        g = gates(prim, force=force)
+        P(f"non-exact resolutions (primary): {sorted(tol)[:50]}")
+    return g, L
 
 
 def analyse(cache: Path) -> list[str]:  # noqa: PLR0912, PLR0915
@@ -703,6 +730,8 @@ def analyse(cache: Path) -> list[str]:  # noqa: PLR0912, PLR0915
 
     P("\n== Registered gates (primary: nearest strike / daily up-down, price at t_obs+5, half-spread 1 c) ==")
     g = gates(prim, force=force)
+    g, nl = nonexact_guard(prim, g, gates, force)
+    L += nl
     if g["K3"]["verdict"] == "kill":  # registered: a K3 kill that exists only through closedTime lateness is undecided
         n_alt = sum(r["nonpay"] and not r["paid_7d_uma"] for r in prim)  # a late event paid within 7 d by umaEndDate
         if n_alt / len(prim) <= K3_NONPAY_KILL:
@@ -764,6 +793,17 @@ def analyse(cache: Path) -> list[str]:  # noqa: PLR0912, PLR0915
     if len(rets_sorted) >= 20:
         cut = rets_sorted[: int(len(rets_sorted) * 0.95)]
         P(f"K2 without top 5% returns: mean {statistics.fmean(cut) * 100:.3f}% n={len(cut)}")
+    for lab, sel in (  # re-review note F: descriptive, no decision power
+        ("without entries with p5 == pre-T price", lambda r: r.get("pre") is None or r["p5"] != r["pre"]),
+        ("only entries with p5 >= 0.9", lambda r: r["p5"] >= 0.9),
+    ):
+        sub = [x for r in prim if r.get("p5") is not None and sel(r) and (x := ret(r)) is not None]
+        m = statistics.fmean(sub) if sub else None
+        flag = g["K2"]["verdict"] == "pass" and (m is None or m < K2_RETURN_KILL)
+        P(
+            f"K2 {lab} (descriptive): mean {'—' if m is None else f'{m * 100:.3f}%'} n={len(sub)}"
+            + (" FLAG: registered K2 'pass' does not hold without the excluded entries" if flag else "")
+        )
 
     P("\n== Per series (5a) ==")
     means, ses, first, second = [], [], {}, {}

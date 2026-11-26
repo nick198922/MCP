@@ -40,9 +40,10 @@ from tradedesk.analytics.pm_cpi import (
     phase,
     plan,
     release_target,
+    to_confirm,
     with_book,
 )
-from tradedesk.collector.pm_cpi_snapshot import SERIES, collect_pm_cpi_snapshot
+from tradedesk.collector.pm_cpi_snapshot import CONFIRM_MAX, SERIES, collect_pm_cpi_snapshot
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.errors import ProviderError
@@ -334,7 +335,7 @@ class Venues:
     (bool), ``books`` (token -> book; a token left out is not in the answer). Item 482 (round 2): ``omit`` (YES tokens
     whose market is left out of the listing), ``no_token`` (markets listed with an empty ``clobTokenIds``), ``resolved``
     (YES tokens whose ``/markets/{id}`` answers ``closed: true``; ``closed`` too), ``market_down`` (``/markets/{id}``
-    answers 500)."""
+    answers 500). Item 483: ``down_markets`` (YES tokens whose ``/markets/{id}`` alone answers 500)."""
 
     def __init__(self) -> None:
         self.cf: dict[str, object] = {"nowcast_year.json": YEAR, "nowcast_month.json": MONTH}
@@ -345,6 +346,7 @@ class Venues:
         self.no_token: set[str] = set()
         self.resolved: set[str] = set()
         self.market_down = False
+        self.down_markets: set[str] = set()
         self.clob_down = False
         self.calls: list[str] = []
         self.books = {b["asset_id"]: b for b in SAMPLE["books"]}
@@ -357,6 +359,8 @@ class Venues:
             for m in ev["markets"]:
                 if str(m["id"]) == mid:
                     tok = json.loads(m["clobTokenIds"])[0]
+                    if tok in self.down_markets:
+                        return httpx.Response(500, text="down")
                     return httpx.Response(200, json=m | {"closed": tok in self.resolved or tok in self.closed})
         return httpx.Response(404, text="no such market")
 
@@ -1219,6 +1223,73 @@ async def test_an_event_gone_from_the_listing_is_gone_only_once_gamma_says_close
         assert v.n("market:") - asked == 12
         clock[0] = T0 + timedelta(minutes=50)
         assert await collect_pm_cpi_snapshot(rt) == 0
+    finally:
+        await rt.aclose()
+
+
+# ------------------------------------------------------------------------- item 483 (findings 4-5 of review C2, round 2)
+
+
+def test_to_confirm_asks_every_candidate_in_turn_as_the_list_changes():
+    assert to_confirm(["a", "b", "c"], {"b": {"confirm_ts": 5}}, 2) == ["a", "c"]  # never asked first, listing order
+    assert to_confirm(["a", "b"], {"a": {"confirm_ts": 9}, "b": {"confirm_ts": 5}}, 5) == ["b", "a"]  # oldest first
+    assert to_confirm(["a"], {}, 0) == [] and to_confirm([], {}, 20) == []
+    # 45 candidates, the first 20 never confirm and the others close when asked; new ones appear ahead of them in the
+    # listing order on ticks 2 and 4, the closed ones leave: none waits ceil(n / limit) = 3 ticks or more (n = 55)
+    stuck = {str(i) for i in range(20)}
+    cands, stored, wait, seen = [str(i) for i in range(45)], {}, {}, set()
+    for tick in range(1, 13):
+        if tick in (2, 4):
+            cands = [f"n{tick}.{i}" for i in range(5)] + cands
+        seen |= set(cands)
+        asked = to_confirm(cands, stored, CONFIRM_MAX)
+        assert len(asked) == min(CONFIRM_MAX, len(cands)) and len(set(asked)) == len(asked)
+        for t in cands:
+            wait[t] = 0 if t in asked else wait.get(t, 0) + 1
+            assert wait[t] < 3, (tick, t)
+        stored |= {t: {"confirm_ts": tick} for t in asked}
+        cands = [t for t in cands if t in stuck or t not in asked]
+    assert set(cands) == stuck and seen <= set(stored)  # every candidate was asked, only the stuck ones are left
+
+
+@pytest.mark.parametrize("how", ["down", "open"])
+async def test_close_confirmations_rotate_past_brackets_that_never_confirm(tmp_path, caplog, how):
+    # findings 4-5 of review C2: every bracket leaves the listing (all series answer empty) and the CLOB has no book.
+    # The first CONFIRM_MAX in the stored order never confirm (/markets/{id} 500, or Gamma calls them open), the other
+    # 19 are closed. At most CONFIRM_MAX requests a tick, and the next tick asks the 19: they get gone_ts and keep their
+    # 15:35 books; the 20 stay live (no gone_ts without proof), so the row stays partial
+    v, clock = Venues(), [T0]
+    rt = v.runtime(tmp_path / "db.sqlite", clock)
+    try:
+        assert await collect_pm_cpi_snapshot(rt) == 1
+        stored = (await _row(rt))["books_obj"]["brackets"]
+        order, by_mid = [b["token"] for b in stored], {b["market_id"]: b["token"] for b in stored}
+        assert len(order) == N_BRACKETS > CONFIRM_MAX
+        stuck, rest = set(order[:CONFIRM_MAX]), set(order[CONFIRM_MAX:])
+        # today's file at 16:05 makes every 15:35 book due again (the re-read finds none)
+        v.cf, v.gamma_empty, v.books, v.resolved = _today_files(), set(SERIES), {}, rest
+        v.down_markets = stuck if how == "down" else set()
+        asked: list[set[str]] = []
+        for k in (1, 2, 3):
+            n0 = len(v.calls)
+            clock[0] = T0 + timedelta(minutes=20 + 10 * k)
+            with caplog.at_level(logging.INFO, logger="tradedesk.collector"):
+                assert await collect_pm_cpi_snapshot(rt) == 1
+            calls = [c[len("market:") :] for c in v.calls[n0:] if c.startswith("market:")]
+            assert len(calls) <= CONFIRM_MAX and len(set(calls)) == len(calls)
+            asked.append({by_mid[m] for m in calls})
+            r = await _row(rt)
+            main = {b["token"]: b for b in r["books_obj"]["brackets"]}
+            gone = {t for t, b in main.items() if b.get("gone_ts")}
+            assert r["status"] == "partial" and not gone & stuck  # the stuck ones are never taken for closed
+            if k == 1:
+                assert asked[0] == stuck and not gone
+                assert all(main[t]["confirm_ts"] == int(clock[0].timestamp()) for t in stuck)
+            if k == 2:
+                assert rest <= asked[1] and len(asked[1]) == CONFIRM_MAX  # the 19 never asked, then the oldest stuck one
+                assert gone == rest and all(main[t]["book"] and main[t]["read_ts"] == int(T0.timestamp()) for t in rest)
+        assert asked[2] == stuck and r["n_brackets"] == N_BRACKETS  # the closed ones are not asked again
+        assert f"{N_BRACKETS} bracket(s) to confirm closed, {CONFIRM_MAX} asked this tick, the rest on the next ticks" in caplog.text
     finally:
         await rt.aclose()
 

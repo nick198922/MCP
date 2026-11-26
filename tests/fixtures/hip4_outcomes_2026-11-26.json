@@ -1,0 +1,357 @@
+{
+ "_source": "POST https://api.hyperliquid.xyz/info, public, no key; fetched 2026-11-26 ~17:47 UTC by scripts/verify_hip4_step0.py; outcomes trimmed to the recurring series and 4 deployer outcomes",
+ "outcomeMeta": {
+  "outcomes": [
+   {
+    "outcome": 47951,
+    "name": "Recurring",
+    "description": "class:priceBinary|underlying:HYPE|expiry:20261127-0600|targetPrice:61.618|period:1d",
+    "sideSpecs": [
+     {
+      "name": "Yes"
+     },
+     {
+      "name": "No"
+     }
+    ],
+    "quoteToken": "USDC"
+   },
+   {
+    "outcome": 47949,
+    "name": "Recurring",
+    "description": "class:priceBinary|underlying:ETH|expiry:20261127-0600|targetPrice:1694|period:1d",
+    "sideSpecs": [
+     {
+      "name": "Yes"
+     },
+     {
+      "name": "No"
+     }
+    ],
+    "quoteToken": "USDC"
+   },
+   {
+    "outcome": 47948,
+    "name": "Recurring",
+    "description": "class:priceBinary|underlying:BTC|expiry:20261127-0600|targetPrice:60789|period:1d",
+    "sideSpecs": [
+     {
+      "name": "Yes"
+     },
+     {
+      "name": "No"
+     }
+    ],
+    "quoteToken": "USDC"
+   },
+   {
+    "outcome": 47950,
+    "name": "Recurring",
+    "description": "class:priceBinary|underlying:SOL|expiry:20261127-0600|targetPrice:70.904|period:1d",
+    "sideSpecs": [
+     {
+      "name": "Yes"
+     },
+     {
+      "name": "No"
+     }
+    ],
+    "quoteToken": "USDC"
+   },
+   {
+    "outcome": 46302,
+    "name": "template:priceTouch",
+    "description": "perp:BTC|priceDescription:Hyperliquid BTC perp mark, 1-second samples|seconds:1|target:68000|time:20261201-0000",
+    "sideSpecs": [
+     {
+      "name": "template:Yes"
+     },
+     {
+      "name": "template:No"
+     }
+    ],
+    "quoteToken": "USDC",
+    "venue": "fox"
+   },
+   {
+    "outcome": 45941,
+    "name": "template:sportsContestWinner",
+    "description": "competition:NFL|contestType:Match|countedPlay:the full game including overtime|officialSource:National Football League (NFL)|participantA:Cleveland Browns|participantB:Las Vegas Raiders|resolutionDeadline:20270228-0120|scheduledStart:20261130-0120|season:2026/27|shortNameA:CLE|shortNameB:LV|sport:Football|stage:Regular Season",
+    "sideSpecs": [
+     {
+      "name": "template:{shortNameA}"
+     },
+     {
+      "name": "template:{shortNameB}"
+     }
+    ],
+    "quoteToken": "USDC",
+    "venue": "out",
+    "deployerFeeScale": "1.0"
+   },
+   {
+    "outcome": 41462,
+    "name": "template:binaryPrice",
+    "description": "perp:BTC|priceDescription:the Hyperliquid BTC perp trade (weekly)|seconds:90|threshold:68000|time:20261127-0800",
+    "sideSpecs": [
+     {
+      "name": "template:Yes"
+     },
+     {
+      "name": "template:No"
+     }
+    ],
+    "quoteToken": "USDC",
+    "venue": "skew",
+    "deployerFeeScale": "1.0"
+   }
+  ],
+  "questions": [
+   {
+    "question": 708,
+    "name": "Recurring",
+    "description": "class:priceBucket|underlying:BTC|expiry:20261127-0600|priceThresholds:59573,62004|period:1d",
+    "fallbackOutcome": 47952,
+    "namedOutcomes": [
+     47953,
+     47954,
+     47955
+    ],
+    "settledNamedOutcomes": []
+   }
+  ],
+  "feeScale": "1.0"
+ },
+ "l2Book_479480": {
+  "coin": "#479480",
+  "time": 1795715212436,
+  "levels": [
+   [
+    {
+     "px": "0.32195",
+     "sz": "100.0",
+     "n": 2
+    },
+    {
+     "px": "0.32176",
+     "sz": "131.0",
+     "n": 1
+    },
+    {
+     "px": "0.31608",
+     "sz": "50.0",
+     "n": 1
+    },
+    {
+     "px": "0.31607",
+     "sz": "1000.0",
+     "n": 1
+    },
+    {
+     "px": "0.314",
+     "sz": "11.0",
+     "n": 1
+    },
+    {
+     "px": "0.313",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.312",
+     "sz": "30.0",
+     "n": 2
+    },
+    {
+     "px": "0.3063",
+     "sz": "28.0",
+     "n": 1
+    },
+    {
+     "px": "0.30161",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.29998",
+     "sz": "1000.0",
+     "n": 1
+    },
+    {
+     "px": "0.29921",
+     "sz": "174.0",
+     "n": 1
+    },
+    {
+     "px": "0.29428",
+     "sz": "174.0",
+     "n": 1
+    },
+    {
+     "px": "0.29153",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.29",
+     "sz": "28.0",
+     "n": 1
+    },
+    {
+     "px": "0.28948",
+     "sz": "174.0",
+     "n": 1
+    },
+    {
+     "px": "0.28153",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.28109",
+     "sz": "174.0",
+     "n": 1
+    },
+    {
+     "px": "0.28",
+     "sz": "28.0",
+     "n": 1
+    },
+    {
+     "px": "0.27519",
+     "sz": "984.0",
+     "n": 1
+    },
+    {
+     "px": "0.27153",
+     "sz": "100.0",
+     "n": 1
+    }
+   ],
+   [
+    {
+     "px": "0.33796",
+     "sz": "40.0",
+     "n": 1
+    },
+    {
+     "px": "0.33797",
+     "sz": "196.0",
+     "n": 1
+    },
+    {
+     "px": "0.338",
+     "sz": "30.0",
+     "n": 2
+    },
+    {
+     "px": "0.34",
+     "sz": "7.0",
+     "n": 1
+    },
+    {
+     "px": "0.34008",
+     "sz": "30.0",
+     "n": 1
+    },
+    {
+     "px": "0.3426",
+     "sz": "30.0",
+     "n": 1
+    },
+    {
+     "px": "0.34295",
+     "sz": "64.0",
+     "n": 1
+    },
+    {
+     "px": "0.34447",
+     "sz": "195.0",
+     "n": 1
+    },
+    {
+     "px": "0.34483",
+     "sz": "195.0",
+     "n": 1
+    },
+    {
+     "px": "0.34595",
+     "sz": "60.0",
+     "n": 1
+    },
+    {
+     "px": "0.347",
+     "sz": "50.0",
+     "n": 1
+    },
+    {
+     "px": "0.35602",
+     "sz": "1433.0",
+     "n": 1
+    },
+    {
+     "px": "0.36412",
+     "sz": "195.0",
+     "n": 1
+    },
+    {
+     "px": "0.37136",
+     "sz": "200.0",
+     "n": 1
+    },
+    {
+     "px": "0.38",
+     "sz": "51.0",
+     "n": 1
+    },
+    {
+     "px": "0.38212",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.39283",
+     "sz": "100.0",
+     "n": 1
+    },
+    {
+     "px": "0.4",
+     "sz": "3.0",
+     "n": 1
+    },
+    {
+     "px": "0.40283",
+     "sz": "50.0",
+     "n": 1
+    },
+    {
+     "px": "0.40646",
+     "sz": "7165.0",
+     "n": 1
+    }
+   ]
+  ]
+ },
+ "spotAssetCtxs": [
+  {
+   "prevDayPx": "0.46",
+   "dayNtlVlm": "20692.08717",
+   "markPx": "0.32885",
+   "midPx": "0.329965",
+   "circulatingSupply": "62267.0",
+   "coin": "#479480",
+   "totalSupply": "184467440737095.53125",
+   "dayBaseVlm": "45981.0"
+  },
+  {
+   "prevDayPx": "0.54",
+   "dayNtlVlm": "25288.91283",
+   "markPx": "0.67115",
+   "midPx": "0.670035",
+   "circulatingSupply": "62267.0",
+   "coin": "#479481",
+   "totalSupply": "184467440737095.53125",
+   "dayBaseVlm": "45981.0"
+  }
+ ]
+}

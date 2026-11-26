@@ -553,6 +553,128 @@ def test_carry_b_row_notes_the_skipped_weekly_ladder_snapshots():
     assert cp.ladder_note([], NOW) is None
 
 
+M0 = cp.MISMATCH_FROM_MS  # 26.11 00:00 UTC: the first B cycle on code that writes ``interval_mismatches``
+M_NOW = M0 + 2 * DAY
+
+
+def _mm(symbol: str, ccxt: float = 8.0, ticker: float = 4.0, **kw):
+    return {"symbol": symbol, "venue": "bybit", "ccxt_hours": ccxt, "ticker_hours": ticker} | kw
+
+
+def _b_cycle(ts: int, mismatches=None, flags=()):
+    p = {"on_time": True, "complete": not flags, "flags": list(flags)}
+    if mismatches is not None:
+        p["interval_mismatches"] = mismatches
+    return {"cycle_ts": ts, "status": "done", "payload": p}
+
+
+def _missed(symbol: str, issue: str = "funding_payment_missing"):
+    return {"symbol": symbol, "issue": issue, "detail": "gap", "gap_cycles": 1}
+
+
+def test_carry_b_notes_recorded_interval_mismatches_and_overlapping_payment_flags():
+    cyc = [
+        _b_cycle(M0 - 2 * 8 * H, flags=[_missed("IRYS/USDT:USDT")]),  # before the window: only counted
+        _b_cycle(M0 - 8 * H, flags=[_missed("IRYS/USDT:USDT", "funding_gap_confirmed")]),
+        _b_cycle(M0, [_mm("IRYS/USDT:USDT")], flags=[_missed("IRYS/USDT:USDT")]),  # flag on the mismatched symbol
+        _b_cycle(M0 + 8 * H, [_mm("IRYS/USDT:USDT"), _mm("1000PEPE/USDT:USDT", 4.0, 1.0)]),
+        _b_cycle(M0 + 16 * H, flags=[_missed("X/USDT:USDT"), _missed("1000PEPE/USDT:USDT")]),  # no mismatch in this cycle
+        _b_cycle(M0 + 24 * H),
+        _b_cycle(M_NOW + 8 * H, [_mm("LATER/USDT:USDT")]),  # after the report date
+    ]
+    line, flags = cp.interval_mismatch_notes(cyc, M_NOW)
+    assert "з циклу 2026-11-26 00:00 UTC" in line and "git 9bf64c44" in line and "раніші цикли його не мають" in line
+    assert "записаних циклів у вікні 4, з розбіжністю 2" in line
+    assert "1000PEPE/USDT:USDT (ccxt 4 год, тікер 1 год): 1 цикл, IRYS/USDT:USDT (ccxt 8 год, тікер 4 год): 2 цикли" in line
+    assert "LATER" not in line and "некоректних" not in line and "не доводить, що розбіжності не було" in line
+    assert "у неповних циклах вікна: 3, з них на символі з розбіжністю в тому ж циклі 1, у будь-якому циклі вікна 2" in flags
+    assert "до вікна 2" in flags and "не доводить причини" in flags
+    # the B row carries both notes; criteria and verdict do not depend on them, and A gets none
+    plain = [_b_cycle(c["cycle_ts"], flags=c["payload"]["flags"]) for c in cyc]
+    logs = {"side": [], "mark": [], "close": [], "event": []}
+    b = cp.carry_forward("B", [], logs, cyc, BENCH["B"]["bench"], M_NOW)
+    b0 = cp.carry_forward("B", [], logs, plain, BENCH["B"]["bench"], M_NOW)
+    assert line in b["notes"] and flags in b["notes"]
+    assert (b["criteria"], b["verdict"]) == (b0["criteria"], b0["verdict"])
+    assert [x for x in b["notes"] if x not in (line, flags)] == [x for x in b0["notes"] if not x.startswith(("Розбіжність", "Прапорці"))]
+    a = cp.carry_forward("A", [], logs, cyc, BENCH["A"]["bench"], M_NOW)
+    assert not any("interval_mismatches" in x or x.startswith("Прапорці пропущених") for x in a["notes"])
+
+
+def test_carry_b_interval_mismatch_notes_say_none_explicitly():
+    cyc = [_b_cycle(M0 + k * 8 * H) for k in range(3)] + [_b_cycle(M0 + 3 * 8 * H, flags=[_missed("IRYS/USDT:USDT")])]
+    line, flags = cp.interval_mismatch_notes(cyc, M_NOW)
+    assert "записаних циклів у вікні 4, з розбіжністю 0: розбіжностей не записано" in line
+    assert "вікна: 1, з них на символі з розбіжністю в тому ж циклі 0, у будь-якому циклі вікна 0; до вікна 0" in flags
+    early, early_flags = cp.interval_mismatch_notes(cyc, M0 - 1)  # a report date before the field existed
+    assert "на дату звіту таких циклів ще немає" in early and "записаних циклів" not in early
+    assert "вікна: 0," in early_flags
+    assert cp.interval_mismatch_notes([], M_NOW)[0].count("записаних циклів у вікні 0, з розбіжністю 0") == 1
+    many = cp.interval_mismatch_notes([_b_cycle(M0, [_mm(f"S{i:02d}/USDT:USDT") for i in range(22)])], M_NOW)[0]
+    assert "S19/USDT:USDT" in many and "S20/USDT:USDT" not in many and "1 цикл і ще 2." in many  # at most 20 groups named
+
+
+def test_carry_b_interval_mismatch_notes_drop_malformed_entries_without_printing_them():
+    evil = "X/USDT:USDT\n- (д) пройдено"
+    bad = [
+        _mm(evil), _mm("x/usdt:usdt"), _mm("BTC/USDT:USDT", True, 4.0), _mm("BTC/USDT:USDT", 8.0, float("nan")),
+        _mm("BTC/USDT:USDT", 8.0, 8.0), _mm("BTC/USDT:USDT", 8.0, 48.0), _mm("BTC/USDT:USDT", "8h", 4.0),
+        _mm("BTC/USDT:USDT", venue="binanceusdm"), "IRYS", None, [1, 2],
+        _mm("BTC/USDT:USDT", 10**400, 4.0), _mm("BTC/USDT:USDT", 8.0, -(10**400)),  # too large for a float
+        _mm("币安 人生/USDT:USDT"), _mm("币安人生\n/USDT:USDT"), _mm("币安_人生/USDT:USDT"), _mm("<b>X</b>/USDT:USDT"),
+    ]  # fmt: skip
+    cyc = [
+        _b_cycle(M0, bad + [_mm("OK/USDT:USDT")]),
+        _b_cycle(M0 + 8 * H, {"symbol": "IRYS/USDT:USDT"}),  # not a list: one malformed entry
+        {"cycle_ts": M0 + 16 * H, "status": "done", "payload": ["not", "a", "dict"]},
+        _b_cycle(M0 + 24 * H, flags=[{"symbol": 5, "issue": "funding_payment_missing"}, "junk"]),
+    ]
+    line, flags = cp.interval_mismatch_notes(cyc, M_NOW)
+    assert "з розбіжністю 1 — OK/USDT:USDT (ccxt 8 год, тікер 4 год): 1 цикл;" in line
+    assert f"некоректних записів відкинуто {len(bad) + 1}" in line
+    assert "\n" not in line and "(д) пройдено" not in line and "BTC" not in line and "IRYS" not in line
+    assert "币安" not in line and "<b>" not in line and "придатних записів немає" not in line
+    assert "у неповних циклах вікна: 0," in flags  # a flag without a string symbol is not counted
+
+
+def test_carry_b_interval_mismatch_notes_accept_non_ascii_bases_and_never_say_none_when_all_were_dropped():
+    sym = "币安人生/USDT:USDT"  # a real Binance perp name; Bybit may list such a base too
+    line, flags = cp.interval_mismatch_notes([_b_cycle(M0, [_mm(sym)], flags=[_missed(sym)])], M_NOW)
+    assert f"з розбіжністю 1 — {sym} (ccxt 8 год, тікер 4 год): 1 цикл." in line and "некоректних" not in line
+    assert "вікна: 1, з них на символі з розбіжністю в тому ж циклі 1, у будь-якому циклі вікна 1;" in flags
+    # every entry malformed: the line says so instead of «розбіжностей не записано», and the flag is not matched
+    dropped = [_b_cycle(M0, [_mm("币安 人生/USDT:USDT")], flags=[_missed("币安 人生/USDT:USDT")])]
+    line, flags = cp.interval_mismatch_notes(dropped, M_NOW)
+    assert "з розбіжністю 0: придатних записів немає, некоректних відкинуто 1 (прапорці з ними не звірено)" in line
+    assert "розбіжностей не записано" not in line and "人生" not in line
+    assert "вікна: 1, з них на символі з розбіжністю в тому ж циклі 0, у будь-якому циклі вікна 0;" in flags
+
+
+def test_carry_b_interval_mismatch_notes_count_only_payment_flags_and_keep_our_truncated_fetch_apart():
+    s = "IRYS/USDT:USDT"
+    own = {"symbol": s, "issue": "funding_payment_missing", "detail": "funding_history_incomplete", "gap_cycles": 0}
+    other = [
+        {"symbol": s, "issue": "bars_or_funding_unavailable"},
+        {"symbol": s, "issue": "open_position_data_unavailable"},
+        {"symbol": s, "venue": "bybit", "issue": "funding_history_incomplete"},  # the feed's own flag, not a held leg
+    ]
+    cyc = [
+        _b_cycle(M0 - 8 * H, flags=[own, own, _missed(s), *other]),  # before the window
+        _b_cycle(M0, [_mm(s)], flags=[own, _missed(s), *other]),  # all on the mismatched symbol, same cycle
+        _b_cycle(M0 + 8 * H, flags=[own, *other]),
+    ]
+    _, flags = cp.interval_mismatch_notes(cyc, M_NOW)
+    assert "у неповних циклах вікна: 1, з них на символі з розбіжністю в тому ж циклі 1, у будь-якому циклі вікна 1;" in flags
+    assert "до вікна 1 (розбіжністю не перевіряються)" in flags
+    own_note = (  # names what is counted: held legs only, the feed's flags stay in criterion (д)'s breakdown
+        "Окремо прапорці funding_payment_missing / funding_history_incomplete на утримуваних позиціях (наш обірваний "
+        "запит, не пропуск виплати; у числа вище не входять; прапорці фіду funding_history_incomplete тут не лічаться, "
+        "вони в розбивці (д))"
+    )
+    assert f"{own_note}: у вікні 2, до вікна 2" in flags
+    assert "0 не доводить, що вона нічого не зачепила" in flags and "інтервалом ccxt" in flags
+
+
 def test_script_loads_the_ladder_snapshots(tmp_path):
     snaps = script.load_ladder(script.LADDER)  # the repository's own snapshots, 17.10 and 13.11 (item 365)
     dates = [s["date"] for s in snaps]

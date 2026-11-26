@@ -232,6 +232,10 @@ def _rt(
             res = ([] if empty_summary else _summary(opts["fwd_shift"])) if req.url.params["currency"] == "BTC" else far
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": res})
         name = req.url.params.get("instrument_name")
+        if name in opts.get("d_429", ()):  # Deribit's live answer to a burst since 2026-11-20
+            return httpx.Response(429, json={"jsonrpc": "2.0", "error": {"code": 10028, "message": "too_many_requests"}})
+        if name in opts.get("d_bad", ()):
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": []})
         if req.url.path.endswith("/ticker") and name in SAMPLE["deribit_ticker"]:
             t = SAMPLE["deribit_ticker"][name]
             t = dict(t, underlying_price=t["underlying_price"] + opts["fwd_shift"])
@@ -674,5 +678,83 @@ async def test_migration_26_tags_old_rows_hourly_and_mode_is_stored(tmp_path):
         assert (new["reg_atm"], new["d_recv_ms"], new["b_recv_ms"]) == (1, 1_792_724_300_100, 1_792_724_300_350)
         with pytest.raises(ValueError):
             await s.insert_option_xvenue(3, [row], mode="burst")
+    finally:
+        await s.aclose()
+
+
+# ----------------------------------------------------------------------------- why a leg is missing (schema 43)
+
+
+async def test_missing_deribit_legs_record_the_429_and_present_legs_none(tmp_path):
+    """20.11-25.11 about half the Deribit legs went missing to HTTP 429 with nothing in the row saying why."""
+    throttled = {"BTC-23OCT26-83500-C", "BTC-23OCT26-80500-P"}
+    rt, _ = _rt(tmp_path, opts={"d_429": throttled, "d_bad": {"BTC-23OCT26-83000-P"}})
+    try:
+        assert await collect_option_xvenue(rt) == 14
+        rows = {(r["strike"], r["opt"]): r for r in await rt.store.option_xvenue_rows()}
+        assert rows[(83500.0, "C")]["d_miss"] == rows[(80500.0, "P")]["d_miss"] == "rate_limited"
+        assert rows[(83500.0, "C")]["d_bid"] is None and rows[(83500.0, "C")]["d_instrument"] is None
+        assert rows[(83000.0, "P")]["d_miss"] == "bad_response"
+        present = [r for r in rows.values() if r["d_instrument"] is not None]
+        assert len(present) == 11 and all(r["d_miss"] is None for r in present)
+        assert all((r["b_miss"] is None) == (r["b_symbol"] is not None) for r in rows.values())
+        assert all(r["b_miss"] in (None, "not_listed") for r in rows.values())  # Bybit's chain was read
+    finally:
+        await rt.aclose()
+
+
+async def test_deribit_summary_down_marks_every_deribit_leg(tmp_path):
+    rt, _ = _rt(tmp_path, deribit_down=True)
+    try:
+        rows = await scan_option_xvenue(rt, Builder())
+        assert rows and all(r["d_miss"] == "summary:backend_error" for r in rows)  # HTTP 500 from the fake
+        assert all(r["b_miss"] is None and r["b_symbol"] for r in rows)
+    finally:
+        await rt.aclose()
+
+
+async def test_empty_deribit_summary_is_recorded_as_summary_data_unavailable(tmp_path):
+    rt, _ = _rt(tmp_path, empty_summary=True)
+    try:
+        rows = await scan_option_xvenue(rt, Builder())
+        assert rows and {r["d_miss"] for r in rows} == {"summary:data_unavailable"}
+    finally:
+        await rt.aclose()
+
+
+async def test_bybit_down_or_without_the_expiry_marks_the_bybit_leg(tmp_path):
+    for bybit, want in (("down", "network"), ("no_daily", "not_listed")):
+        (tmp_path / bybit).mkdir()
+        rt, _ = _rt(tmp_path / bybit, bybit=bybit)
+        try:
+            rows = await scan_option_xvenue(rt, Builder())
+            assert len(rows) == 14 and {r["b_miss"] for r in rows} == {want}
+            assert all(r["d_miss"] is None and r["d_instrument"] for r in rows)
+        finally:
+            await rt.aclose()
+
+
+async def test_migration_43_adds_leg_miss_reasons_to_a_v42_store(tmp_path):
+    path = tmp_path / "v42.sqlite"
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
+    for v in sorted(MIGRATIONS):
+        if v <= 42:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("INSERT INTO option_xvenue_snapshot (ts, currency, expiry_ts, tau_hours, strike, opt) VALUES (1, 'BTC', 9, 5.0, 1.0, 'C')")
+    con.execute("PRAGMA user_version = 42")
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert await s.version() == SCHEMA_VERSION >= 43
+        old = (await s.option_xvenue_rows())[0]
+        assert (old["d_miss"], old["b_miss"]) == (None, None)  # unknown for rows written before schema 43
+        row = {"currency": "BTC", "expiry_ts": 9, "tau_hours": 5.0, "strike": 1.0, "opt": "C"}
+        assert await s.insert_option_xvenue(2, [row | {"d_miss": "rate_limited", "b_miss": "not_listed"}]) == 1
+        new = (await s.option_xvenue_rows(2))[0]
+        assert (new["d_miss"], new["b_miss"]) == ("rate_limited", "not_listed")
     finally:
         await s.aclose()

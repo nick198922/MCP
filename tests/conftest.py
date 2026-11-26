@@ -115,6 +115,19 @@ def is_loopback(address: object) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def fast_deribit_pace(request, monkeypatch):
+    """The live pace of the shared Deribit client (providers/deribit.py RATE_PER_SECOND / BURST, below 1 request/s since
+    2026-11-25) would make every test with more than a few fake Deribit calls sleep for real; the fakes have no limit, so
+    a Runtime built in a test paces Deribit at the earlier 8/s with a burst of 10. A test marked ``live_deribit_pace``
+    keeps the live values (tests/test_deribit_pace.py)."""
+    if request.node.get_closest_marker("live_deribit_pace") is None:
+        from tradedesk.providers import deribit  # noqa: PLC0415
+
+        monkeypatch.setattr(deribit, "RATE_PER_SECOND", 8.0)
+        monkeypatch.setattr(deribit, "BURST", 10)
+
+
+@pytest.fixture(autouse=True)
 def no_server_ladder_dir(monkeypatch):
     """scripts/checkpoint_report.py also reads the weekly ladder timer's directory (/var/lib/tradedesk-mcp/ladder by
     default); on the server it exists, so tests point it at a path that is never there to stay host-independent."""

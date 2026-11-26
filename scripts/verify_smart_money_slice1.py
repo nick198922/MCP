@@ -468,8 +468,28 @@ def coverage(prep: Prep) -> dict[str, Any]:
         "fresh": sum(1 for e in ev if fp(e) and e["fresh"]),
         "tokens": len({e["market"] for e in ev if fp(e)}),
     }
+    emit("")
+    out["hl_zero_quality"] = hl_zero_block(prep)
     emit(f"- peak RSS {cmn.rss_mb():.0f} MB")
     return out
+
+
+def hl_zero_block(prep: Prep) -> list[dict[str, Any]]:
+    """Review 2026-11-26 (slice-1 results, finding 2): impossible zero combinations in the Hyperliquid leaderboard
+    windows per snapshot day d <= as-of. Descriptive data-quality row only: it filters nothing and enters no
+    hypothesis or decision rule; printed before any outcome of the full stage."""
+    h1d, h1wd = {d for d, _ in prep.h1}, {d for d, _ in prep.h1w}
+    emit(f"### Якість нулів лідерборду HL (лише опис: нічого не фільтрує, у правила не входить; акаунти ≥ ${smf.MIN_VALUE:,.0f})")
+    emit("| d | формування | n | pnl_month = 0 | pnl_week = 0 | pnl_month = 0 ∧ pnl_week ≠ 0 | pnl_week = 0 ∧ pnl_day ≠ 0 |")
+    emit("|---|---|---:|---:|---:|---:|---:|")
+    rows = []
+    for d in sorted(prep.hl):
+        q = smf.leaderboard_zero_quality(prep.hl[d])
+        tag = ", ".join(t for t, s in (("H1", h1d), ("H1w", h1wd)) if d in s)
+        emit(f"| {d} | {tag} | {q['n']} | {q['month0']} | {q['week0']} | {q['month0_week_nz']} | {q['week0_day_nz']} |")
+        rows.append({"d": d.isoformat(), "formation": tag, **q})
+    emit("")
+    return rows
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -487,9 +507,10 @@ class Pacer:
         self.next_at = max(now, self.next_at) + weight / self.per_s
 
 
-async def fetch(prep: Prep, cache: Path, plan: dict[str, list[str]]) -> None:
+async def fetch(prep: Prep, cache: Path, plan: dict[str, list[str]]) -> dict[str, int]:
     """Fill the per-response cache: ``portfolio/<account>.json`` (parsed), ``candles/<coin>.json`` (raw 1d candles
-    16.10 … as-of), ``gamma/<token>.json`` (raw Gamma ``/markets`` list). Existing files are not refetched."""
+    16.10 … as-of), ``gamma/<token>.json`` (raw Gamma ``/markets`` list). Existing files are not refetched.
+    Returns what this attempt could not fetch (the ``fetch done`` counter), for the JSON's descriptive ``fetch_failed``."""
     from tradedesk.server import build_server  # noqa: PLC0415
 
     _, rt = build_server()
@@ -521,9 +542,12 @@ async def fetch(prep: Prep, cache: Path, plan: dict[str, list[str]]) -> None:
     finally:
         await rt.aclose()
     emit(f"fetch done: failed {dict(failed)}")
+    return dict(failed)
 
 
 GAMMA_BATCH = 40  # tokens per Gamma /markets request (repeated clob_token_ids; probe 2026-11-25: 5 asked, 5 returned)
+GAMMA_RETRY_ROUNDS = 2  # extra passes over the failed Gamma batches in the same run (bounded: no endless loop)
+GAMMA_RETRY_PAUSE_S = 60.0  # pause before each retry pass
 GAMMA_KEEP = ("conditionId", "clobTokenIds", "outcomePrices", "outcomes", "closed", "closedTime", "umaEndDate", "endDate", "question")
 
 
@@ -544,28 +568,41 @@ async def fetch_gamma(rt: Any, cache: Path, tokens: list[str], failed: Counter) 
     (cache / "gamma").mkdir(parents=True, exist_ok=True)
     pacer, t0 = Pacer(300.0), time.time()  # 5 requests / s
     batches = [tokens[i : i + GAMMA_BATCH] for i in range(0, len(tokens), GAMMA_BATCH)]
-    for i, b in enumerate(batches):
-        path = cache / "gamma" / f"batch_{i:05d}.json"
-        if path.exists():
-            continue
-        try:
-            await pacer.spend(1)
-            mk = await gamma_markets(rt, b, {})
-            seen = {str(t) for m in mk for t in _ids(m)}
-            rest = [t for t in b if t not in seen]
-            if rest:
+    todo = [i for i in range(len(batches)) if not (cache / "gamma" / f"batch_{i:05d}.json").exists()]
+    # Review 2026-11-26 (slice-1 results, finding 3): a batch that failed (e.g. HTTP 500 after Http's own retries) is
+    # asked again in the same run, at most GAMMA_RETRY_ROUNDS more rounds after a pause; what still fails is printed.
+    for rnd in range(GAMMA_RETRY_ROUNDS + 1):
+        if rnd:
+            emit(f"  gamma: retry round {rnd}/{GAMMA_RETRY_ROUNDS} after {GAMMA_RETRY_PAUSE_S:.0f} s: {len(todo)} batches")
+            await asyncio.sleep(GAMMA_RETRY_PAUSE_S)
+        still: list[int] = []
+        for i in todo:
+            b, path = batches[i], cache / "gamma" / f"batch_{i:05d}.json"
+            try:
                 await pacer.spend(1)
-                mk += await gamma_markets(rt, rest, {"closed": "true"})
-        except ProviderError as e:
-            failed["gamma"] += 1
-            if failed["gamma"] <= 3:
-                emit(f"  gamma batch {i}: {e}")
-            continue
-        cmn.write_json(path, {"tokens": b, "markets": mk})
-        if (i + 1) % 100 == 0 or i + 1 == len(batches):
-            emit(
-                f"  gamma: {i + 1}/{len(batches)} batches, {time.time() - t0:.0f} s, failed {failed['gamma']}, peak RSS {cmn.rss_mb():.0f} MB"
-            )
+                mk = await gamma_markets(rt, b, {})
+                seen = {str(t) for m in mk for t in _ids(m)}
+                rest = [t for t in b if t not in seen]
+                if rest:
+                    await pacer.spend(1)
+                    mk += await gamma_markets(rt, rest, {"closed": "true"})
+            except ProviderError as e:
+                failed["gamma_attempt_errors"] += 1
+                still.append(i)
+                if failed["gamma_attempt_errors"] <= 3 or rnd:
+                    emit(f"  gamma batch {i} (round {rnd}): {e}")
+                continue
+            cmn.write_json(path, {"tokens": b, "markets": mk})
+            if rnd == 0 and ((i + 1) % 100 == 0 or i + 1 == len(batches)):
+                emit(
+                    f"  gamma: {i + 1}/{len(batches)} batches, {time.time() - t0:.0f} s, failed {len(still)}, peak RSS {cmn.rss_mb():.0f} MB"
+                )
+        todo = still
+        if not todo:
+            break
+    failed["gamma"] += len(todo)  # batches still failed after the retry rounds
+    if todo:
+        emit(f"  gamma: still failed after {GAMMA_RETRY_ROUNDS} retry rounds: {len(todo)} batches ({', '.join(map(str, todo[:20]))})")
 
 
 def _ids(m: dict[str, Any]) -> list[str]:
@@ -1037,7 +1074,10 @@ def prior_from_body(body: dict[str, Any]) -> dict[str, Any]:
 def load_prior(path: str | None) -> dict[str, Any] | None:
     if not path:
         return None
-    return prior_from_body(cmn.read_json(Path(path).expanduser()))
+    body = cmn.read_json(Path(path).expanduser())
+    if isinstance(body, dict) and "fetch_failed" in body and body["fetch_failed"] is None:  # card rule «порядок спроб»
+        raise ValueError(f"--h3-prior-json refused: {path} is a --no-fetch replay, not an attempt; give the decisive attempt's JSON")
+    return prior_from_body(body)
 
 
 def accepted_prior(prior: dict[str, Any] | None, as_of_s: int) -> dict[str, Any] | None:
@@ -1051,12 +1091,14 @@ def accepted_prior(prior: dict[str, Any] | None, as_of_s: int) -> dict[str, Any]
 def full(prep: Prep, cache: Path, seed: int, no_fetch: bool, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     prior = accepted_prior(prior, prep.as_of_s)
     look = smf.decisive_look(prep.as_of_s)
+    zeros = hl_zero_block(prep)  # data quality, descriptive: before the fetch and before any outcome
     plan = fetch_plan(prep)
     emit(
         f"план запитів: portfolio {len(plan['portfolio'])}, candles {len(plan['candles'])}, candles1h {len(plan['candles1h'])}, gamma {len(plan['gamma'])}"
     )
-    if not no_fetch:
-        asyncio.run(fetch(prep, cache, plan))
+    # Review 2026-11-26 (slice-2 prep, finding 6): what this attempt could not fetch, descriptive only (no decision
+    # reads it); None = a --no-fetch replay. A Gamma batch that never came is otherwise not told apart from no_market.
+    fetch_failed = None if no_fetch else asyncio.run(fetch(prep, cache, plan))
     emit("")
     emit(f"## Зріз: метрики на {datetime.fromtimestamp(prep.as_of_s, UTC):%Y-%m-%d %H:%M} UTC")
     emit(look_line(look, prior))
@@ -1066,6 +1108,8 @@ def full(prep: Prep, cache: Path, seed: int, no_fetch: bool, prior: dict[str, An
         "look": look,
         "prior_as_of_s": None if prior is None else prior["as_of_s"],
         "registration": registration(),
+        "hl_zero_quality": zeros,
+        "fetch_failed": fetch_failed,
         "h1": h1_block(prep, cache, "H1", prep.h1, "pnl_month", seed, look),
         "h1w": h1_block(prep, cache, "H1w", prep.h1w, "pnl_week", seed + 1000, look),
         "h2": h2_block(prep, cache, prior),
@@ -1084,6 +1128,45 @@ def look_line(look: int | None, prior: dict[str, Any] | None) -> str:
     return f"- вирішальний погляд {look} з {smf.DECISIVE_LOOKS} ({p}){tail}"
 
 
+def free_out(out: Path) -> Path:
+    """Review 2026-11-26: every attempt of a run writes its own report. If ``out`` or its JSON already exists, the
+    first free ``<stem>.<k><suffix>`` (k = 2, 3, ...) is used instead; an existing file is never overwritten.
+    ``out`` must end in ``.md`` (slice-2 prep review, finding 3: without it ``rep.2`` and ``rep`` map to the same
+    ``rep.json`` and the search never ends; ``x.json`` would put the text where the JSON goes)."""
+    if out.suffix != ".md":
+        raise ValueError(f"--out must end in .md (the JSON is written next to it): {out}")
+    cand, k = out, 1
+    while cand.exists() or cand.with_suffix(".json").exists():
+        k += 1
+        cand = out.with_name(f"{out.stem}.{k}{out.suffix}")
+    return cand
+
+
+def decisive_attempt(out: Path, as_of_s: int) -> Path | None:
+    """Card rule «порядок спроб» (2026-11-26, before slice 2): at a decisive as-of the first full-stage JSON of the
+    attempt series of ``out`` (``<stem>.json``, ``<stem>.<k>.json``) whose H3 is not stopped is the decisive attempt;
+    returns it (None = no such attempt yet, so a new attempt is allowed: none yet, or every earlier one crashed before
+    its JSON or was stopped by the Gamma check). A ``--no-fetch`` replay (``fetch_failed`` = None) is never an attempt;
+    a JSON without the key (slice 1, written before it existed) counts as one."""
+    found: list[tuple[int, Path]] = []
+    for p in out.parent.glob(f"{out.stem}*.json"):
+        mid = p.name[len(out.stem) : -len(".json")]
+        if mid == "":
+            found.append((1, p))
+        elif mid[:1] == "." and mid[1:].isdigit():
+            found.append((int(mid[1:]), p))
+    for _, p in sorted(found):
+        try:
+            body = cmn.read_json(p)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(body, dict) or body.get("as_of_s") != as_of_s or ("fetch_failed" in body and body["fetch_failed"] is None):
+            continue
+        if not prior_from_body(body)["stopped"]:
+            return p
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=("coverage", "full"), required=True)
@@ -1091,7 +1174,11 @@ def main() -> None:
     ap.add_argument("--db", default=None, help="store copy (.sqlite); default: online backup of the live store into the cache dir")
     ap.add_argument("--cache-dir", default=str(DEFAULT_CACHE))
     ap.add_argument("--stage0-cache", default=str(STAGE0_CACHE))
-    ap.add_argument("--out", default=None, help="text report path (default: <cache>/<stage>.md); JSON next to it")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="text report path (default: <cache>/<stage>.md); JSON next to it; if either exists, <stem>.<k>.md is used",
+    )
     ap.add_argument("--seed", type=int, default=20261125)
     ap.add_argument("--no-fetch", action="store_true", help="full stage from the cache only")
     ap.add_argument(
@@ -1103,15 +1190,25 @@ def main() -> None:
     a = ap.parse_args()
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
-    out = Path(a.out).expanduser() if a.out else cache / f"{a.stage}.md"
+    base = Path(a.out).expanduser() if a.out else cache / f"{a.stage}.md"
     as_of = datetime.fromisoformat(a.as_of.replace("Z", "+00:00")).astimezone(UTC)
     try:  # R1: refuse a wrong prior before any data is read
+        out = free_out(base)
         prior = accepted_prior(load_prior(a.h3_prior_json), int(as_of.timestamp()))
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    with open(out, "w") as fh:
+    if a.stage == "full" and smf.decisive_look(int(as_of.timestamp())) is not None:  # card rule «порядок спроб»
+        if a.no_fetch and not a.out:
+            raise SystemExit("--no-fetch at a decisive as-of is a replay, not an attempt: write it with --out outside the slice's series")
+        done = None if a.no_fetch else decisive_attempt(base, int(as_of.timestamp()))
+        if done is not None:
+            raise SystemExit(
+                f"the decisive attempt of this as-of is already written: {done}; a new attempt is not allowed (replay: --no-fetch --out <tmp>/x.md)"
+            )
+    with open(out, "x") as fh:  # never overwrite an earlier attempt's output
         OUT["fh"] = fh
         emit(f"# smart-money slice 1, stage {a.stage}, as-of {as_of.isoformat()}, seed {a.seed}")
+        emit(f"out: {out}")
         conn = open_store(a.db, cache)
         prep = Prep(conn, as_of, Path(a.stage0_cache).expanduser())
         res = coverage(prep) if a.stage == "coverage" else full(prep, cache, a.seed, a.no_fetch, prior)

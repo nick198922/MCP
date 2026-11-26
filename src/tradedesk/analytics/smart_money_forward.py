@@ -163,6 +163,30 @@ def h1_universe(
     return sorted(out)
 
 
+def leaderboard_zero_quality(snap: Mapping[str, Mapping[str, Any]], min_value: float = MIN_VALUE) -> dict[str, int]:
+    """Data-quality row of one Hyperliquid leaderboard snapshot (descriptive only: filters nothing, enters no rule).
+
+    The week window lies inside the month window and the day window inside the week, so a zero PnL on the longer
+    window with a non-zero PnL on the shorter one is impossible for a real account (review 2026-11-26). Counted over
+    accounts with ``account_value >= min_value``; a missing (None) or non-finite value is neither zero nor non-zero."""
+
+    def num(x: Any) -> float | None:
+        return x if isinstance(x, int | float) and math.isfinite(x) else None
+
+    n = month0 = week0 = month0_week_nz = week0_day_nz = 0
+    for r in snap.values():
+        av = num(r.get("account_value"))
+        if av is None or av < min_value:
+            continue
+        n += 1
+        m, w, dd = num(r.get("pnl_month")), num(r.get("pnl_week")), num(r.get("pnl_day"))
+        month0 += m == 0
+        week0 += w == 0
+        month0_week_nz += m == 0 and w is not None and w != 0
+        week0_day_nz += w == 0 and dd is not None and dd != 0
+    return {"n": n, "month0": month0, "week0": week0, "month0_week_nz": month0_week_nz, "week0_day_nz": week0_day_nz}
+
+
 def portfolio_change(pf: Mapping[str, Mapping[str, Any]], start_ms: int, end_ms: int) -> float | None:
     """PnL change (USD) over [start_ms, end_ms] from a parsed ``portfolio`` (outcome window only, both edges in the
     past): the finest window ('week', 'month', 'allTime') whose pnl history covers both edges, linear interpolation."""

@@ -177,7 +177,8 @@ class Settings:
     # Daily CPI snapshot (collector/pm_cpi_snapshot.py; IDEA-20261028-pm-cpi-brackets-vs-nowcast-forward, item 480): every
     # UTC day (weekends included) 15:30-17:00 UTC one row with the Cleveland Fed nowcast files and the books of the open
     # Polymarket CPI brackets (table pm_cpi_snapshot); what is still missing at 17:00 is filled until 21:00 (late = 1).
-    # Ticks every `_seconds` (clamped to 60-1800 so the 90 min window always gets several ticks); a tick with nothing
+    # Ticks every `_seconds` (clamped to 300-1800 so the 90 min window always gets several ticks and the day's books
+    # attempts outlast a late nowcast file); a tick with nothing
     # due makes no request. No retention (~0.7 MB a weekday with a new file, ~0.1 MB a day whose files are unchanged).
     # Off by default.
     collect_pm_cpi_enabled: bool = False

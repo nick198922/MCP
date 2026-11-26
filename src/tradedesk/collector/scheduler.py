@@ -895,10 +895,11 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
 
         jobs.append(PeriodicJob(name="option_legs", period_seconds=s.collect_option_legs_seconds, fn=collect_option_legs))
     if s.collect_pm_cpi_enabled:
-        from .pm_cpi_snapshot import MAX_TICK_SECONDS, collect_pm_cpi_snapshot  # noqa: PLC0415
+        from .pm_cpi_snapshot import MAX_TICK_SECONDS, MIN_TICK_SECONDS, collect_pm_cpi_snapshot  # noqa: PLC0415
 
-        # Clamped: a cadence above 30 min could step over most of the 90 min window (15:30-17:00 UTC).
-        period = min(max(60, s.collect_pm_cpi_seconds), MAX_TICK_SECONDS)
+        # Clamped: a cadence above 30 min could step over most of the 90 min window (15:30-17:00 UTC); one below 5 min
+        # spends the day's books attempts before a late nowcast file (see MIN_TICK_SECONDS).
+        period = min(max(MIN_TICK_SECONDS, s.collect_pm_cpi_seconds), MAX_TICK_SECONDS)
         jobs.append(PeriodicJob(name="pm_cpi_snapshot", period_seconds=period, fn=collect_pm_cpi_snapshot))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.

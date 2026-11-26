@@ -15,19 +15,27 @@ state, so a service restart inside the window neither duplicates the row (key = 
   weekend or a US holiday therefore ends as ``status = 'stale'`` with the books written, not as a missing day. A
   readable download replaces the stored file unless it is older or the same bytes; a failed one keeps what is stored;
   one that does not parse is kept as raw bytes (marked in ``missing``) only while nothing is stored for its kind. Bytes
-  equal (sha256) to the latest earlier row's stored copy are not stored again: ``cf_*_ref`` names that row's day.
+  equal (sha256) to the latest earlier row's stored copy are not stored again: ``cf_*_ref`` names that row's day. A
+  download with the same stamp and points as today's stored copy but other bytes replaces it, except when those bytes
+  are any earlier row's copy (A -> B -> A keeps B, also with a raw page stored in between: the rewrite item 479 looks
+  for).
 * books (``rt.polymarket``: Gamma ``/events/keyset`` per series, CLOB ``POST /books`` of the YES tokens): fetched while a
   series was not listed yet today (a main series answering 0 open brackets does not count as listed), a bracket has no
   book, or a book was read before the stored nowcast was downloaded. That last case is the pairing rule (review C of
   item 480, blocker 1): when a tick stores a file (today's copy on the retry), every book read before it is read again
   in the same tick; the earlier book moves to ``books_early`` with its own ``read_ts`` and ``superseded_ts`` and is
-  never dropped, even when the re-read fails (then the main set keeps it and the row stays ``partial``). Every level of
-  every book, both sides, is kept compressed in ``books_depth_z``.
+  never dropped, even when the re-read fails (then the main set keeps it and the row stays ``partial``). A bracket gets
+  ``gone_ts`` (in ``books``) only on proof that its market closed: ``closed: true`` in its series' listing, or, when it
+  is missing from a complete listing and the CLOB gave no book of it either, Gamma ``/markets/{id}`` saying ``closed``
+  (``CONFIRM_MAX`` requests a tick at most). A gone bracket keeps its book but is left out of the pair checks and is not
+  asked again. Missing from the listing alone proves nothing (a short Gamma answer, a market without its token): the
+  bracket stays live, its stored token is read in the same ``/books``, and a book not got lands in ``missing``. Every
+  level of every book, both sides, is kept compressed in ``books_depth_z``.
 * after 17:00 UTC (until 21:00) only what is still missing is fetched, and the row gets ``late = 1`` when that brought
   a file or a book.
 
-``status = 'complete'`` / ``'stale'`` only with both files readable and every book of the main set read at or after
-their download (``books_paired = 1``). A provider failure never raises: it lands in the row's ``missing`` (and the log)
+``status = 'complete'`` / ``'stale'`` only with both files readable and the book of every live (not gone) bracket of
+the main set read at or after their download (``books_paired = 1``). A provider failure never raises: it lands in the row's ``missing`` (and the log)
 and is retried on the next tick. Off by default: TRADEDESK_COLLECT_PM_CPI_ENABLED=1.
 """
 
@@ -42,14 +50,20 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ..analytics.pm_cpi import (
+    as_listed,
     book_depth,
     books_complete,
     books_due,
     books_of,
     books_paired,
     brackets,
+    closed_tokens,
+    confirms_close,
+    file_key,
     is_fresh,
     latest_value,
+    live,
+    mark_gone,
     merge_brackets,
     newer_or_same,
     nowcast_summary,
@@ -76,7 +90,18 @@ SERIES = ("5", "10007", "10008", "11905", "12054")
 # asked again next tick (review C of item 480, remark 3). Between a release and the next event it can also be true.
 MAIN_SERIES = ("10007", "10008", "11905", "12054")
 BOOK_CHUNK = 50  # tokens per CLOB POST /books (as in collector/pm_gap.py)
+# Gamma /markets/{id} requests a tick at most (blocker 1 of review C2): asked only for a live bracket that is missing
+# from an answered listing of its series and got no book in the same tick; closed -> gone, never asked again. 20 covers
+# one release (4 events, 39 brackets on 26.11) in two ticks; a day costs at most CONFIRM_MAX x BOOKS_MAX_TRIES, and only
+# while Gamma keeps calling open a market it does not list and the CLOB has no book of it.
+CONFIRM_MAX = 20
 MAX_TICK_SECONDS = 1800  # the scheduler clamps the cadence to this, so the 90 min window always gets ticks
+# ... and to at least this (finding 15 of review C): a nowcast file is stored by about the 19th tick of the day at the
+# latest (every tick while a file is missing, at most CF_MAX_TRIES = 12; once both are readable, only retries inside the
+# window: 90 min / 300 s = 18 ticks), so the books attempts still allow the re-read in that tick, with room for extra
+# ticks after a restart; BOOKS_MAX_TRIES = 80 also covers every 300 s tick to 21:00 (66) when the books stay due
+# (finding 3 of review C2: 40 ran out at 18:45). With 60 s ticks the attempts ran out at ~16:10, before a file of 16:30.
+MIN_TICK_SECONDS = 300
 FILES = ("year", "month")
 ZLIB_LEVEL = 9
 
@@ -155,9 +180,18 @@ async def _nowcast(rt: "Runtime", b: Builder, row: dict[str, Any], day: str) -> 
             continue
         if sha == row.get(f"cf_{kind}_sha") and readable(row, kind):
             continue  # the same bytes as stored: cf_<kind>_ts keeps their first download
-        if not newer_or_same(s, _stored_summary(row, kind)):
+        old = _stored_summary(row, kind)
+        if not newer_or_same(s, old):
             b.warn(f"nowcast_{kind}: download older than the stored copy (stamp {s['stamp']}), kept the stored one")
             continue
+        if old is not None and file_key(s) == file_key(old):
+            # same stamp and points, other bytes than stored: when they are an earlier row's copy (A -> B -> A), the
+            # stored B is the rewrite item 479 looks for; a reference to A would drop it (review C, finding 14). Any
+            # earlier row, not only the latest one storing bytes: that can be a raw page (review C2, finding 2)
+            seen = await rt.store.pm_cpi_sha_day(row["day"], kind, sha)
+            if seen is not None:
+                b.warn(f"nowcast_{kind}: download equals the copy of {seen} under the same stamp, kept today's other bytes")
+                continue
         await _keep_file(rt, row, kind, raw, sha)
         row[f"cf_stamp_{kind}"], row[f"cf_last_day_{kind}"] = s["stamp"], s["last_day"]
         row["target" if kind == "year" else "mom_target"] = s["target"]
@@ -206,6 +240,8 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
     listed = set(old.get("series_listed") or [])
     counts = dict(old.get("counts") or {})
     fresh: dict[str, dict[str, Any]] = {}
+    shut: set[str] = set()  # YES tokens known closed this tick: closed: true in a listing, or confirmed by /markets/{id}
+    answered: set[str] = set()  # series whose listing this tick is complete, empty or not
     for sid in SERIES:
         data = await b.guard(f"events:{sid}", "polymarket:gamma", rt.polymarket.events_all({"series_id": sid, "closed": "false"}))
         if data is None:
@@ -214,6 +250,8 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
             b.miss(f"events:{sid}", "polymarket:gamma", "data_unavailable", f"listing not finished after {data.get('pages')} pages")
             continue
         events = data.get("rows") or []
+        answered.add(sid)
+        shut |= closed_tokens(events)
         got = brackets(sid, events)
         counts[sid] = {"events": len(events), "brackets": len(got), "ts": _ts(rt)}
         if not got and sid in MAIN_SERIES:
@@ -224,7 +262,12 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
         for x in got:
             fresh.setdefault(x["token"], x)
     main = {str(x["token"]): x for x in old.get("brackets") or []}
-    tokens = [t for t in fresh if not paired(main.get(t), since)]
+    # blocker 1 of review C2: a live stored bracket missing from this tick's listing (a short or failed Gamma answer, a
+    # market listed without its token, an event gone after the release) is not taken for closed: its stored token goes
+    # into the same /books; only positive evidence (shut) makes it gone
+    absent = {t: as_listed(x) for t, x in main.items() if t not in fresh and t not in shut and not x.get("gone_ts")}
+    cand = {**fresh, **absent}
+    tokens = [t for t in cand if not paired(main.get(t), since)]
     books: dict[str, dict[str, Any]] = {}
     read: dict[str, int] = {}
     for i in range(0, len(tokens), BOOK_CHUNK):
@@ -235,11 +278,30 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
             if isinstance(bk, dict) and bk.get("asset_id") is not None and str(bk["asset_id"]) in part:
                 books[str(bk["asset_id"])] = bk
                 read[str(bk["asset_id"])] = ts
-    lost = [t for t in tokens if t not in books]
+    # absent from an answered listing and no book either: ask Gamma about that market (at most CONFIRM_MAX a tick);
+    # only closed: true for this very token marks it gone, a failed or other answer keeps it live and asked next tick
+    ask = [t for t in tokens if t in absent and t not in books and absent[t]["series"] in answered]
+    for t in ask[:CONFIRM_MAX]:
+        mid = str(absent[t].get("market_id"))
+        if confirms_close(await b.guard(f"closed:{mid}", "polymarket:gamma", rt.polymarket.market(mid)), t):
+            shut.add(t)
+    if len(ask) > CONFIRM_MAX:
+        b.warn(f"{len(ask)} bracket(s) to confirm closed, {CONFIRM_MAX} asked this tick, the rest next tick")
+    lost = [t for t in tokens if t not in books and t not in shut]
     if lost and not any(m.field.startswith("books:") for m in b.missing):
-        b.miss("books", "polymarket:clob", "data_unavailable", f"{len(lost)} token(s) not in the /books answer")
-    new = [with_book(fresh[t], books.get(t), read.get(t, 0)) for t in tokens]
+        out = sum(1 for t in lost if t in absent)
+        b.miss("books", "polymarket:clob", "data_unavailable", f"{len(lost)} token(s) not in the /books answer"
+               + (f" ({out} of them not in the listing either, not confirmed closed: kept, asked next tick)" if out else ""))  # fmt: skip
+    if any(t in books for t in absent):
+        b.warn(f"{sum(1 for t in absent if t in books)} bracket(s) not in this tick's listing, read by their stored token")
+    new = [with_book(cand[t], books.get(t), read.get(t, 0)) for t in tokens]
     merged, superseded = merge_brackets(main.values(), new, since, _ts(rt))
+    # finding 12 of review C: a closed bracket cannot be read again; it keeps its book but is out of the pair checks,
+    # so the row is not held 'partial' (and Gamma asked every tick) until 21:00
+    merged = mark_gone(merged, shut, fresh, _ts(rt))
+    gone = [x for x in merged if x.get("gone_ts") and not (main.get(str(x["token"])) or {}).get("gone_ts")]
+    if gone:
+        b.warn(f"{len(gone)} bracket(s) closed, their books kept: {[x.get('title') for x in gone][:6]}")
     try:
         depth = _obj(zlib.decompress(row["books_depth_z"])) if row.get("books_depth_z") else {}
     except zlib.error:  # never seen; the stored blob is then left as it is rather than overwritten
@@ -298,7 +360,7 @@ async def collect_pm_cpi_snapshot(rt: "Runtime") -> int:
     row["cf_fresh"] = _fresh(row, day)
     row["books_paired"] = books_paired(books, since)
     if row["books_paired"] == 0 and since is not None:
-        early = [x for x in (books or {}).get("brackets") or [] if x.get("book") and not paired(x, since)]
+        early = [x for x in live((books or {}).get("brackets") or []) if x.get("book") and not paired(x, since)]
         b.miss("books_paired", "polymarket:clob", "data_unavailable",
                f"{len(early)} book(s) read before the nowcast download at {_hm(since)} UTC are still the main set's: "
                "the re-read did not reach them")  # fmt: skip

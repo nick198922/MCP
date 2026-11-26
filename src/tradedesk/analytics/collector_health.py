@@ -159,10 +159,11 @@ SPECS: tuple[Spec, ...] = (
     ),
     Spec(
         "pm_cpi_snapshot", "TRADEDESK_COLLECT_PM_CPI_ENABLED", "pm_cpi_snapshot", _DAY_TS.format("day"), DAY, 17 * HOUR,
-        where="n_quoted > 0 AND cf_year_sha IS NOT NULL AND cf_month_sha IS NOT NULL",
+        where="n_quoted > 0 AND cf_last_day_year IS NOT NULL AND cf_last_day_month IS NOT NULL",
         note="one row per UTC day, weekends and US holidays included (status 'stale'), from the 15:30-17:00 window "
-        "(late fill to 21:00); a day counts only with quoted Polymarket books and both nowcast files kept (stored or "
-        "referenced by sha): neither is archived anywhere else",
+        "(late fill to 21:00); a day counts only with quoted Polymarket books and both nowcast files kept readable "
+        "(stored or referenced by sha, last daily point read; raw bytes that do not parse, e.g. an HTML page, do not "
+        "count): neither is archived anywhere else",
     ),
     # On by default with the collector (collector/scheduler.build_default_scheduler; no line in features.env).
     Spec(

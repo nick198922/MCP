@@ -526,6 +526,49 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, coin", args)
         return [dict(r) for r in await cur.fetchall()]
 
+    PM_CPI_COLUMNS = (
+        "created_ts updated_ts status late cf_tries cf_fetches cf_fetch_ts cf_year_ts cf_month_ts cf_year_sha cf_month_sha "
+        "cf_year_ref cf_month_ref cf_stamp_year cf_stamp_month cf_last_day_year cf_last_day_month cf_fresh target "
+        "mom_target prev_target yoy_headline_pct yoy_core_pct mom_headline_pct mom_core_pct prev_yoy_headline_pct "
+        "prev_yoy_core_pct prev_mom_headline_pct prev_mom_core_pct cf_points cf_year_z cf_month_z books_tries books_ts "
+        "books_paired n_events n_brackets n_quoted books books_early books_depth_z missing"
+    ).split()
+
+    async def pm_cpi_row(self, day: str) -> dict[str, Any] | None:
+        """The ``pm_cpi_snapshot`` row of one UTC day ('YYYY-MM-DD'), blobs included; None when there is none."""
+        cur = await self.conn.execute("SELECT * FROM pm_cpi_snapshot WHERE day = ?", (day,))
+        r = await cur.fetchone()
+        return dict(r) if r is not None else None
+
+    async def pm_cpi_file_source(self, day: str, kind: str) -> tuple[str, str | None] | None:
+        """(day, sha256) of the latest row before ``day`` that stores the nowcast file of ``kind`` ('year' | 'month')
+        itself (``cf_<kind>_z`` not NULL); None when there is none. The job stores a download whose bytes equal that
+        file only as a reference to that day."""
+        if kind not in ("year", "month"):
+            raise ValueError(f"unknown nowcast file {kind!r}")
+        cur = await self.conn.execute(
+            f"SELECT day, cf_{kind}_sha FROM pm_cpi_snapshot WHERE day < ? AND cf_{kind}_z IS NOT NULL ORDER BY day DESC LIMIT 1",
+            (day,),
+        )
+        r = await cur.fetchone()
+        return (r[0], r[1]) if r is not None else None
+
+    async def upsert_pm_cpi(self, row: dict[str, Any]) -> int:
+        """Write the day's row: insert, or replace every column but ``day`` and ``created_ts``. The collector builds the
+        full row from the stored one, so what a later tick did not fetch is written back unchanged."""
+        cols = self.PM_CPI_COLUMNS
+        zero = {"late", "cf_tries", "cf_fetches", "books_tries", "n_events", "n_brackets", "n_quoted"}  # NOT NULL counters
+        values = [row.get(c) if row.get(c) is not None or c not in zero else 0 for c in cols]
+        sets = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "created_ts")
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.execute(
+                f"INSERT INTO pm_cpi_snapshot (day, {', '.join(cols)}) VALUES ({','.join('?' * (len(cols) + 1))}) "
+                f"ON CONFLICT(day) DO UPDATE SET {sets}",
+                (row["day"], *values),
+            )
+        return self.conn.total_changes - before
+
     OPTION_LEG_COLUMNS = (
         "ts expiry_ts tau_days spot forward opt instrument target strike dist floor src "
         "bid ask mark mark_iv bid_iv ask_iv bid_size ask_size delta quote_ts_ms open_interest volume"

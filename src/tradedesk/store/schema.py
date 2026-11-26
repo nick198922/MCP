@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -1074,5 +1074,73 @@ MIGRATIONS: dict[int, list[str]] = {
         # NULL on rows written before this column (20-25.11 the Deribit legs mostly went missing to HTTP 429).
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN d_miss TEXT",
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN b_miss TEXT",
+    ],
+    44: [
+        # Daily CPI snapshot (collector/pm_cpi_snapshot.py, analytics/pm_cpi.py; IDEA-20261028-pm-cpi-brackets-vs-nowcast-
+        # forward, item 480 of the standing card): one row per UTC day, weekends included, written in the 15:30-17:00 UTC
+        # window and completed by later ticks of the same day (a section is replaced only by a newer or more complete
+        # one). Pairing: the main book set (`books`) is the pair of the nowcast only when every book was read at or after
+        # the later of cf_year_ts / cf_month_ts (`books_paired` = 1); a file stored later makes those books be re-read in
+        # the same tick, and each superseded book moves to `books_early` (never dropped). Nowcast values (*_pct) are
+        # percent as Cleveland publishes them (3.79 = 3.79 %, the unit of the Polymarket brackets), NOT decimals like
+        # basis_pct elsewhere in this schema; a tool or analytics reading them must return decimals (invariant 4). Not
+        # pruned (forward record; a weekday ~0.7 MB, mostly the two compressed files; a day whose file bytes equal the
+        # latest stored copy only references it, ~0.1 MB).
+        """
+        CREATE TABLE IF NOT EXISTS pm_cpi_snapshot (
+            day TEXT PRIMARY KEY,                  -- 'YYYY-MM-DD', the UTC day of the window
+            created_ts INTEGER NOT NULL,           -- unix s of the first write
+            updated_ts INTEGER NOT NULL,           -- unix s of the latest write
+            status TEXT NOT NULL,                  -- 'complete' | 'stale' (files not of this day: weekend / holiday / no
+                                                   -- update) | 'partial' (something missing, or books not paired)
+            late INTEGER NOT NULL DEFAULT 0,       -- 1 = a file or a book now in the row was downloaded after 17:00 UTC
+            cf_tries INTEGER NOT NULL DEFAULT 0,   -- nowcast attempts today, failed ones included
+            cf_fetches INTEGER NOT NULL DEFAULT 0, -- attempts that brought at least one file
+            cf_fetch_ts INTEGER,                   -- unix s of the latest attempt that brought a file (the retry clock)
+            cf_year_ts INTEGER,                    -- unix s of the first download today of the stored nowcast_year.json bytes
+            cf_month_ts INTEGER,
+            cf_year_sha TEXT,                      -- sha256 (hex) of the stored file's bytes as received
+            cf_month_sha TEXT,
+            cf_year_ref TEXT,                      -- day of the earlier row whose cf_year_z holds these bytes (same sha),
+            cf_month_ref TEXT,                     -- when not stored again here; NULL = stored in this row
+            cf_stamp_year TEXT,                    -- chart._comment of the last chart ('2026-11-25 00:00'); NULL = none or
+            cf_stamp_month TEXT,                   -- the file could not be parsed (raw bytes kept, see missing)
+            cf_last_day_year TEXT,                 -- day of the latest headline daily point; NULL = file not parsed
+            cf_last_day_month TEXT,
+            cf_fresh INTEGER,                      -- 1 = both files have this day's stamp or last point; NULL = a file missing
+            target TEXT,                           -- release target month 'YYYY-M' (no 'CPI <Mon>' line yet), from the YoY
+                                                   -- file (from the MoM file only while the YoY one is missing)
+            mom_target TEXT,                       -- the MoM file's own release target; differs from target -> missing says so
+            prev_target TEXT,                      -- the month before target
+            yoy_headline_pct REAL,                 -- latest daily nowcast of target, percent (3.79 = 3.79 %)
+            yoy_core_pct REAL,                     -- percent (3.79 = 3.79 %)
+            mom_headline_pct REAL,                 -- of target too (not mom_target), percent (3.79 = 3.79 %)
+            mom_core_pct REAL,                     -- percent (3.79 = 3.79 %)
+            prev_yoy_headline_pct REAL,            -- of prev_target, percent (3.79 = 3.79 %)
+            prev_yoy_core_pct REAL,                -- percent (3.79 = 3.79 %)
+            prev_mom_headline_pct REAL,            -- percent (3.79 = 3.79 %)
+            prev_mom_core_pct REAL,                -- percent (3.79 = 3.79 %)
+            cf_points TEXT,                        -- JSON {"year"|"month": {target: {"headline"|"core": [[day, value], ...]}}}
+            cf_year_z BLOB,                        -- zlib of nowcast_year.json as received (all targets: vintage compare);
+            cf_month_z BLOB,                       -- NULL with cf_*_ref set = the same bytes are in that day's row
+            books_tries INTEGER NOT NULL DEFAULT 0,
+            books_ts INTEGER,                      -- unix s of the latest books read that changed the row
+            books_paired INTEGER,                  -- 1 = every book in `books` read at or after the nowcast download; 0 = not;
+                                                   -- NULL = no readable nowcast file or no book
+            n_events INTEGER NOT NULL DEFAULT 0,   -- of the main set (`books`)
+            n_brackets INTEGER NOT NULL DEFAULT 0,
+            n_quoted INTEGER NOT NULL DEFAULT 0,   -- brackets with both a best bid and a best ask
+            books TEXT,                            -- JSON {"series_listed": [...], "counts": {series: {events, brackets, ts}},
+                                                   -- "brackets": [{series, event_id, event_slug, end_date, market_id, title,
+                                                   -- fee_type, token, book, bid, ask, bid_size, ask_size, bid_usd, ask_usd,
+                                                   -- book_ts_ms, read_ts}, ...]} (YES side, top level; main set)
+            books_early TEXT,                      -- JSON {"brackets": [the same entries + superseded_ts]}: books read before
+                                                   -- a nowcast file stored later, replaced by a re-read; NULL = none
+            books_depth_z BLOB,                    -- zlib of JSON {"main": {token: {read_ts, book_ts_ms, tick, min_size,
+                                                   -- last, bids: [[price, size], ...], asks}}, "early": [{token,
+                                                   -- superseded_ts, ...}]}: every level of every book, both sides
+            missing TEXT                           -- JSON [{field, provider, reason, detail}] of the latest attempt
+        )
+        """,
     ],
 }

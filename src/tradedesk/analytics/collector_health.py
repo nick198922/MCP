@@ -157,6 +157,13 @@ SPECS: tuple[Spec, ...] = (
         "hl_oi_cap", "TRADEDESK_COLLECT_HL_OI_CAP_ENABLED", "hl_oi_cap_snapshot", "ts", HOUR, HOUR,
         note="one snapshot per UTC hour (ts = its start), job ticks every 10 min",
     ),
+    Spec(
+        "pm_cpi_snapshot", "TRADEDESK_COLLECT_PM_CPI_ENABLED", "pm_cpi_snapshot", _DAY_TS.format("day"), DAY, 17 * HOUR,
+        where="n_quoted > 0 AND cf_year_sha IS NOT NULL AND cf_month_sha IS NOT NULL",
+        note="one row per UTC day, weekends and US holidays included (status 'stale'), from the 15:30-17:00 window "
+        "(late fill to 21:00); a day counts only with quoted Polymarket books and both nowcast files kept (stored or "
+        "referenced by sha): neither is archived anywhere else",
+    ),
     # On by default with the collector (collector/scheduler.build_default_scheduler; no line in features.env).
     Spec(
         "atm_term", "TRADEDESK_COLLECTOR_ENABLED", "atm_term", "ts", HOUR, HOUR,

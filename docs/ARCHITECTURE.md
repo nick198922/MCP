@@ -76,7 +76,7 @@ Claude (Desktop / Code / claude.ai)
 
 ## Сховище: схема SQLite
 
-Джерело правди — `src/tradedesk/store/schema.py` (`SCHEMA_VERSION`, словник `MIGRATIONS`; блок міграції і `user_version` в одній транзакції). Зараз версія **42**. Останні міграції (39–41 — див. коментарі в `schema.py`):
+Джерело правди — `src/tradedesk/store/schema.py` (`SCHEMA_VERSION`, словник `MIGRATIONS`; блок міграції і `user_version` в одній транзакції). Зараз версія **43**. Останні міграції (39–41 — див. коментарі в `schema.py`):
 
 | Версія | Що додано | Хто пише | Поля й примітки |
 |---|---|---|---|
@@ -85,6 +85,7 @@ Claude (Desktop / Code / claude.ai)
 | 37 | таблиця `global_snapshot`, ключ `day` | щоденна задача пропозиції (`_collect_supply` у `collector/scheduler.py`, разом із `supply_snapshot`) | добовий знімок CoinGecko `/global`: `total_market_cap`, `total_volume` (USD, 24 год), `btc_dominance`, `eth_dominance`, `mcap_change_24h` (десяткові дроби), `active_cryptocurrencies`; один рядок на день UTC, пізніший знімок замінює; продовжує історію `_global` з DoubleTop (`~/private/data/coingecko`, 2013 – 02.11.2026). Збій `/global` лише логується, `supply_snapshot` пишеться |
 | 38 | стовпці `pm_gap_outcome.closed_ts`, `pm_gap_outcome.gone_ts` (`INTEGER`, unix с) | колектор `pm_gap` (`record_closures` і `resolve_outcomes` у `collector/pm_gap.py`) | `closed_ts` — `closedTime` Gamma (перший записаний); `gone_ts` — запуск колектора, який знайшов ринок поза списком відкритих до його `end_ts`, а Gamma сказала `closed` (touch-ринки закриваються, щойно рівень досягнуто); не закритий ринок не пишеться; лише вперед, старі рядки `NULL`. Відповідь власника «1+3» на Q-20261103-1 |
 | 42 | таблиця `trader_polls`, ключ `(venue, ts, account)`, `WITHOUT ROWID`; `trader_positions` більше не чистий журнал змін | колектор `trader_positions` (`_collect_trader_positions` у `collector/scheduler.py`) | маркер опитування HL: до першого запиту запуску однією транзакцією `ok = 0` для кожного акаунта наміченого списку, після вдалого запиту (рядки вже записано) `ok = 1`; `ts` той самий, що в рядків запуску; не вдалося записати маркери — запуск нікого не опитує. Крім змін, `trader_positions` на **кожному** запуску дістає рядок кожної позиції HL з `positionValue` ≥ $2.5 млн (поточні side, size, value_usd, liq_px); повтор при відтворенні змінює лише ці значення й час рядка, розмір порівнюють із точністю журналу (4 значущі цифри, `smart_money.same_size`). Не чиститься (≥ 60 днів для повторної лічби). Картка hl-whale-liquidation-magnet, ред. 3 (і) і ред. 4 (іі) |
+| 43 | стовпці `option_xvenue_snapshot.d_miss`, `option_xvenue_snapshot.b_miss` (`TEXT`) | колектор `option_xvenue` (`collector/option_xvenue.py`) | чому нема ноги Deribit / Bybit: `NULL` — нога є; `not_listed` — ланцюжок біржі прочитано, такого страйку / типу / експірації нема; причина `ProviderError` власного запиту ноги (`rate_limited`, `backend_error`, `network`, …); `summary:<причина>` (лише Deribit) — впав book summary, тікерів не питали; `bad_response` — тікер відповів непридатним. Старі рядки `NULL` (20–25.11 ноги Deribit губились на HTTP 429). [Зміни](changes/2026-11-25-deribit-collector-gaps.md) |
 
 ## Як додати провайдера
 

@@ -70,6 +70,27 @@ def test_a_refusal_names_github_reason():
         gh_pr.open_pr(gh, "o/r", "agent/x", "t", "b")
 
 
+def test_a_transient_github_error_is_retried():
+    # 25.11: one HTTP 500 left agent/2026-11-25-deribit-collector-gaps without a pull request, so it never merged.
+    waits = []
+    gh = FakeGitHub((500, {}), (0, {"message": "URLError"}), (201, {"html_url": "u7"}))
+    assert gh_pr.open_pr(gh, "o/r", "agent/x", "t", "b", sleep=waits.append) == "u7"
+    assert waits == list(gh_pr.RETRY_DELAYS[:2]) and gh.calls[0] == gh.calls[2]
+
+
+def test_a_retry_finds_the_pull_request_the_failed_request_created():
+    exists = {"message": "Validation Failed", "errors": [{"message": "A pull request already exists for o:agent/x."}]}
+    gh = FakeGitHub((502, {}), (422, exists), (200, [{"html_url": "u8", "body": ""}]))
+    assert gh_pr.open_pr(gh, "o/r", "agent/x", "t", "b", sleep=lambda _: None) == "u8"
+
+
+def test_a_lasting_github_error_is_reported_after_the_retries():
+    gh = FakeGitHub(*[(500, {})] * (len(gh_pr.RETRY_DELAYS) + 1))
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        gh_pr.open_pr(gh, "o/r", "agent/x", "t", "b", sleep=lambda _: None)
+    assert not gh.answers
+
+
 def test_check_tells_a_read_only_token_apart():
     ok = FakeGitHub((200, []), (422, {"message": "Validation Failed", "errors": [{"field": "head", "code": "invalid"}]}))
     assert "read and open" in gh_pr.check(ok, "o/r")

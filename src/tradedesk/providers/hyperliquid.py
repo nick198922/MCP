@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Collection
 from typing import Any
@@ -16,6 +17,12 @@ STATS_URL = "https://stats-data.hyperliquid.xyz"
 FUNDING_INTERVAL_HOURS = 1.0
 NAMES_TTL_S = 600.0
 NAMES_RETRY_S = 60.0
+# The HLP parent vault (name "Hyperliquidity Provider (HLP)"): address as answered by the live vaultDetails of
+# 2026-11-26 (`vaultAddress`, relationship type "parent"; fixture hyperliquid_vault_details_hlp_2026-11-26.json) and as
+# used by IDEA-20261021-hlp-vault-liquidity-provision. Its child vaults (strategies, liquidators) come from that answer.
+HLP_VAULT = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
+MAX_VAULT_CHILDREN = 20  # untrusted list: HLP had 7 children on 2026-11-26; more than this are cut off
+_ADDRESS = re.compile(r"0x[0-9a-f]{40}")
 
 
 def _f(x: Any) -> float | None:
@@ -133,6 +140,34 @@ def parse_positions(state: Any) -> list[dict[str, Any]]:
     return out
 
 
+def is_address(x: Any) -> bool:
+    """A lower-case 0x + 40 hex address (the form the collector stores)."""
+    return isinstance(x, str) and _ADDRESS.fullmatch(x) is not None
+
+
+def parse_vault_children(raw: Any, vault: str, max_n: int = MAX_VAULT_CHILDREN) -> list[str]:
+    """Child vault addresses from a parent's ``vaultDetails`` (``relationship: {type: "parent", data: {childAddresses}}``).
+
+    The answer is untrusted: it must name ``vault`` as its own address; entries that are not 0x + 40 hex are dropped,
+    the rest lower-cased, de-duplicated (the parent itself excluded) and cut to ``max_n`` in the answer's order. No
+    valid child (or another shape) is a ``backend_error``, so a caller can fall back to a list it already knows."""
+    if not isinstance(raw, dict) or str(raw.get("vaultAddress") or "").lower() != vault.lower():
+        raise ProviderError("hyperliquid", "backend_error", "unexpected vaultDetails shape or vault address")
+    rel = raw.get("relationship")
+    data = rel.get("data") if isinstance(rel, dict) and rel.get("type") == "parent" else None
+    kids = data.get("childAddresses") if isinstance(data, dict) else None
+    if not isinstance(kids, list):
+        raise ProviderError("hyperliquid", "backend_error", "vaultDetails: not a parent vault (no childAddresses)")
+    out: list[str] = []
+    for k in kids:
+        a = k.lower() if isinstance(k, str) else None
+        if is_address(a) and a != vault.lower() and a not in out:
+            out.append(a)
+    if not out:
+        raise ProviderError("hyperliquid", "backend_error", "vaultDetails: no valid child address")
+    return out[:max_n]
+
+
 class Hyperliquid:
     name = "hyperliquid"
 
@@ -160,6 +195,12 @@ class Hyperliquid:
     async def clearinghouse_state(self, user: str) -> Fetched:
         """One account's margin summary and open perp positions (public for every address)."""
         return await self._info({"type": "clearinghouseState", "user": user}, ttl=30)
+
+    async def vault_children(self, vault: str = HLP_VAULT) -> Fetched:
+        """Child vault addresses of a parent vault (default HLP) from ``vaultDetails``, validated and capped (see
+        ``parse_vault_children``). Raises ProviderError when the answer has no usable list."""
+        f = await self._info({"type": "vaultDetails", "vaultAddress": vault}, ttl=300)
+        return Fetched(parse_vault_children(f.data, vault), f.evidence)
 
     async def asset_contexts(self, include_delisted: bool = False) -> Fetched:
         f = await self._info({"type": "metaAndAssetCtxs"}, ttl=5)

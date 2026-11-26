@@ -657,7 +657,11 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
 
     Hyperliquid poll markers (`trader_polls`, recount rules rev. 4): before the first request, one transaction writes
     ok = 0 for every account of the run's intended list; an account's marker becomes ok = 1 after its request succeeded
-    and its rows were written. If the markers cannot be written the run polls nobody (it fails)."""
+    and its rows were written. If the markers cannot be written the run polls nobody (it fails).
+
+    Right after the Hyperliquid accounts (so close to the run's ts), every HLP vault under its own venue label
+    (``_poll_hlp_vaults``), at the same ts and only when the run already wrote a row, so the run times read by the
+    venue-blind queries of the registered forwards do not change. A failure there is logged and does not fail the job."""
     from ..core.errors import ProviderError  # noqa: PLC0415
     from ..providers.hyperliquid import parse_positions  # noqa: PLC0415
 
@@ -682,6 +686,13 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
             ts, "hyperliquid", account, positions, rewrite_min_usd=TRADER_POSITIONS_REWRITE_USD
         )
         await rt.store.set_trader_poll_ok(ts, "hyperliquid", account)
+    if written:  # only at a ts the log already holds: the venue-blind DISTINCT ts / MAX(ts) readers see no new run
+        try:
+            written += await _poll_hlp_vaults(rt, ts)
+        except Exception as e:  # noqa: BLE001  # an extra record: it must not fail the job or stop the Polymarket polls
+            log.warning("positions: HLP polling failed: %s", e)
+    else:
+        log.warning("positions: HLP vaults not polled, the run wrote no Hyperliquid row")
     pm_accounts: list[str] = []
     for venue in ("polymarket", "polymarket_crypto"):
         pm_accounts += [a for a in await rt.store.tracked_traders(venue, s.traders_top_n) if a not in pm_accounts]
@@ -713,6 +724,49 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
         written += await rt.store.record_trader_positions(ts, "polymarket", account, positions)
     if tried and failed == tried:
         raise RuntimeError(f"positions: all {tried} requests failed")
+    return written
+
+
+# HLP's own rows in `trader_positions` / `trader_polls` / `trader_position_state` (item 471 of the standing card, card
+# IDEA-20261026-hlp-inventory-crowding): a venue label of their own, so the readers of venue 'hyperliquid' (the
+# registered smart-money and hl-liq-magnet forwards) never see them, even for a vault that is also in the top list.
+HLP_VENUE = "hyperliquid_hlp"
+
+
+async def _poll_hlp_vaults(rt: "Runtime", ts: int) -> int:
+    """Positions of the HLP parent vault and of every child vault (strategies and liquidators, each separately) under
+    venue ``HLP_VENUE``, whatever their leaderboard rank: the same change log and poll markers as the watched accounts.
+
+    The child list is ``vaultDetails`` of the parent (validated and capped by the provider). When it fails, the list of
+    the last HLP run (its poll markers) is polled instead; with neither, nobody is. One vault failing does not stop the
+    others, and nothing here raises a provider error (the watched accounts are already done). The parent is polled too:
+    one request, flat on 2026-11-26, but it would show inventory moved back onto the parent."""
+    from ..core.errors import ProviderError  # noqa: PLC0415
+    from ..providers.hyperliquid import HLP_VAULT, MAX_VAULT_CHILDREN, is_address, parse_positions  # noqa: PLC0415
+
+    assert rt.store is not None
+    try:
+        vaults = [HLP_VAULT, *(await rt.hyperliquid.vault_children(HLP_VAULT)).data]
+    except ProviderError as e:
+        known = [a for a in await rt.store.last_trader_poll_accounts(HLP_VENUE) if is_address(a)]
+        vaults = sorted(known, key=lambda a: a != HLP_VAULT)[: MAX_VAULT_CHILDREN + 1]
+        log.warning("positions: HLP vaultDetails failed (%s); vaults of the last HLP run polled instead: %d", e, len(vaults))
+    if not vaults:
+        return 0
+    try:
+        await rt.store.start_trader_polls(ts, HLP_VENUE, vaults)
+    except Exception as e:  # noqa: BLE001  # without markers the rows could not be read as observed: poll nobody
+        log.warning("positions: HLP poll markers not written, HLP not polled: %s", e)
+        return 0
+    written = 0
+    for vault in vaults:
+        try:
+            positions = parse_positions((await rt.hyperliquid.clearinghouse_state(vault)).data)
+        except ProviderError as e:
+            log.debug("positions HLP %s: %s", vault, e)
+            continue
+        written += await rt.store.record_trader_positions(ts, HLP_VENUE, vault, positions, rewrite_min_usd=TRADER_POSITIONS_REWRITE_USD)
+        await rt.store.set_trader_poll_ok(ts, HLP_VENUE, vault)
     return written
 
 

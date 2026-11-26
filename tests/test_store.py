@@ -341,6 +341,11 @@ _SCRIPT_WRITES_ALLOWED: dict[str, tuple[int, str]] = {
         "the nested one() helper only runs SELECTs (its SQL arrives as a name); every write there goes through the "
         "nested write() helper, i.e. st._write(), or a Store method",
     ),
+    "verify_pm_noarb_ladders.py:extract": (
+        5,
+        "not the Store: builds its own cache copy of whitelisted columns in a fresh .tmp SQLite file, which replaces "
+        "the copy only after both commits; `finally` closes it, and the source database is opened read-only",
+    ),
 }
 
 

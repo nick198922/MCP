@@ -119,6 +119,142 @@ def test_window_moves_counts_distinct_values_in_t7_t1():
     assert m.window_moves(pts, "2026-11-10", lo=400) == (4, 3)
 
 
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pm_cpi_snapshot_2026-11-26.json"
+
+
+def _later_year_copy():
+    """The sample's YoY file one week on: headline 2026-11 got 11/27 and 11/30 (a weekly step), stamp 30.11."""
+    import copy
+    import json
+
+    year = json.loads(FIXTURE.read_text())["nowcast_year"]
+    new = copy.deepcopy(year)
+    nov = new[-1]
+    cats = nov["categories"][0]["category"]
+    tail = cats.pop()  # the 'PCE Oct' line closes the chart
+    for lab, v in (("11/27", "3.84"), ("11/30", "3.84")):
+        cats.append({"label": lab})
+        for ds in nov["dataset"]:
+            ds["data"].append({"value": v if ds["seriesname"] == "CPI Inflation" else "2.87325045473827"})
+    cats.append(tail)
+    for c in new:
+        c["chart"]["_comment"] = "2026-11-30 00:00"
+    return year, new
+
+
+def test_compare_prints_new_points_after_the_old_stamp(tmp_path, capsys):
+    import json
+
+    year, new = _later_year_copy()
+    (tmp_path / "old.json").write_text(json.dumps(year))
+    (tmp_path / "new.json").write_text(json.dumps(new))
+    m.compare_capture(tmp_path / "old.json", tmp_path / "new.json", ("CPI Inflation", "Core CPI Inflation"))
+    out = capsys.readouterr().out
+    assert "differ': 0" in out and "WARNING: same file stamp" not in out
+    assert (
+        "CPI Inflation      2026-11  after 2026-11-25: 2 points (2026-11-27 .. 2026-11-30), distinct values 1, new value vs old last: True"
+        in out
+    )
+    assert (
+        "Core CPI Inflation 2026-11  after 2026-11-25: 2 points (2026-11-27 .. 2026-11-30), distinct values 1, new value vs old last: False"
+        in out
+    )
+    assert "CPI Inflation      2026-10  after 2026-11-25: 0 points, distinct values 0, new value vs old last: False" in out
+
+
+def test_snapshot_series_falls_back_to_the_default_list(tmp_path):
+    assert m.snapshot_series(tmp_path, ["10007"]) == (["10007"], None)
+    sids, warn = m.snapshot_series(tmp_path, [])  # no events/ at all (the cache was emptied)
+    assert sids == ["5", "10007", "10008", "11905", "12054"] and warn.startswith("WARNING: no series")
+    (tmp_path / "events").mkdir()
+    (tmp_path / "events" / "10008_open.json").write_text("[]")
+    (tmp_path / "events" / "5_open.json").write_text("[]")
+    assert m.snapshot_series(tmp_path, []) == (["10008", "5"], None)
+
+
+async def _db_with_rows(path):
+    import hashlib
+    import json
+    import zlib
+
+    from tradedesk.store import Store
+
+    year, new = _later_year_copy()
+    br = {"series": "10007", "event_id": "1", "event_slug": "november-inflation-us-annual", "end_date": "2026-12-10T13:30:00Z",
+          "title": "3.7%", "token": "t", "book": True, "bid": 0.45, "ask": 0.47, "bid_usd": 4.27, "ask_usd": 73.76,
+          "book_ts_ms": 1796484899000, "read_ts": 1796484900}  # fmt: skip
+    books = {"series_listed": ["10007"], "counts": {"10007": {"events": 1, "brackets": 1}}, "brackets": [br]}
+    early = {"brackets": [br | {"bid": 0.41, "read_ts": 1796483100, "book_ts_ms": 1796483099000, "superseded_ts": 1796484900}]}
+    depth = {"main": {"t": {"read_ts": 1796484900, "bids": [[0.45, 9.48], [0.44, 10]], "asks": [[0.47, 156.94]]}}, "early": []}
+    s = Store(path)
+    await s.init()
+    try:
+        for day, charts, stamp, ref in (
+            ("2026-11-26", year, "2026-11-25 00:00", None),
+            ("2026-11-28", new, "2026-11-30 00:00", None),
+            ("2026-11-29", new, "2026-11-30 00:00", "2026-11-28"),  # a weekend row: the same bytes, a reference only
+            ("2026-12-01", new, "2026-11-30 00:00", "2026-11-28"),
+        ):
+            raw = json.dumps(charts).encode()
+            await s.upsert_pm_cpi(
+                {
+                    "day": day,
+                    "created_ts": 1796484600,
+                    "updated_ts": 1796484900,
+                    "status": "complete",
+                    "cf_year_z": None if ref else zlib.compress(raw),
+                    "cf_year_sha": hashlib.sha256(raw).hexdigest(),
+                    "cf_year_ref": ref,
+                    "cf_stamp_year": stamp,
+                    "target": "2026-11",
+                    "mom_target": "2026-11",
+                    "yoy_headline_pct": 3.84,
+                    "books": json.dumps(books),
+                    "books_paired": 1,
+                    "books_early": json.dumps(early) if day == "2026-12-01" else None,
+                    "books_depth_z": zlib.compress(json.dumps(depth).encode()),
+                    "n_events": 1,
+                    "n_brackets": 1,
+                    "n_quoted": 1,
+                }  # fmt: skip
+            )
+    finally:
+        await s.aclose()
+
+
+def test_row_stage_reads_the_job_row_read_only(tmp_path, capsys):
+    import asyncio
+    import json
+
+    db = tmp_path / "td.sqlite"
+    asyncio.run(_db_with_rows(db))
+    before = (db.read_bytes(), db.stat().st_mtime_ns)
+    assert m.stage_row(db, "2026-12-01", tmp_path / "export") is True
+    out = capsys.readouterr().out
+    assert "row 2026-12-01: status complete, late 0" in out
+    assert "target 2026-11: YoY headline 3.84" in out
+    assert "books (main set): series listed ['10007'], events 1, brackets 1, with bid and ask 1" in out
+    assert "paired with the nowcast 1" in out and "same bytes as row 2026-11-28" in out
+    # remark 11: the venue's book time next to the read time; the early set with its own times
+    assert "book 15:34:59 UTC  read 15:35:00 UTC" in out
+    assert "books (early set, read before a nowcast file stored later): 1 books" in out
+    assert "book 15:04:59 UTC  read 15:05:00 UTC  superseded 15:35:00 UTC" in out
+    assert "full books:" in out and "main 1 books / 3 levels, early 0 books" in out
+    # the earlier row is the weekend one (same bytes): resolved through its reference, nothing to compare
+    assert "vintage nowcast_year: row 2026-11-29 has the same bytes (sha256): no update in between" in out
+    assert "vintage nowcast_month: a copy is missing" in out
+    assert json.loads((tmp_path / "export" / "2026-12-01_nowcast_year.json").read_text())[-1]["chart"]["_comment"] == "2026-11-30 00:00"
+    assert m.stage_row(db, "2026-11-28") is True
+    out = capsys.readouterr().out
+    assert "vintage nowcast_year: row 2026-11-26 (stamp '2026-11-25 00:00') vs row 2026-11-28" in out
+    assert "new value vs old last: True" in out
+    # mode=ro: the database file is not written (SQLite may still create its -shm / -wal side files to read a WAL file)
+    assert (db.read_bytes(), db.stat().st_mtime_ns) == before
+    assert m.stage_row(db, "2026-12-02") is False and "NO ROW for 2026-12-02" in capsys.readouterr().out
+    assert m.stage_row(tmp_path / "missing.sqlite", "2026-12-01") is False
+    assert "cannot read pm_cpi_snapshot" in capsys.readouterr().out
+
+
 def test_fred_mom_and_prev_months():
     csv = "observation_date,CPILFESL\n2024-01-01,100.0\n2024-02-01,101.0\n2024-03-01,.\n2024-04-01,102.01\n"
     mom = m._fred_mom(csv)

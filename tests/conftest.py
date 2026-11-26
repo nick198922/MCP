@@ -606,6 +606,8 @@ def make_transports(state: State) -> dict:
         "polymarket:data": httpx.MockTransport(not_mocked),
         # the assistant snapshot's `stablecoins` section (tests/test_stablecoin_supply.py serves the real shape)
         "defillama:stablecoins": httpx.MockTransport(not_mocked),
+        # the pm_cpi_snapshot job (tests/test_pm_cpi_snapshot.py serves the real files)
+        "clevelandfed": httpx.MockTransport(not_mocked),
         "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),

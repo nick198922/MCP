@@ -19,6 +19,7 @@ Usage (C = ~/.cache/tradedesk-agents/pm_cpi; the exact commands of the report ar
     uv run python scripts/verify_pm_cpi_step0.py --stage compare --file nowcast_year.json \
         --capture C/snapshots/20261126T1920Z/nowcast_year.json --against <later copy> --out C/out_compare.txt
     uv run python scripts/verify_pm_cpi_step0.py --stage snapshot --out <file>  # today's nowcast + active books
+    uv run python scripts/verify_pm_cpi_step0.py --stage row --day 2026-12-03 --out <file>  # the collector job's row (DB read-only)
 
 Results (2026-11-26): docs/verification/2026-11-26-pm-cpi-step0.md.
 """
@@ -31,12 +32,21 @@ import json
 import re
 import resource
 import time
+import zlib
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# The chart parser lives in the package since item 480 (the collector job pm_cpi_snapshot uses the same code).
+from tradedesk.analytics.pm_cpi import MONTHS, cf_daily, new_points_after
+
+# Polymarket series of the US CPI bracket events (--stage discover, 26.11): `snapshot` falls back to them when the cache's
+# events/*_open.json are gone (~/.cache is not backed up).
+from tradedesk.collector.pm_cpi_snapshot import SERIES as DEFAULT_SERIES
+
 DEFAULT_CACHE = Path("~/.cache/tradedesk-agents/pm_cpi").expanduser()
+DEFAULT_DB = Path("/var/lib/tradedesk-mcp/tradedesk.sqlite")
 QUERIES = ("CPI", "inflation", "core CPI", "CPI year over year", "monthly inflation", "inflation US annual")
 CPI_SLUG = re.compile(r"cpi|inflation", re.I)
 UA = {"User-Agent": "Mozilla/5.0 (research script)"}
@@ -544,39 +554,12 @@ async def stage_wayback_fetch(cache: Path, name: str, stamps: list[str]) -> None
         await wb.aclose()
 
 
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 CF_DOCS = (
     "/-/media/project/clevelandfedtenant/clevelandfedsite/indicators-and-data/inflation-nowcasting/nowcasting_faqs.pdf",
     "/-/media/project/clevelandfedtenant/clevelandfedsite/indicators-and-data/inflation-nowcasting/nowcasting_users_guide.pdf",
     "/-/media/project/clevelandfedtenant/clevelandfedsite/indicators-and-data/inflation-nowcasting/"
     "inflation-nowcasting-model-methodological-approach-to-missing-october-and-november-2025-cpi-data.pdf",
 )
-
-
-def cf_daily(chart: dict[str, Any], series: str) -> tuple[str, list[tuple[str, float | None]], dict[str, str]]:
-    """One target-month chart -> (target 'YYYY-M', [(ISO date, value)], {release label: ISO date of the last
-    nowcast point before that vline}). Labels are 'MM/DD' without a year: the year is the target year, plus one
-    when the label month is far below the target month (Dec target -> Jan/Feb points)."""
-    target = chart["chart"]["subcaption"]
-    ty, tm = (int(x) for x in target.split("-"))
-    cats = chart["categories"][0]["category"]
-    ds = next((d for d in chart.get("dataset", []) if d.get("seriesname") == series), None)
-    vals = (ds or {}).get("data") or []
-    pts: list[tuple[str, float | None]] = []
-    vlines: dict[str, str] = {}
-    j = 0  # data points align with non-vline categories
-    for c in cats:
-        lab = c.get("label", "")
-        if c.get("vline"):
-            if pts:
-                vlines.setdefault(lab, pts[-1][0])
-            continue
-        mm, dd = (int(x) for x in lab.split("/"))
-        y = ty + 1 if mm < tm - 6 else ty
-        v = vals[j].get("value") if j < len(vals) else None
-        j += 1
-        pts.append((f"{y:04d}-{mm:02d}-{dd:02d}", float(v) if v not in (None, "") else None))
-    return target, pts, vlines
 
 
 def summarize_cf(cache: Path, fname: str, series: str, since: str) -> None:
@@ -856,6 +839,23 @@ def compare_capture(old_path: Path, new_path: Path, series_list: tuple[str, ...]
         cr, dr = compare_points(old, new, s, rec)
         say(f"  {s}: all targets {dict(c)}; largest {[(round(a, 4), t, d) for a, t, d in diffs[:5]]}")
         say(f"    newest {sorted(rec)}: {dict(cr)}; differing points {[(round(a, 4), t, d) for a, t, d in dr[:8]]}")
+    say_new_points(old, new, series_list, recent)
+
+
+def say_new_points(old: Any, new: Any, series_list: tuple[str, ...], recent: int = 3) -> None:
+    """Re-review of item 479, point 1: for the `recent` newest targets of the older copy, the newer copy's daily points
+    after the older copy's stamp and how many distinct values they have (condition (b) of 03.12: headline 2026-11 got a
+    new value after 25.11 = `changed` True)."""
+    say(f"  new daily points after the old copy's stamp, {recent} newest targets of the old copy:")
+    for s in series_list:
+        for r in new_points_after(old, new, s, recent):
+            if r["n"] is None:
+                say(f"    {s:18} {r['target']:8} after {r['after']}: target not in the new copy")
+            else:
+                span = f" ({r['first']} .. {r['last']})" if r["n"] else ""
+                say(
+                    f"    {s:18} {r['target']:8} after {r['after']}: {r['n']} points{span}, distinct values {r['distinct']}, new value vs old last: {r['changed']}"
+                )
 
 
 def window_moves(pts: list[tuple[str, float | None]], release: str, lo: int = 7, hi: int = 1) -> tuple[int, int]:
@@ -894,13 +894,30 @@ def summarize_moves(cache: Path, fname: str, since: str = "2024-1") -> None:
 # ---------------------------------------------------------------------------------------------------- snapshot
 
 
-async def stage_snapshot(cache: Path, root: Path | None = None) -> None:
+def snapshot_series(cache: Path, given: list[str]) -> tuple[list[str], str | None]:
+    """Series ids the snapshot lists: `--series` when given, else those of the cache's events/*_open.json, else
+    DEFAULT_SERIES with a warning (re-review of item 479, point 6: an emptied cache must not give a snapshot without
+    books in silence)."""
+    if given:
+        return list(given), None
+    found = sorted({p.stem.split("_")[0] for p in (cache / "events").glob("*_open.json")})
+    if found:
+        return found, None
+    return list(DEFAULT_SERIES), f"WARNING: no series in {cache / 'events'}/*_open.json; using {' '.join(DEFAULT_SERIES)}"
+
+
+async def stage_snapshot(cache: Path, root: Path | None = None, series: list[str] | None = None) -> None:
     """Today's nowcast file and the books of every bracket of the open CPI events (first sample of a forward record).
     `root` (default <cache>/snapshots): the fallback for the 10.12 release writes under
-    ~/.local/state/tradedesk-agents/pm_cpi/snapshots, which the server backups cover (~/.cache is not backed up)."""
+    ~/.local/state/tradedesk-agents/pm_cpi/snapshots, which the server backups cover (~/.cache is not backed up).
+    Since item 480 the collector job pm_cpi_snapshot writes the same data to the database daily; this stays the manual
+    fallback."""
     from tradedesk.core.http import Http
     from tradedesk.server import build_server
 
+    sids, warn = snapshot_series(cache, series or [])
+    if warn:
+        say(warn)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%MZ")
     sdir = (root or cache / "snapshots") / stamp
     sdir.mkdir(parents=True, exist_ok=True)
@@ -923,10 +940,12 @@ async def stage_snapshot(cache: Path, root: Path | None = None) -> None:
     _, rt = build_server()
     try:
         opens = []
-        for sid in sorted({p.stem.split("_")[0] for p in (cache / "events").glob("*_open.json")}):
+        for sid in sids:
             f = await rt.polymarket.events_all({"series_id": sid, "closed": "false"})
             opens.extend(f.data["rows"])
         (sdir / "events_open.json").write_text(json.dumps(opens))
+        if not opens:
+            say(f"WARNING: no open event in series {' '.join(sids)}: this snapshot has no books")
         for ev in opens:
             ms = [m for m in ev.get("markets") or [] if not m.get("closed")]
             toks = [(m.get("groupItemTitle"), _jl(m.get("clobTokenIds"))) for m in ms]
@@ -953,6 +972,160 @@ async def stage_snapshot(cache: Path, root: Path | None = None) -> None:
     say(f"snapshot saved to {sdir}")
 
 
+# ---------------------------------------------------------------------------------------------------- job row
+
+
+def read_rows(db: Path, day: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(the pm_cpi_snapshot row of `day`, the latest earlier row with a nowcast copy), read-only: the database is opened
+    with mode=ro, so this never writes the live collector database (no migration, no WAL switch). A file kept only as a
+    reference (`cf_<kind>_ref`: same bytes as an earlier row's) is resolved into `cf_<kind>_z` when that row's sha256
+    matches; `_<kind>_from` then names the day it came from."""
+    import sqlite3
+
+    con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute("SELECT * FROM pm_cpi_snapshot WHERE day = ?", (day,)).fetchone()
+        prev = con.execute(
+            "SELECT * FROM pm_cpi_snapshot WHERE day < ? AND (cf_year_z IS NOT NULL OR cf_year_ref IS NOT NULL) ORDER BY day DESC LIMIT 1",
+            (day,),
+        ).fetchone()
+        out = [dict(r) if r else None for r in (row, prev)]
+        for r in out:
+            for kind in ("year", "month"):
+                ref = (r or {}).get(f"cf_{kind}_ref")
+                if r is None or r.get(f"cf_{kind}_z") is not None or not ref:
+                    continue
+                src = con.execute(f"SELECT cf_{kind}_z, cf_{kind}_sha FROM pm_cpi_snapshot WHERE day = ?", (ref,)).fetchone()
+                if src is not None and src[0] is not None and src[1] == r.get(f"cf_{kind}_sha"):
+                    r[f"cf_{kind}_z"], r[f"_{kind}_from"] = src[0], ref
+    finally:
+        con.close()
+    return out[0], out[1]
+
+
+def _hm(ts: Any) -> str:
+    return datetime.fromtimestamp(int(ts), UTC).strftime("%H:%M:%S UTC") if ts else "-"
+
+
+def _hm_ms(ts_ms: Any) -> str:
+    return datetime.fromtimestamp(int(ts_ms) / 1000, UTC).strftime("%H:%M:%S UTC") if ts_ms else "-"
+
+
+def _charts_of(row: dict[str, Any], kind: str) -> Any:
+    blob = row.get(f"cf_{kind}_z")
+    if blob is None:
+        return None
+    try:
+        return json.loads(zlib.decompress(blob).decode("utf-8-sig"))
+    except (zlib.error, UnicodeDecodeError, ValueError, RecursionError):
+        return None  # kept as raw bytes because it did not parse (the row's missing says why)
+
+
+def _say_brackets(brs: list[dict[str, Any]], early: bool = False) -> None:
+    by: dict[str, list[dict[str, Any]]] = {}
+    for b in brs:
+        by.setdefault(str(b.get("event_slug")), []).append(b)
+    for slug, bs in by.items():
+        say(
+            f"  event {slug} end {bs[0].get('end_date')}: {len(bs)} brackets, quoted {sum(1 for b in bs if b.get('bid') is not None and b.get('ask') is not None)}"
+        )
+        for b in bs:
+            usd = f"{b.get('bid_usd') or 0:8.0f} {b.get('ask_usd') or 0:8.0f}" if b.get("book") else "  no book"
+            sup = f"  superseded {_hm(b.get('superseded_ts'))}" if early else ""
+            say(
+                f"    {str(b.get('title'))[:16]:16} {b.get('bid') if b.get('bid') is not None else '-':>6} {b.get('ask') if b.get('ask') is not None else '-':>6} {usd}"
+                f"  book {_hm_ms(b.get('book_ts_ms'))}  read {_hm(b.get('read_ts'))}{sup}"
+            )
+
+
+def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
+    """The collector's pm_cpi_snapshot row of one day (item 480): nowcast stamps and values, where each file's bytes are,
+    the books of every bracket (venue book time and read time; the early set too when a re-read superseded it), the
+    full-book blob's size, what is missing; then the vintage check against the latest earlier row (all shared points,
+    and the new daily points after the earlier copy's stamp for its 3 newest targets). `export`: also write the stored files as
+    <day>_nowcast_year.json / <day>_nowcast_month.json there (inputs for --stage compare). False = no row."""
+    import sqlite3
+
+    try:
+        row, prev = read_rows(db, day)
+    except sqlite3.Error as e:
+        say(f"cannot read pm_cpi_snapshot in {db}: {type(e).__name__}: {e}")
+        return False
+    if row is None:
+        say(f"NO ROW for {day} in {db}")
+        return False
+    r = row
+    say(
+        f"row {day}: status {r['status']}, late {r['late']}, created {_hm(r['created_ts'])}, updated {_hm(r['updated_ts'])};"
+        f" nowcast attempts {r['cf_tries']} (downloads {r['cf_fetches']}), books attempts {r['books_tries']}"
+    )
+    for kind in ("year", "month"):
+        z, src, ref = r.get(f"cf_{kind}_z"), r.get(f"_{kind}_from"), r.get(f"cf_{kind}_ref")
+        if src:
+            where = f"same bytes as row {src}"
+        elif z is not None:
+            where = f"stored here ({len(z):,} B zlib)"
+        else:
+            where = f"reference to {ref} NOT resolved" if ref else "no file"
+        say(
+            f"  nowcast_{kind}.json: stamp {r.get(f'cf_stamp_{kind}')!r}, last daily point {r.get(f'cf_last_day_{kind}')},"
+            f" first downloaded {_hm(r.get(f'cf_{kind}_ts'))}, {where}"
+        )
+    say(f"  fresh (stamp or last point = {day}): {r['cf_fresh']}; latest download {_hm(r.get('cf_fetch_ts'))}")
+    for lab, pre in (("target", ""), ("previous", "prev_")):
+        say(
+            f"  {lab} {r[f'{pre}target'] if pre else r['target']}: YoY headline {r[f'{pre}yoy_headline_pct']} core {r[f'{pre}yoy_core_pct']};"
+            f" MoM headline {r[f'{pre}mom_headline_pct']} core {r[f'{pre}mom_core_pct']} (percent)"
+        )
+    say(f"  MoM file's own target: {r.get('mom_target')}")
+    books = json.loads(r["books"]) if r["books"] else {}
+    brs = books.get("brackets") or []
+    say(
+        f"  books (main set): series listed {books.get('series_listed')}, events {r['n_events']}, brackets {r['n_brackets']},"
+        f" with bid and ask {r['n_quoted']}, last read {_hm(r['books_ts'])}, paired with the nowcast {r.get('books_paired')}"
+    )
+    say(f"  listing per series: {books.get('counts')}")
+    _say_brackets(brs)
+    early = (json.loads(r["books_early"]) if r.get("books_early") else {}).get("brackets") or []
+    if early:
+        say(f"  books (early set, read before a nowcast file stored later): {len(early)} books")
+        _say_brackets(early, early=True)
+    if r.get("books_depth_z"):
+        d = json.loads(zlib.decompress(r["books_depth_z"]))
+        lv = sum(len(x.get("bids") or []) + len(x.get("asks") or []) for x in d.get("main", {}).values())
+        say(
+            f"  full books: {len(r['books_depth_z']):,} B zlib, main {len(d.get('main') or {})} books / {lv} levels,"
+            f" early {len(d.get('early') or [])} books"
+        )
+    say(f"  missing (latest attempt): {r['missing'] or 'none'}")
+    if export is not None:
+        export.mkdir(parents=True, exist_ok=True)
+        for kind in ("year", "month"):
+            if r.get(f"cf_{kind}_z") is not None:
+                (export / f"{day}_nowcast_{kind}.json").write_bytes(zlib.decompress(r[f"cf_{kind}_z"]))
+        say(f"  files exported to {export}")
+    if prev is None:
+        say("  no earlier row with a nowcast copy: nothing to compare")
+        return True
+    for kind in ("year", "month"):
+        old, new = _charts_of(prev, kind), _charts_of(r, kind)
+        if old is None or new is None:
+            say(f"  vintage nowcast_{kind}: a copy is missing, not compared")
+            continue
+        if prev.get(f"cf_{kind}_sha") and prev.get(f"cf_{kind}_sha") == r.get(f"cf_{kind}_sha"):
+            say(f"  vintage nowcast_{kind}: row {prev['day']} has the same bytes (sha256): no update in between")
+            continue
+        say(
+            f"  vintage nowcast_{kind}: row {prev['day']} (stamp {prev.get(f'cf_stamp_{kind}')!r}) vs row {day} (stamp {r.get(f'cf_stamp_{kind}')!r})"
+        )
+        for s in ("CPI Inflation", "Core CPI Inflation"):
+            c, diffs = compare_points(old, new, s)
+            say(f"    {s}: all targets {dict(c)}; largest {[(round(a, 4), t, d) for a, t, d in diffs[:5]]}")
+        say_new_points(old, new, ("CPI Inflation", "Core CPI Inflation"))
+    return True
+
+
 def main() -> None:
     global _OUT
     ap = argparse.ArgumentParser()
@@ -976,8 +1149,12 @@ def main() -> None:
             "cfdocs",
             "cfsum",
             "snapshot",
+            "row",
         ],
     )
+    ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="row: collector database (opened read-only)")
+    ap.add_argument("--day", help="row: UTC day YYYY-MM-DD (default: today)")
+    ap.add_argument("--export", type=Path, help="row: write the stored nowcast files of the day into this directory")
     ap.add_argument("--capture", type=Path, help="compare: older copy of the nowcast file (Wayback capture or snapshot)")
     ap.add_argument("--against", type=Path, help="compare: newer copy (default: <cache>/cleveland/<--file>)")
     ap.add_argument("--snap-root", type=Path, help="snapshot: parent directory (default: <cache>/snapshots)")
@@ -1034,7 +1211,10 @@ def main() -> None:
         elif a.stage == "anchors":
             stage_anchors(a.cache_dir)
         elif a.stage == "snapshot":
-            asyncio.run(stage_snapshot(a.cache_dir, a.snap_root))
+            asyncio.run(stage_snapshot(a.cache_dir, a.snap_root, a.series))
+        elif a.stage == "row":
+            if not stage_row(a.db, a.day or datetime.now(UTC).date().isoformat(), a.export):
+                raise SystemExit(1)
 
 
 if __name__ == "__main__":

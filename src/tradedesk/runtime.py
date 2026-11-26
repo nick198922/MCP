@@ -18,6 +18,7 @@ from .providers import binance_futures as binance_mod
 from .providers import binance_spot as binance_spot_mod
 from .providers import binance_vision as vision_mod
 from .providers import bybit as bybit_mod
+from .providers import clevelandfed as clevelandfed_mod
 from .providers import coinalyze as coinalyze_mod
 from .providers import coinbase as coinbase_mod
 from .providers import coingecko as cg_mod
@@ -39,6 +40,7 @@ from .providers.binance_futures import BinanceFutures
 from .providers.binance_spot import BinanceSpot
 from .providers.binance_vision import BinanceVision
 from .providers.bybit import Bybit
+from .providers.clevelandfed import ClevelandFed
 from .providers.coinalyze import Coinalyze
 from .providers.coinbase import Coinbase
 from .providers.coingecko import CoinGecko
@@ -113,6 +115,23 @@ class Runtime:
         )
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.forexfactory = ForexFactory(http("forexfactory", ff_mod.BASE_URL, rate=0.5, burst=2))
+        # Cleveland Fed inflation nowcast files (collector job pm_cpi_snapshot, no tool): two ~7.7 MB files a few times a
+        # working day, so a slow bucket and a timeout of its own (the default 10 s is short for that body).
+        self.clevelandfed = ClevelandFed(
+            Http(
+                "clevelandfed",
+                clevelandfed_mod.BASE_URL,
+                rate=clevelandfed_mod.RATE_PER_SECOND,
+                burst=clevelandfed_mod.BURST,
+                timeout=max(s.http_timeout, clevelandfed_mod.TIMEOUT_S),
+                retries=s.http_retries,
+                backoff_base=s.http_retry_backoff,
+                cache=self.cache,
+                cache_scale=s.cache_scale,
+                health=self.health,
+                transport=tr.get("clevelandfed"),
+            )
+        )
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         # Free tier without a key. Its request limit is not published in a source we verified (GoPlus answers
         # code 4029 when it is hit), so 0.2/s = 12 per minute is a conservative guess; one call per contract_risk.
@@ -250,6 +269,7 @@ class Runtime:
         await self.binance_vision.aclose()
         await self.alternative_me.http.aclose()
         await self.forexfactory.http.aclose()
+        await self.clevelandfed.http.aclose()
         await self.dexscreener.http.aclose()
         await self.goplus.http.aclose()
         await self.honeypot_is.http.aclose()

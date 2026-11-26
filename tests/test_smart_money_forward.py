@@ -702,3 +702,225 @@ def test_runner_full_json_round_trips_as_a_prior(tmp_path):
     assert runner.accepted_prior(prior, LOOK[2]) is prior and prior["h2_decided_at_s"] in (None, LOOK[1])
     with pytest.raises(ValueError, match="refused"):
         runner.full(prep, cache, seed=1, no_fetch=True, prior={**prior, "as_of_s": _ts(2026, 11, 15)})
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Before slice 2 (critic reviews 2026-11-26: slice-1 results, findings 2-3; registration round 2, m8). Rules unchanged.
+
+
+def _lb(av: float, day, week, month) -> dict:
+    return {"account_value": av, "pnl_day": day, "pnl_week": week, "pnl_month": month}
+
+
+def test_leaderboard_zero_quality_counts_impossible_combinations():
+    snap = {
+        "a": _lb(1e6, 5.0, 10.0, 0.0),  # month 0, week != 0: impossible
+        "b": _lb(1e6, 3.0, 0.0, 7.0),  # week 0, day != 0: impossible
+        "c": _lb(1e6, 3.0, 0.0, 0.0),  # week 0, day != 0 (month 0 with week 0 is possible)
+        "d": _lb(1e6, 0.0, 0.0, 0.0),  # all zero: possible (inactive)
+        "e": _lb(1e6, None, None, 0.0),  # month 0, week unknown: not counted as a combination
+        "f": _lb(1e6, 1.0, 2.0, 3.0),
+        "g": _lb(4e5, 5.0, 10.0, 0.0),  # below the $500k floor
+        "h": _lb(None, 5.0, 10.0, 0.0),
+        "i": _lb(1e6, 1.0, float("nan"), 0.0),  # non-finite week: neither zero nor non-zero
+    }
+    q = smf.leaderboard_zero_quality(snap)
+    assert q == {"n": 7, "month0": 5, "week0": 3, "month0_week_nz": 1, "week0_day_nz": 2}
+    assert smf.leaderboard_zero_quality(snap, min_value=0.0)["month0_week_nz"] == 2  # + g; h has no account value
+    assert smf.leaderboard_zero_quality({}) == {"n": 0, "month0": 0, "week0": 0, "month0_week_nz": 0, "week0_day_nz": 0}
+
+
+def test_runner_hl_zero_rows_per_day_no_lookahead_and_before_outcomes(tmp_path, capsys):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    runner = _load_runner()
+    d1, d2 = date(2026, 10, 16), date(2026, 10, 17)
+    prep = SimpleNamespace(hl={d1: {"a": _lb(1e6, 5.0, 10.0, 0.0)}}, h1=[(d1, date(2026, 11, 15))], h1w=[(d1, date(2026, 10, 23))])
+    early = runner.hl_zero_block(prep)
+    prep.hl[d2] = {"a": _lb(1e6, 3.0, 0.0, 7.0), "b": _lb(1e6, 0.0, 0.0, 0.0)}  # a later day changes nothing before it
+    rows = runner.hl_zero_block(prep)
+    assert (
+        rows[0]
+        == early[0]
+        == {"d": "2026-10-16", "formation": "H1, H1w", "n": 1, "month0": 1, "week0": 0, "month0_week_nz": 1, "week0_day_nz": 0}
+    )
+    assert rows[1]["week0_day_nz"] == 1 and rows[1]["formation"] == "" and rows[1]["n"] == 2
+    db = tmp_path / "store.sqlite"
+    _stub_store(db)
+    cache = tmp_path / "cache"
+    _stub_cache(cache)
+    p = runner.Prep(runner.cmn.connect_ro(db), datetime(2026, 11, 25, tzinfo=UTC), tmp_path / "no_stage0")
+    capsys.readouterr()
+    res = runner.full(p, cache, seed=1, no_fetch=True)
+    text = capsys.readouterr().out
+    assert len(res["hl_zero_quality"]) == 40 and res["hl_zero_quality"][0]["month0"] == 1  # 10-16 .. 11-24 (11-25 00:05 > as-of)
+    assert text.index("Якість нулів лідерборду HL") < text.index("план запитів") < text.index("### H1:")  # before the fetch / outcomes
+
+
+class _FlakyGamma(_FakeGamma):
+    """Raises a ProviderError (HTTP 500) on the first ``fail[token]`` calls whose batch contains the token."""
+
+    def __init__(self, open_markets: dict, fail: dict) -> None:
+        super().__init__(open_markets, {})
+        self.fail = dict(fail)
+
+    async def get_json(self, path, params, ttl, tool, args):
+        from tradedesk.core.errors import ProviderError  # noqa: PLC0415
+
+        for t in params["clob_token_ids"]:
+            if self.fail.get(t, 0) > 0:
+                self.fail[t] -= 1
+                self.calls.append(dict(params))
+                raise ProviderError("polymarket_gamma", "upstream", "HTTP 500")
+        return await super().get_json(path, params, ttl, tool, args)
+
+
+def _gamma_rt(g):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    return SimpleNamespace(polymarket=SimpleNamespace(gamma=g))
+
+
+def test_fetch_gamma_retries_a_failed_batch_in_the_same_run(tmp_path, capsys):
+    import asyncio  # noqa: PLC0415
+    from collections import Counter  # noqa: PLC0415
+
+    runner = _load_runner()
+    runner.GAMMA_BATCH, runner.GAMMA_RETRY_PAUSE_S = 1, 0.0
+    m = lambda t: {"clobTokenIds": json.dumps([t]), "closed": False}  # noqa: E731
+    g = _FlakyGamma({t: m(t) for t in "abc"}, {"b": 1})
+    failed = Counter()
+    asyncio.run(runner.fetch_gamma(_gamma_rt(g), tmp_path, ["a", "b", "c"], failed))
+    assert sorted(runner.gamma_map(tmp_path)) == ["a", "b", "c"]  # b recovered by retry round 1
+    assert failed["gamma"] == 0 and failed["gamma_attempt_errors"] == 1
+    assert [c["clob_token_ids"] for c in g.calls] == [["a"], ["b"], ["c"], ["b"]]
+    assert "retry round 1/2" in capsys.readouterr().out
+
+
+def test_fetch_gamma_retry_is_bounded_and_reports_what_still_failed(tmp_path, capsys):
+    import asyncio  # noqa: PLC0415
+    from collections import Counter  # noqa: PLC0415
+
+    runner = _load_runner()
+    runner.GAMMA_BATCH, runner.GAMMA_RETRY_PAUSE_S = 1, 0.0
+    m = lambda t: {"clobTokenIds": json.dumps([t]), "closed": False}  # noqa: E731
+    g = _FlakyGamma({t: m(t) for t in "abc"}, {"b": 10**6})  # b always fails
+    failed = Counter()
+    asyncio.run(runner.fetch_gamma(_gamma_rt(g), tmp_path, ["a", "b", "c"], failed))
+    assert sum(c["clob_token_ids"] == ["b"] for c in g.calls) == 1 + runner.GAMMA_RETRY_ROUNDS  # no endless loop
+    assert failed["gamma"] == 1 and failed["gamma_attempt_errors"] == 1 + runner.GAMMA_RETRY_ROUNDS
+    assert not (tmp_path / "gamma" / "batch_00001.json").exists() and sorted(runner.gamma_map(tmp_path)) == ["a", "c"]
+    assert "still failed after 2 retry rounds: 1 batches (1)" in capsys.readouterr().out
+    n = len(g.calls)
+    g.fail["b"] = 0
+    asyncio.run(runner.fetch_gamma(_gamma_rt(g), tmp_path, ["a", "b", "c"], Counter()))
+    assert [c["clob_token_ids"] for c in g.calls[n:]] == [["b"]]  # a later attempt asks only the missing batch
+
+
+def test_free_out_never_overwrites(tmp_path):
+    runner = _load_runner()
+    out = tmp_path / "full.md"
+    assert runner.free_out(out) == out
+    out.write_text("attempt 1")
+    assert runner.free_out(out) == tmp_path / "full.2.md"
+    out.unlink()
+    (tmp_path / "full.json").write_text("{}")  # the JSON alone also blocks the name
+    assert runner.free_out(out) == tmp_path / "full.2.md"
+    (tmp_path / "full.2.md").write_text("attempt 2")
+    assert runner.free_out(out) == tmp_path / "full.3.md"
+    (tmp_path / "rep.json").write_text("{}")  # slice-2 prep review, finding 3: no .md suffix used to loop forever
+    for bad in ("rep", "rep.json", "rep.txt"):
+        with pytest.raises(ValueError, match=r"must end in \.md"):
+            runner.free_out(tmp_path / bad)
+
+
+def test_full_json_records_what_the_attempt_could_not_fetch(tmp_path, monkeypatch):
+    """Slice-2 prep review, finding 6: ``fetch_failed`` is descriptive (None = --no-fetch replay); the JSON is still
+    accepted as a prior, a replay's JSON is not."""
+    runner = _load_runner()
+    db = tmp_path / "store.sqlite"
+    _stub_store(db)
+    cache = tmp_path / "cache"
+    _stub_cache(cache)
+    prep = runner.Prep(runner.cmn.connect_ro(db), datetime(2026, 11, 25, tzinfo=UTC), tmp_path / "no_stage0")
+
+    async def fake_fetch(prep, cache, plan):
+        return {"gamma": 2, "gamma_attempt_errors": 6}
+
+    monkeypatch.setattr(runner, "fetch", fake_fetch)
+    fetched = json.loads(json.dumps(runner.full(prep, cache, seed=1, no_fetch=False), default=str))
+    replay = json.loads(json.dumps(runner.full(prep, cache, seed=1, no_fetch=True), default=str))
+    assert fetched["fetch_failed"] == {"gamma": 2, "gamma_attempt_errors": 6} and replay["fetch_failed"] is None
+    assert {k: v for k, v in fetched.items() if k != "fetch_failed"} == {k: v for k, v in replay.items() if k != "fetch_failed"}
+    (tmp_path / "full.json").write_text(json.dumps(fetched))
+    (tmp_path / "replay.json").write_text(json.dumps(replay))
+    prior = runner.load_prior(str(tmp_path / "full.json"))
+    assert prior == runner.prior_from_body(replay) and runner.accepted_prior(prior, LOOK[2]) is prior
+    with pytest.raises(ValueError, match="replay"):
+        runner.load_prior(str(tmp_path / "replay.json"))
+
+
+def test_decisive_attempt_is_the_first_json_whose_h3_is_not_stopped(tmp_path):
+    """Card rule «порядок спроб»: a new full attempt is allowed only while every earlier one of the series crashed
+    before its JSON or was stopped by the Gamma check; the first one that is not stopped is decisive."""
+    runner = _load_runner()
+    out, a = tmp_path / "full.md", LOOK[2]
+    ok = {"as_of_s": a, "fetch_failed": {}, "h3": {"overall": {"status": "not_confirmed"}, "crypto": {"status": "not_confirmed"}}}
+    assert runner.decisive_attempt(out, a) is None  # no attempt yet
+    (tmp_path / "full.md").write_text("attempt 1 crashed before its JSON")
+    (tmp_path / "coverage.json").write_text(json.dumps({"as_of_s": a}))
+    assert runner.decisive_attempt(out, a) is None
+    (tmp_path / "full.2.json").write_text(json.dumps({**ok, "h3": {"stopped": True}}))  # stopped by the Gamma check
+    (tmp_path / "full.3.json").write_text(json.dumps({**ok, "fetch_failed": None}))  # a replay is not an attempt
+    (tmp_path / "full.x.json").write_text(json.dumps(ok))  # not in the series
+    (tmp_path / "full.4.json").write_text(json.dumps({**ok, "as_of_s": LOOK[1]}))  # another as-of
+    assert runner.decisive_attempt(out, a) is None
+    (tmp_path / "full.10.json").write_text(json.dumps(ok))
+    (tmp_path / "full.5.json").write_text(json.dumps(ok))
+    assert runner.decisive_attempt(out, a) == tmp_path / "full.5.json"  # numeric order, not lexicographic
+    legacy = {k: v for k, v in ok.items() if k != "fetch_failed"}  # slice 1's full.json predates the key
+    (tmp_path / "full.json").write_text(json.dumps(legacy))
+    assert runner.decisive_attempt(out, a) == tmp_path / "full.json"
+
+
+def _h2_case(runner, cache: Path, as_of_s: int):
+    """Synthetic H2 with a perfect daily IC (coin j's flow and its excess return both grow with j): gate passed and
+    the registered criterion met, so only the look / prior logic decides the verdict."""
+    from datetime import timedelta  # noqa: PLC0415
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    coins = [f"C{j}" for j in range(12)]
+    (cache / "candles").mkdir(parents=True, exist_ok=True)
+    for j, c in enumerate(["BTC", *coins]):
+        g = 0.0 if c == "BTC" else 0.001 * j
+        rows = [{"t": _ts(2026, 10, 15) * 1000 + k * 86_400_000, "c": 100.0 * (1 + g) ** k} for k in range(100)]
+        (cache / "candles" / f"{c}.json").write_text(json.dumps(rows))
+    as_of = datetime.fromtimestamp(as_of_s, UTC)
+    days = [runner.H2_FIRST + timedelta(days=k) for k in range((as_of.date() - runner.H2_FIRST).days)]
+    sig = {c: float(j + 1) for j, c in enumerate(coins)}
+    h2 = {d: {"signal": sig, "signal_early": sig, "skip": None} for d in days}
+    return SimpleNamespace(h2=h2, h2_days=days, as_of_s=as_of_s, as_of_day=as_of.date())
+
+
+def test_runner_m8_h2_decided_on_an_earlier_look_is_descriptive_and_carries_the_date(tmp_path, capsys):
+    runner = _load_runner()
+    prep2 = _h2_case(runner, tmp_path, LOOK[2])
+    undecided = {**_prior(LOOK[1]), "registration": runner.registration(), "h2_decided_at_s": None}
+    dec = runner.h2_block(prep2, tmp_path, undecided)["decision"]
+    assert dec["verdict"] == "confirmed" and dec["decided_at_s"] == LOOK[2]  # control: the first decision is at look 2
+    decided = {**undecided, "h2_decided_at_s": LOOK[1]}
+    capsys.readouterr()
+    dec = runner.h2_block(prep2, tmp_path, decided)["decision"]
+    assert dec["verdict"] == "descriptive" and dec["decided_at_s"] == LOOK[1] and dec["ic_ok"] is True  # m8
+    assert "рішення вже ухвалено на зрізі 2026-11-25" in capsys.readouterr().out
+    dec = runner.h2_block(prep2, tmp_path, None)["decision"]
+    assert dec["verdict"] == "descriptive" and dec["decided_at_s"] is None  # look 2 without a prior: unknown history
+    prep3 = _h2_case(runner, tmp_path, LOOK[3])
+    carried = {**decided, "as_of_s": LOOK[2], "prior_as_of_s": LOOK[1]}  # slice 2's JSON carried look 1's date
+    dec = runner.h2_block(prep3, tmp_path, carried)["decision"]
+    assert dec["verdict"] == "descriptive" and dec["decided_at_s"] == LOOK[1]
+    body = {"as_of_s": LOOK[1], "registration": runner.registration(), "h2": {"decision": {"verdict": "confirmed", "decided_at_s": LOOK[1]}},
+            "h3": {"overall": {"status": "candidate"}, "crypto": {"status": "not_candidate"}}}  # fmt: skip
+    prior = runner.accepted_prior(runner.prior_from_body(body), LOOK[2])  # the full-JSON route of the same date
+    assert prior["h2_decided_at_s"] == LOOK[1]
+    assert runner.h2_block(prep2, tmp_path, prior)["decision"]["verdict"] == "descriptive"

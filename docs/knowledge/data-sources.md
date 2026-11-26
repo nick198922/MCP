@@ -7,6 +7,7 @@
 - **Біржі:** Binance, Bybit, OKX, Hyperliquid (ccxt і власні провайдери): ціни, funding, OI, стакани, ліквідації; архів `data.binance.vision` з делістнутими.
 - **Опціони:** Deribit (ланцюжки, DVOL, марки угод).
 - **Polymarket:** ринки, ціни, угоди, лідерборд і позиції гаманців.
+- **Hyperliquid HIP-4 (outcomes, без провайдера):** публічний `POST /info`: `outcomeMeta` (лише живі outcomes), `l2Book` / `recentTrades` / `candleSnapshot` для `#<10·outcome+side>` — тільки поки контракт не розраховано, далі HTTP 500 «null» (як для неіснуючої монети); через info минуле — лише `userFillsByTime` окремих рахунків (ліміт 10 000 останніх fills на рахунок); архів S3 (requester-pays, ключі AWS) не перевіряли ([крок 0, 26.11](../verification/2026-11-26-hip4-step0.md)).
 - **CoinGecko** (безкоштовний; щоденні знімки пропозиції в колекторі); **DefiLlama** (TVL, fees/revenue, статичний датасет анлоків); **Alternative.me** (Fear & Greed).
 - **Колектор:** знімки пропозиції, рейтинги й позиції топ-трейдерів Hyperliquid і Polymarket.
 

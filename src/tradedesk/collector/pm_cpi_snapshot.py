@@ -27,8 +27,9 @@ state, so a service restart inside the window neither duplicates the row (key = 
   never dropped, even when the re-read fails (then the main set keeps it and the row stays ``partial``). A bracket gets
   ``gone_ts`` (in ``books``) only on proof that its market closed: ``closed: true`` in its series' listing, or, when it
   is missing from a complete listing and the CLOB gave no book of it either, Gamma ``/markets/{id}`` saying ``closed``
-  (``CONFIRM_MAX`` requests a tick at most). A gone bracket keeps its book but is left out of the pair checks and is not
-  asked again. Missing from the listing alone proves nothing (a short Gamma answer, a market without its token): the
+  (``CONFIRM_MAX`` requests a tick at most, in turn: never asked first, then the least recently asked by the bracket's
+  ``confirm_ts``, so brackets that never confirm do not hold the others back). A gone bracket keeps its book but is
+  left out of the pair checks and is not asked again. Missing from the listing alone proves nothing (a short Gamma answer, a market without its token): the
   bracket stays live, its stored token is read in the same ``/books``, and a book not got lands in ``missing``. Every
   level of every book, both sides, is kept compressed in ``books_depth_z``.
 * after 17:00 UTC (until 21:00) only what is still missing is fetched, and the row gets ``late = 1`` when that brought
@@ -74,6 +75,7 @@ from ..analytics.pm_cpi import (
     prev_target,
     quoted,
     readable,
+    to_confirm,
     with_book,
 )
 from ..core.envelope import Builder
@@ -91,9 +93,10 @@ SERIES = ("5", "10007", "10008", "11905", "12054")
 MAIN_SERIES = ("10007", "10008", "11905", "12054")
 BOOK_CHUNK = 50  # tokens per CLOB POST /books (as in collector/pm_gap.py)
 # Gamma /markets/{id} requests a tick at most (blocker 1 of review C2): asked only for a live bracket that is missing
-# from an answered listing of its series and got no book in the same tick; closed -> gone, never asked again. 20 covers
-# one release (4 events, 39 brackets on 26.11) in two ticks; a day costs at most CONFIRM_MAX x BOOKS_MAX_TRIES, and only
-# while Gamma keeps calling open a market it does not list and the CLOB has no book of it.
+# from an answered listing of its series and got no book in the same tick; closed -> gone, never asked again. Taken in
+# turn (analytics.pm_cpi.to_confirm, item 483), so 20 covers one release (4 events, 39 brackets on 26.11) in two ticks
+# even when some never confirm; a day costs at most CONFIRM_MAX x BOOKS_MAX_TRIES, and only while Gamma keeps calling
+# open a market it does not list and the CLOB has no book of it.
 CONFIRM_MAX = 20
 MAX_TICK_SECONDS = 1800  # the scheduler clamps the cadence to this, so the 90 min window always gets ticks
 # ... and to at least this (finding 15 of review C): a nowcast file is stored by about the 19th tick of the day at the
@@ -278,15 +281,17 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
             if isinstance(bk, dict) and bk.get("asset_id") is not None and str(bk["asset_id"]) in part:
                 books[str(bk["asset_id"])] = bk
                 read[str(bk["asset_id"])] = ts
-    # absent from an answered listing and no book either: ask Gamma about that market (at most CONFIRM_MAX a tick);
-    # only closed: true for this very token marks it gone, a failed or other answer keeps it live and asked next tick
+    # absent from an answered listing and no book either: ask Gamma about that market (at most CONFIRM_MAX a tick, never
+    # asked first, then the least recently asked: item 483); only closed: true for this very token marks it gone, a
+    # failed or other answer keeps it live and asked again in its turn
     ask = [t for t in tokens if t in absent and t not in books and absent[t]["series"] in answered]
-    for t in ask[:CONFIRM_MAX]:
+    asked = to_confirm(ask, main, CONFIRM_MAX)
+    for t in asked:
         mid = str(absent[t].get("market_id"))
         if confirms_close(await b.guard(f"closed:{mid}", "polymarket:gamma", rt.polymarket.market(mid)), t):
             shut.add(t)
     if len(ask) > CONFIRM_MAX:
-        b.warn(f"{len(ask)} bracket(s) to confirm closed, {CONFIRM_MAX} asked this tick, the rest next tick")
+        b.warn(f"{len(ask)} bracket(s) to confirm closed, {CONFIRM_MAX} asked this tick, the rest on the next ticks")
     lost = [t for t in tokens if t not in books and t not in shut]
     if lost and not any(m.field.startswith("books:") for m in b.missing):
         out = sum(1 for t in lost if t in absent)
@@ -299,6 +304,9 @@ async def _books(rt: "Runtime", b: Builder, row: dict[str, Any], since: int) -> 
     # finding 12 of review C: a closed bracket cannot be read again; it keeps its book but is out of the pair checks,
     # so the row is not held 'partial' (and Gamma asked every tick) until 21:00
     merged = mark_gone(merged, shut, fresh, _ts(rt))
+    if asked:  # when Gamma was last asked about the bracket: the rotation of to_confirm, kept in the row across restarts
+        at, done = _ts(rt), set(asked)
+        merged = [x | {"confirm_ts": at} if str(x["token"]) in done else x for x in merged]
     gone = [x for x in merged if x.get("gone_ts") and not (main.get(str(x["token"])) or {}).get("gone_ts")]
     if gone:
         b.warn(f"{len(gone)} bracket(s) closed, their books kept: {[x.get('title') for x in gone][:6]}")

@@ -286,6 +286,19 @@ def confirms_close(market: Any, token: str) -> bool:
     return isinstance(market, Mapping) and market.get("closed") is True and yes_token(market) == str(token)
 
 
+def to_confirm(tokens: Iterable[str], stored: Mapping[str, Mapping[str, Any]], limit: int) -> list[str]:
+    """The at most ``limit`` of ``tokens`` to ask Gamma ``/markets/{id}`` about this tick (findings 4-5 of review C2,
+    item 483): the ones never asked first, then the least recently asked (``confirm_ts`` of the stored bracket in
+    ``stored``, unix s), ties in the given order. Every tick asked moves a bracket behind all the others, so brackets
+    that never confirm (a failing request, Gamma calling them open) cannot hold the rest back: a candidate is asked
+    within ceil(n / limit) ticks, n = the brackets of the row, however the candidate list changes between ticks. A
+    bracket that gets a new book loses its ``confirm_ts`` (:func:`merge_brackets`), counts as never asked if it becomes
+    a candidate again, and can push that bound back slightly. The state is in the row, so a restart or a new process
+    keeps the rotation."""
+    order = sorted(tokens, key=lambda t: int((stored.get(t) or {}).get("confirm_ts") or 0))
+    return order[: max(int(limit), 0)]
+
+
 def as_listed(bracket: Mapping[str, Any]) -> dict[str, Any]:
     """A stored bracket as :func:`brackets` lists it (ids, title, end date, fee type, token), without its book: what
     the job asks the CLOB for when the bracket is missing from this tick's listing but not known to be closed."""

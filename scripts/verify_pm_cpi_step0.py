@@ -1033,6 +1033,7 @@ def _say_brackets(brs: list[dict[str, Any]], early: bool = False) -> None:
         for b in bs:
             usd = f"{b.get('bid_usd') or 0:8.0f} {b.get('ask_usd') or 0:8.0f}" if b.get("book") else "  no book"
             sup = f"  superseded {_hm(b.get('superseded_ts'))}" if early else ""
+            sup += f"  closed (seen {_hm(b.get('gone_ts'))}), not in the pair check" if b.get("gone_ts") else ""
             say(
                 f"    {str(b.get('title'))[:16]:16} {b.get('bid') if b.get('bid') is not None else '-':>6} {b.get('ask') if b.get('ask') is not None else '-':>6} {usd}"
                 f"  book {_hm_ms(b.get('book_ts_ms'))}  read {_hm(b.get('read_ts'))}{sup}"

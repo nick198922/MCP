@@ -44,7 +44,10 @@ LATE_END = time(21, 0)
 CF_MAX_FETCHES = 3  # successful nowcast downloads a day: the first plus up to two when the file is not today's yet
 CF_RETRY_S = 1800  # a stale file is asked again at the earliest this long after the last download
 CF_MAX_TRIES = 12  # nowcast attempts a day, failed ones included (a 7.7 MB file each)
-BOOKS_MAX_TRIES = 40  # listing + books attempts a day (window and late phase)
+# listing + books attempts a day (window and late phase): 80 covers every tick at the shortest cadence (300 s) from
+# 15:30 to 21:00 (66 ticks, finding 3 of review C2; 40 ran out at 18:45 when the books stayed due). One attempt is 5
+# Gamma listings + 1 CLOB /books (+ the /markets/{id} confirmations, collector CONFIRM_MAX at most).
+BOOKS_MAX_TRIES = 80
 MAX_PCT = 100.0  # |nowcast| above this (percent) is garbage, not an inflation rate
 MAX_SIZE = 1e12  # shares at one book level (as option_xvenue.MAX_NUM)
 
@@ -194,14 +197,13 @@ def newer_or_same(new: Mapping[str, Any], old: Mapping[str, Any] | None) -> bool
     today's must not overwrite it. Compared by (the later of stamp day and last point day, last point day, stamp day),
     so a copy without a readable stamp (``_comment`` gone) but with a newer point is not taken for an older one (review
     C of item 480, remark 10); only a tie on the days falls back to the stamp."""
-    if old is None:
-        return True
+    return old is None or file_key(new) >= file_key(old)
 
-    def key(s: Mapping[str, Any]) -> tuple[str, str, str]:
-        last, sd = s.get("last_day") or "", stamp_day(s.get("stamp")) or ""
-        return max(sd, last), last, sd
 
-    return key(new) >= key(old)
+def file_key(s: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The order of :func:`newer_or_same`: (the later of stamp day and last point day, last point day, stamp day)."""
+    last, sd = s.get("last_day") or "", stamp_day(s.get("stamp")) or ""
+    return max(sd, last), last, sd
 
 
 def new_points_after(old: Any, new: Any, series: str = HEADLINE, recent: int = NEWEST) -> list[dict[str, Any]]:
@@ -262,19 +264,70 @@ def paired(bracket: Mapping[str, Any] | None, since: int) -> bool:
     return bracket is not None and bool(bracket.get("book")) and int(bracket.get("read_ts") or 0) >= since
 
 
+def live(brackets_: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The brackets not known to be closed: without ``gone_ts`` (:func:`mark_gone`)."""
+    return [b for b in brackets_ if not b.get("gone_ts")]
+
+
+def closed_tokens(events: Iterable[Any]) -> set[str]:
+    """YES tokens of the markets a listing shows with ``closed: true`` (the open events of a series can hold closed
+    markets): positive evidence of a close, unlike a market that is simply not in the answer."""
+    out = set()
+    for ev in events:
+        for m in (ev.get("markets") or []) if isinstance(ev, dict) else []:
+            if isinstance(m, dict) and m.get("closed") is True and (tok := yes_token(m)) is not None:
+                out.add(tok)
+    return out
+
+
+def confirms_close(market: Any, token: str) -> bool:
+    """A Gamma ``/markets/{id}`` answer says the market of YES token ``token`` is closed: ``closed`` is exactly True and
+    its YES token is ``token``. Anything else (open, another market, no token, not a dict) is no proof."""
+    return isinstance(market, Mapping) and market.get("closed") is True and yes_token(market) == str(token)
+
+
+def as_listed(bracket: Mapping[str, Any]) -> dict[str, Any]:
+    """A stored bracket as :func:`brackets` lists it (ids, title, end date, fee type, token), without its book: what
+    the job asks the CLOB for when the bracket is missing from this tick's listing but not known to be closed."""
+    keys = ("series", "event_id", "event_slug", "end_date", "market_id", "title", "fee_type", "token")
+    return {**{k: bracket.get(k) for k in keys}, "book": False}
+
+
+def mark_gone(
+    brackets_: Iterable[Mapping[str, Any]], closed: Iterable[str], listed_tokens: Iterable[str], now: int
+) -> list[dict[str, Any]]:
+    """Mark the brackets known to be closed (finding 12 of review C, blocker 1 of review C2): a bracket whose token is
+    in ``closed`` (a listing showed it ``closed: true``, or Gamma ``/markets/{id}`` said so: :func:`closed_tokens`,
+    :func:`confirms_close`) gets ``gone_ts`` = ``now`` (the first tick that saw it; kept later); one listed open again
+    (``listed_tokens``) loses it. Being absent from a listing is no proof and marks nothing. A gone bracket keeps its
+    book in the main set but is left out of the pair checks (:func:`books_complete`, :func:`books_paired`)."""
+    shut, tokens = {str(t) for t in closed}, {str(t) for t in listed_tokens}
+    out = []
+    for b in brackets_:
+        x = dict(b)
+        tok = str(x.get("token"))
+        if tok in tokens:
+            x.pop("gone_ts", None)
+        elif tok in shut and not x.get("gone_ts"):
+            x["gone_ts"] = now
+        out.append(x)
+    return out
+
+
 def books_complete(books: Mapping[str, Any] | None, series: Iterable[str], since: int = 0) -> bool:
-    """Every series listed at least once today, at least one bracket, and every bracket's book read at or after
-    ``since`` (the nowcast download, :func:`nowcast_ts`; 0 = any time)."""
+    """Every series listed at least once today, at least one live bracket, and the book of every live bracket read at
+    or after ``since`` (the nowcast download, :func:`nowcast_ts`; 0 = any time). Gone (closed) brackets are left out."""
     if not books:
         return False
-    brackets = books.get("brackets") or []
+    brackets = live(books.get("brackets") or [])
     listed = set(series) <= set(books.get("series_listed") or [])
     return listed and bool(brackets) and all(paired(b, since) for b in brackets)
 
 
 def books_paired(books: Mapping[str, Any] | None, since: int | None) -> int | None:
-    """1 = every bracket with a book was read at or after ``since``, 0 = not, None = no nowcast file or no book."""
-    with_book = [b for b in (books or {}).get("brackets") or [] if b.get("book")]
+    """1 = every live bracket with a book was read at or after ``since``, 0 = not, None = no nowcast file or no such
+    book. Gone (closed) brackets (:func:`mark_gone`) are left out."""
+    with_book = [b for b in live((books or {}).get("brackets") or []) if b.get("book")]
     if since is None or not with_book:
         return None
     return int(all(paired(b, since) for b in with_book))

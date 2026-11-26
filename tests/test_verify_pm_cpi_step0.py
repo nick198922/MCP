@@ -185,6 +185,7 @@ async def _db_with_rows(path):
           "book_ts_ms": 1796484899000, "read_ts": 1796484900}  # fmt: skip
     books = {"series_listed": ["10007"], "counts": {"10007": {"events": 1, "brackets": 1}}, "brackets": [br]}
     early = {"brackets": [br | {"bid": 0.41, "read_ts": 1796483100, "book_ts_ms": 1796483099000, "superseded_ts": 1796484900}]}
+    gone = br | {"token": "u", "title": "3.6%", "read_ts": 1796483100, "gone_ts": 1796484900}  # item 482: its market closed
     depth = {"main": {"t": {"read_ts": 1796484900, "bids": [[0.45, 9.48], [0.44, 10]], "asks": [[0.47, 156.94]]}}, "early": []}
     s = Store(path)
     await s.init()
@@ -209,7 +210,7 @@ async def _db_with_rows(path):
                     "target": "2026-11",
                     "mom_target": "2026-11",
                     "yoy_headline_pct": 3.84,
-                    "books": json.dumps(books),
+                    "books": json.dumps(books if day != "2026-11-28" else books | {"brackets": [br, gone]}),
                     "books_paired": 1,
                     "books_early": json.dumps(early) if day == "2026-12-01" else None,
                     "books_depth_z": zlib.compress(json.dumps(depth).encode()),
@@ -248,6 +249,8 @@ def test_row_stage_reads_the_job_row_read_only(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "vintage nowcast_year: row 2026-11-26 (stamp '2026-11-25 00:00') vs row 2026-11-28" in out
     assert "new value vs old last: True" in out
+    assert "read 15:05:00 UTC  closed (seen 15:35:00 UTC), not in the pair check" in out  # item 482, finding 12
+    assert out.count("not in the pair check") == 1
     # mode=ro: the database file is not written (SQLite may still create its -shm / -wal side files to read a WAL file)
     assert (db.read_bytes(), db.stat().st_mtime_ns) == before
     assert m.stage_row(db, "2026-12-02") is False and "NO ROW for 2026-12-02" in capsys.readouterr().out

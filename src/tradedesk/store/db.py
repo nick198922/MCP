@@ -553,6 +553,17 @@ class Store:
         r = await cur.fetchone()
         return (r[0], r[1]) if r is not None else None
 
+    async def pm_cpi_sha_day(self, day: str, kind: str, sha: str) -> str | None:
+        """The latest day before ``day`` whose row holds the nowcast file of ``kind`` ('year' | 'month') with this
+        sha256, stored or referenced; None when no earlier row has those bytes (item 482, finding 2 of review C2)."""
+        if kind not in ("year", "month"):
+            raise ValueError(f"unknown nowcast file {kind!r}")
+        cur = await self.conn.execute(
+            f"SELECT day FROM pm_cpi_snapshot WHERE day < ? AND cf_{kind}_sha = ? ORDER BY day DESC LIMIT 1", (day, sha)
+        )
+        r = await cur.fetchone()
+        return r[0] if r is not None else None
+
     async def upsert_pm_cpi(self, row: dict[str, Any]) -> int:
         """Write the day's row: insert, or replace every column but ``day`` and ``created_ts``. The collector builds the
         full row from the stored one, so what a later tick did not fetch is written back unchanged."""

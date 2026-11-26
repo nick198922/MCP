@@ -1166,6 +1166,8 @@ def test_every_card_journal_belongs_to_a_card_of_the_repo():
     for slug, j in script.CARD_JOURNALS.items():
         assert list(script.IDEAS.glob(f"IDEA-*-{slug}.md")), slug
         assert j.sql.count("?") == 2 and j.sql.startswith("SELECT COUNT("), slug  # counters only, since T0 up to the report moment
+        for p in (*j.also, *([j.full] if j.full else [])):
+            assert p.sql.count("?") == 2 and p.sql.startswith("SELECT COUNT("), (slug, p.table)
 
 
 def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
@@ -1244,6 +1246,211 @@ def test_trader_positions_journal_is_labelled_as_a_change_log():
     unit = script.CARD_JOURNALS["hl-whale-liquidation-magnet"].unit
     # rows exist only at runs with a change, or (from 25.11) a Hyperliquid position >= $2.5M: runs with rows, not hours
     assert unit.startswith("запусків із рядками позицій HL") and "годинн" not in unit
+
+
+TOUCH, HLP = "polymarket-touch-ladder-event-days", "hlp-inventory-crowding"
+STRAT_A = "0x010461c14e146ac35fe42271bdc1134ee31c703a"  # an HLP child vault
+
+
+def _journal_rows(db: str, table: str, cols: str, rows) -> None:
+    con = sqlite3.connect(db)
+    con.executemany(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' * len(cols.split(',')))})", rows)
+    con.commit()
+    con.close()
+
+
+def test_touch_ladder_journal_counts_btc_touch_snapshots_and_names_the_deviation(tmp_path):
+    """Item 472: the touch-ladder card collects through pm_gap_snapshot (kind 'touch', BTC, the daily ladder); the
+    report counts its snapshots and names the deviation from the registration (5–10 min earlier, top of book only)."""
+    db = _db(tmp_path)
+    base, d = NOW // 1000 - 5 * 3600, 86_400
+    w0 = base - 7 * 3600  # 00:00 ET of the daily window
+    cols = "ts, market_id, asset, kind, direction, strike, end_ts, window_start, hours_to_end, yes_bid"
+    rows = [(base + h * 3600, f"m{k}", "BTC", "touch", "up", 1e5 + k, w0 + d, w0, 5.0, 0.4321) for h in range(3) for k in (1, 2)]
+    rows += [(base + 3 * 3600, "e1", "ETH", "touch", "up", 4000.0, w0 + d, w0, 5.0, 0.4321)]  # ETH: not the card's ladder
+    rows += [(base + 4 * 3600, "a1", "BTC", "above", "above", 1e5, w0 + d, None, 5.0, 0.4321)]  # not a touch market
+    rows += [(base + 4 * 3600, "w1", "BTC", "touch", "up", 1e5, w0 + 7 * d, w0, 5.0, 0.4321)]  # weekly ladder: not the card's
+    rows += [(NOW // 1000 + 3600, "m1", "BTC", "touch", "up", 1e5, w0 + d, w0, 5.0, 0.4321)]  # after the report moment
+    _journal_rows(db, "pm_gap_snapshot", cols, rows)
+    inp = script.load_inputs(db, NOW)
+    assert inp["journals"][TOUCH] == {"n": 3, "first": base, "last": base + 2 * 3600}
+    card = [{"slug": TOUCH, "tags": frozenset({f"idea:{TOUCH}"})}]
+    r = script.journal_row(card, inp["journals"], [], NOW)
+    c = r["counters"][TOUCH]
+    assert r["n"] == 1 and not any(k.startswith("форвард без збору") for k in r["counters"])
+    assert c.startswith("журнал pm_gap_snapshot: знімків (запусків колектора, ≈ щогодини) денних драбин BTC на дотик (kind = 'touch') 3,")
+    assert "відхилення від реєстрації" in c and ":20–:25" in c and "на 5–10 хв раніше" in c and "00:30 і 07:30 ET" in c
+    assert "лише верх книги" in c and "4321" not in c  # no price is read
+
+
+OI_DEFAULT = [cp._ms(2026, 11, 1, 12) // 1000 + h * 3600 for h in range(4)]
+
+
+def _hlp_db(tmp_path: Path, runs: list[tuple[int, list[int]]], top: list[int], oi: list[int] = OI_DEFAULT) -> str:
+    """Fixture DB: ``top`` = runs where an HLP child vault was in the top list (venue 'hyperliquid'), ``runs`` = runs of
+    the HLP record (ts, ok flag of each polled vault: the first len(flags) of HLP_VAULTS), ``oi`` = OI snapshot times,
+    plus an unrelated whale."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    db = _db(tmp_path)
+    pos = "ts, venue, account, market, side, size, value_usd"
+    _journal_rows(db, "trader_positions", pos, [(t, "hyperliquid", STRAT_A, "BTC", "long", 1.0, 4321.0) for t in top])
+    _journal_rows(db, "trader_positions", pos, [(t, "hyperliquid", "0x" + "1" * 40, "BTC", "long", 1.0, 1.0) for t in top])
+    for t, oks in runs:
+        polled = list(zip(script.HLP_VAULTS, oks, strict=False))  # the first len(oks) vaults
+        _journal_rows(db, "trader_polls", "venue, ts, account, ok", [("hyperliquid_hlp", t, v, ok) for v, ok in polled])
+        good = [(t, "hyperliquid_hlp", v, "ETH", "short", 2.0, 4321.0) for v, ok in polled if ok]
+        _journal_rows(db, "trader_positions", pos, good)
+    oi_rows = [(t, "BTC", 0, 4321.0, 0) for t in oi]
+    _journal_rows(db, "hl_oi_cap_snapshot", "ts, coin, at_cap, oi_usd, fetched_ts", oi_rows)
+    return db
+
+
+HLP_CARD = [{"slug": HLP, "tags": frozenset({f"idea:{HLP}"})}]
+NOW_S = NOW // 1000
+TOP = [NOW_S - 30 * 3600, NOW_S - 20 * 3600, NOW_S - 10 * 3600]
+
+
+def _hlp(tmp_path: Path, runs: list[tuple[int, list[int]]], *, oi: list[int] = OI_DEFAULT, top: list[int] = TOP, now: int = NOW):
+    """(journal counters, row) of the HLP card on a fixture DB."""
+    got = script.load_inputs(_hlp_db(tmp_path, runs, top, oi), now)["journals"][HLP]
+    return got, script.journal_row(HLP_CARD, {HLP: got}, [], now)
+
+
+def test_hlp_journal_is_partial_until_every_vault_is_recorded(tmp_path):
+    """Item 472: the HLP card collects through trader_positions (+ hl_oi_cap_snapshot); «частково» until a run in which
+    every vault answered (trader_polls, venue hyperliquid_hlp) is fresh, and the days before it stay partial."""
+    got, r = _hlp(tmp_path / "a", [])
+    empty = dict.fromkeys(("n", "gaps", "longest", "runs", "fewest", "most"), 0) | {"first": None, "last": None}
+    assert got["n"] == 3 and got["full"] == empty
+    c = r["counters"][HLP]
+    assert r["n"] == 1 and not any(k.startswith("форвард без збору") for k in r["counters"])  # collecting, partially
+    assert c.startswith("частково — журнал trader_positions: запусків із рядками позицій сховищ HLP")
+    assert "топ-100 за pnl_all" in c and "повного запису (trader_polls:" in c and "у БД ще нема" in c
+    assert "hl_oi_cap_snapshot: годинних знімків OI / funding 4, з 2026-11-01 12:00 до 2026-11-01 15:00 UTC" in c
+    assert c.endswith("вердикт: дату не визначено, доки нема повного запису") and "4321" not in c
+    assert "з них частково 1" in r["metric_name"]
+    # two complete hourly runs, the last one an hour before the report: the complete record, no gaps
+    got, r = _hlp(tmp_path / "b", [(NOW_S - 2 * 3600, [1] * 8), (NOW_S - 3600, [1] * 8)])
+    two = {"n": 2, "first": NOW_S - 2 * 3600, "last": NOW_S - 3600, "gaps": 0, "longest": 3600, "runs": 2, "fewest": 8, "most": 8}
+    assert got["full"] == two
+    c = r["counters"][HLP]
+    assert c.startswith("повний запис з 2026-11-02 10:00 UTC — журнал trader_positions:")
+    assert "ok = 1) 2 з 2 запусків, з 2026-11-02 10:00 до 2026-11-02 11:00 UTC, опитано сховищ за запуск 8–8;" in c
+    assert "розривів" not in c and "бракує" not in c
+    assert "до 2026-11-02 10:00 UTC — частково: лише сховища HLP" in c  # the days before stay partial
+    assert c.endswith("вердикт: ≥ 180 діб повного запису: не раніше 2027-05-01") and "частково" not in r["metric_name"]
+    # the complete record stopped three days before the report, the top-list rows go on: partial again
+    later = NOW + 3 * DAY
+    _, r = _hlp(tmp_path / "c", [(NOW_S - 2 * 3600, [1] * 8)], top=[*TOP, later // 1000 - 3600], now=later)
+    assert r["counters"][HLP].startswith("частково — ") and "повний запис зупинився (trader_polls:" in r["counters"][HLP]
+
+
+def test_hlp_a_run_with_a_failed_vault_is_a_gap_not_a_complete_run(tmp_path):
+    """Review 472, remark 8: a run in which one vault did not answer is not complete; the hour it stood for is a gap."""
+    runs = [(NOW_S - 3 * 3600, [1] * 8), (NOW_S - 2 * 3600, [1] * 7 + [0]), (NOW_S - 3600, [1] * 8)]
+    got, r = _hlp(tmp_path, runs)
+    assert (got["full"]["n"], got["full"]["runs"], got["full"]["gaps"]) == (2, 3, 1)
+    c = r["counters"][HLP]
+    assert c.startswith("повний запис з 2026-11-02 09:00 UTC (з пропусками) — ")
+    assert "2 з 3 запусків" in c and "розривів між повними запусками понад 90 хв (з хвостом до моменту звіту) 1, найдовший 2.0 год" in c
+
+
+def test_hlp_extra_runs_after_a_restart_do_not_hide_a_missed_hour(tmp_path):
+    """Review 472, blocker 1: runs at 0:00, 0:10 (restart) and 2:00, hour 1 missed — 3 runs over 3 hours, still a gap."""
+    t0 = NOW_S - 3 * 3600
+    got, r = _hlp(tmp_path, [(t0, [1] * 8), (t0 + 600, [1] * 8), (t0 + 2 * 3600, [1] * 8)])
+    assert (got["full"]["n"], got["full"]["gaps"], got["full"]["longest"]) == (3, 1, 6600)
+    assert r["counters"][HLP].startswith("повний запис з 2026-11-02 09:00 UTC (з пропусками) — ")
+    assert "найдовший 1.8 год" in r["counters"][HLP]
+
+
+def test_hlp_only_the_parent_answering_is_never_a_complete_record(tmp_path):
+    """Review 472, blocker 2: every run the 7 child vaults fail — no complete run, no verdict date."""
+    got, r = _hlp(tmp_path, [(NOW_S - h * 3600, [1] + [0] * 7) for h in range(5)])
+    assert got["full"]["n"] == 0 and got["full"]["runs"] == 5
+    c = r["counters"][HLP]
+    assert c.startswith("частково — ") and "повний запис з" not in c
+    assert "0 з 5 запусків (опитано сховищ за запуск 8–8)" in c and c.endswith("вердикт: дату не визначено, доки нема повного запису")
+    assert "з них частково 1" in r["metric_name"]
+
+
+def test_hlp_one_complete_run_then_total_failure_is_a_gap_up_to_the_report(tmp_path):
+    """Review 472, blocker 2: one complete run, then 40 h in which no vault answers: the tail is a gap of 40 h."""
+    t0 = NOW_S - 40 * 3600
+    got, r = _hlp(tmp_path, [(t0, [1] * 8)] + [(t0 + h * 3600, [0] * 8) for h in range(1, 41)])
+    assert (got["full"]["n"], got["full"]["runs"], got["full"]["gaps"]) == (1, 41, 0)  # the tail is added by the text
+    c = r["counters"][HLP]
+    assert "(з пропусками)" in c and "1 з 41 запусків" in c and "(з хвостом до моменту звіту) 1, найдовший 40.0 год" in c
+    _, r = _hlp(tmp_path / "late", [(t0, [1] * 8)] + [(t0 + h * 3600, [0] * 8) for h in range(1, 41)], now=NOW + 9 * H)
+    assert r["counters"][HLP].startswith("частково — ") and "повний запис зупинився" in r["counters"][HLP]  # > 2 days
+
+
+def test_hlp_a_run_polling_fewer_vaults_than_registered_is_not_complete(tmp_path):
+    """Review 472, blocker 2: a run that intends to poll one vault only (a stale or cut list) is not complete, however
+    many such runs succeed; the report names how many vaults the runs polled."""
+    got, r = _hlp(tmp_path, [(NOW_S - h * 3600, [1]) for h in range(5)])
+    assert got["full"]["n"] == 0 and (got["full"]["fewest"], got["full"]["most"]) == (1, 1)
+    c = r["counters"][HLP]
+    assert c.startswith("частково — ") and "0 з 5 запусків (опитано сховищ за запуск 1–1)" in c
+
+
+def test_hlp_without_fresh_oi_is_partial(tmp_path):
+    """Review 472, blocker 2: the registration needs OI and funding too; an empty or stale hl_oi_cap_snapshot = partial."""
+    runs = [(NOW_S - 2 * 3600, [1] * 8), (NOW_S - 3600, [1] * 8)]
+    for name, oi in (("empty", []), ("stale", [NOW_S - 3 * 86_400])):
+        _, r = _hlp(tmp_path / name, runs, oi=oi)
+        c = r["counters"][HLP]
+        assert c.startswith("частково — журнал trader_positions:"), name
+        assert "для повного запису бракує свіжого hl_oi_cap_snapshot (лічильники далі)" in c, name
+        assert c.endswith("не раніше 2027-05-01") and "з них частково 1" in r["metric_name"], name
+
+
+def test_hlp_fresh_complete_record_keeps_the_card_collecting(tmp_path):
+    """Review 472, remark 7: unchanged vault positions under $2.5M write no trader_positions row; a fresh complete
+    record still counts as collecting."""
+    old = NOW_S - 5 * 86_400
+    got = {
+        "n": 1, "first": old, "last": old,
+        "full": {"n": 2, "first": NOW_S - 2 * 3600, "last": NOW_S - 3600, "gaps": 0, "longest": 3600, "runs": 2, "fewest": 8, "most": 8},
+        "also": [{"n": 4, "first": OI_DEFAULT[0], "last": OI_DEFAULT[-1]}],
+    }  # fmt: skip
+    r = script.journal_row(HLP_CARD, {HLP: got}, [], NOW)
+    assert r["n"] == 1 and not any(k.startswith("форвард без збору") for k in r["counters"])
+    assert r["counters"][HLP].startswith("повний запис з 2026-11-02 10:00 UTC — ")
+
+
+def test_hlp_journal_without_its_tables_does_not_crash(tmp_path):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    for t in ("trader_polls", "hl_oi_cap_snapshot"):
+        con.execute(f"DROP TABLE {t}")
+    con.execute(
+        "INSERT INTO trader_positions (ts, venue, account, market, side) VALUES (?, 'hyperliquid', ?, 'BTC', 'long')",
+        (NOW // 1000 - 60, STRAT_A),
+    )
+    con.commit()
+    con.close()
+    got = script.load_inputs(db, NOW)["journals"][HLP]
+    assert got["full"] == {"absent": True} and got["also"] == [{"absent": True}]
+    c = script.journal_row([{"slug": HLP, "tags": frozenset()}], {HLP: got}, [], NOW)["counters"][HLP]
+    assert c.startswith("частково — ") and "таблиці trader_polls у цій БД нема" in c and "hl_oi_cap_snapshot: таблиці в цій БД нема" in c
+    unread = script.journal_row([{"slug": HLP, "tags": frozenset()}], {HLP: {"n": 1, "first": 1, "last": NOW // 1000}}, [], NOW)
+    assert "повного запису (trader_polls: " in unread["counters"][HLP] and "не прочитано" in unread["counters"][HLP]
+
+
+def test_hlp_vaults_match_the_collector_and_the_live_fixture():
+    from tradedesk.collector.scheduler import HLP_VENUE
+    from tradedesk.providers.hyperliquid import HLP_VAULT
+
+    fx = json.loads(
+        (Path(__file__).resolve().parent / "fixtures/hyperliquid_vault_details_hlp_2026-11-26.json").read_text(encoding="utf-8")
+    )
+    assert script.HLP_VENUE == HLP_VENUE
+    j = script.CARD_JOURNALS["hlp-inventory-crowding"]
+    assert j.full is not None and f"venue = '{HLP_VENUE}'" in j.full.sql and f"venue = '{HLP_VENUE}'" in j.sql
+    # the literals of the complete-run query: every registered vault polled, missed hour = a spell over GAP_S
+    assert f"COUNT(*) >= {len(script.HLP_VAULTS)} AS whole" in j.full.sql and f"gap > {script.GAP_S})" in j.full.sql
+    assert script.HLP_VAULTS == (HLP_VAULT, *fx["relationship"]["data"]["childAddresses"])
 
 
 def test_script_survives_a_missing_db(tmp_path):

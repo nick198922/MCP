@@ -806,6 +806,15 @@ async def test_calendar_expiries(server):
     assert {m["kind"] for m in macro} & {"cpi", "fomc", "nfp"}
 
 
+def test_macro_calendar_has_the_december_nfp():
+    """Employment Situation for November 2026: BLS schedule, Dec. 04, 2026, 08:30 AM Eastern = 13:30 UTC (EST)."""
+    from tradedesk.tools.calendar import _load_macro
+
+    events = _load_macro()["events"]
+    assert {"date": "2026-12-04", "time_utc": "13:30", "kind": "nfp", "label": "US Non-Farm Payrolls November", "impact": "high"} in events
+    assert len({(e["date"], e["kind"]) for e in events}) == len(events)  # no event listed twice
+
+
 async def test_calendar_classify_expiry():
     from datetime import UTC, datetime
 

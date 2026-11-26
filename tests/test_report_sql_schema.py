@@ -55,6 +55,11 @@ DYNAMIC: dict[tuple[str, str], str] = {
         "condor_forward_costs",
         "SELECT * FROM option_leg_snapshot WHERE day IN ({}) AND currency IN ('BTC', 'ETH') AND role IN ({})",
     ): "test_condor_loaders",
+    (
+        "checkpoint_report",
+        "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM trader_positions WHERE "
+        "(venue = '{}' OR (venue = 'hyperliquid' AND account IN ({}))) AND ts >= ? AND ts <= ?",
+    ): "test_checkpoint_loaders",
 }
 
 

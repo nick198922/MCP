@@ -237,6 +237,28 @@ def test_demo_status_cut_note_semicolon_inside_the_last_entry(monkeypatch):
     assert note.startswith(head) and note[len(head) : len(head) + 2] == ", "  # no trade id cut in half
 
 
+@pytest.mark.parametrize("n_bad", [7, 25])
+async def test_demo_status_compact_cut_keeps_the_whole_funding_explanation(tmp_path, n_bad):
+    # P&L-mismatch note (docs/verification/2026-11-26-demo-pnl-mismatch.md): with 7+ flagged trades the compact cut keeps
+    # the whole explanation (the tail after the last '; '), not a piece of it, and stays within NOTE_CHARS
+    db = str(tmp_path / "demo.sqlite")
+    bad = [
+        _row(f"mismatch-with-a-long-symbol-name-{i:02d}", "S14", "closed", V9, closed_ts=V9 + H, r_multiple=-0.5, version="v3", exit=1.1, pnl_usd=-50.0, fees_usd=0.0)
+        for i in range(n_bad)
+    ]  # fmt: skip
+    await seed(db, rows=bad)
+    default, full = await demo_envs(db, {}, {"include_details": True})
+    (whole,) = [n for n in full["data"]["notes"] if n.startswith("Угоди з розбіжним P&L")]
+    (cut,) = [n for n in default["data"]["notes"] if n.startswith("Угоди з розбіжним P&L")]
+    assert whole.startswith(f"Угоди з розбіжним P&L: {n_bad} — ") and len(whole) > demo_status_tool.NOTE_CHARS
+    assert whole.endswith(cp.PNL_MISMATCH_TAIL) and cut.endswith(" …" + cp.PNL_MISMATCH_TAIL)
+    assert len(cut) <= demo_status_tool.NOTE_CHARS and len(cp.PNL_MISMATCH_TAIL) <= demo_status_tool.NOTE_CHARS // 3
+    assert cp.PNL_MISMATCH_TAIL.count("; ") == 1 and cp.PNL_MISMATCH_TAIL.startswith("; ")  # the cut splits on the last '; '
+    assert "7 угод, закритих до 26.11 16:00 UTC" in cut and "Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py" in cut
+    assert "часткове закриття" not in whole
+    assert any("1 long note(s) cut" in w for w in default["warnings"])
+
+
 async def test_demo_status_skips_a_corrupt_row_with_a_warning(tmp_path):
     db = str(tmp_path / "demo.sqlite")
     await seed(db)

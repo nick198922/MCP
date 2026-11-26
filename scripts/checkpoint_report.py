@@ -14,7 +14,10 @@ The idea cards with ``Статус: forward`` (``docs/ideas/``) are listed with 
 ``trade_plan``, read without the R / outcome / price columns. The cards whose own journal is a collector table
 (``CARD_JOURNALS``: the table each card names) get one more row with counters only: observations to date, the first and
 last one, the minimum for the verdict and its date as the card writes them; no price, event or result is read. Cards
-with neither a fresh journal nor an ``idea:`` plan are listed as «форвард без збору» (item 312).
+with neither a fresh journal nor an ``idea:`` plan are listed as «форвард без збору» (item 312). A journal that differs
+from the card's registration says so (touch ladder: 5–10 min earlier, top of book only), and the HLP journal is labelled
+«частково» until a run in which every HLP vault answered (``trader_polls``, venue ``hyperliquid_hlp``) is fresh and the
+OI / funding table is fresh too, the days before its first complete run staying partial and missed hours named (item 472).
 Demo trades still ``open`` more than a day past their hold get a closing note with their count
 (``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples. So are the trades the
 demo trader set aside as ``orphaned`` (filled, no position and no close found on the venue): a note names them (item 326).
@@ -81,11 +84,29 @@ FORWARD_TABLES = (
 
 
 @dataclass(frozen=True)
+class Part:
+    """Another table a card's journal needs (``also``) or the complete record its registration names (``full``):
+    ``sql`` as ``Journal.sql`` (two ``?``; observations, first, last unix s), ``cols`` the names of its further columns."""
+
+    table: str
+    sql: str
+    unit: str
+    cols: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Journal:
     """A forward card's own journal, as the card names it. ``sql`` returns one row (observations, first, last unix s)
     for ``since <= ts <= now`` (two ``?``, unix s); ``{+N}`` in ``verdict`` is the date of the first observation + N days.
     An optional fourth column counts every row of the window when the first three count only the good ones (carry:
-    ``status = 'done'``), so a journal of failed / skipped cycles is neither fresh nor hidden."""
+    ``status = 'done'``), so a journal of failed / skipped cycles is neither fresh nor hidden.
+
+    ``note``: a deviation of the collected data from the card's registration, printed with the counters. ``also``:
+    further tables the card needs, counted alike. ``full``: the complete record the registration names (HLP: runs in
+    which every vault answered); the journal is «частково» (``partial`` says why) while ``full`` has no observation or
+    a stale one, or an ``also`` table is missing, empty or stale; the days before the first complete observation stay
+    partial, and spells of more than ``GAP_S`` without one (the tail up to the report moment too) are named.
+    ``{F+N}`` in ``verdict`` is the date of the first observation of ``full`` + N days (none: no date)."""
 
     table: str
     sql: str
@@ -93,6 +114,10 @@ class Journal:
     minimum: str
     verdict: str
     since: int = 0  # a registered T0 (unix s): observations before it belong to no forward of the card
+    note: str = ""
+    also: tuple[Part, ...] = ()
+    full: Part | None = None
+    partial: str = ""
 
 
 def _utc(ts: int, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -101,6 +126,19 @@ def _utc(ts: int, fmt: str = "%Y-%m-%d %H:%M") -> str:
 
 _PM_SQL = "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM pm_gap_snapshot WHERE ts >= ? AND ts <= ?"
 _PM_MIN = "16 тижнів входів; ≥ 20 днів розв'язання і ≥ 10 тижневих кластерів (позиції — рядки Polymarket вище)"
+# HLP (card hlp-inventory-crowding): the parent vault and its 7 child vaults as ``vaultDetails`` listed them on
+# 2026-11-26 (tests/fixtures/hyperliquid_vault_details_hlp_2026-11-26.json). Before item 471 a vault was recorded only
+# while it was in the top 100 by pnl_all, under venue 'hyperliquid'; from item 471 on, every vault each run under
+# ``HLP_VENUE`` (collector.scheduler.HLP_VENUE, not imported: the scheduler pulls the whole collector in).
+HLP_VENUE = "hyperliquid_hlp"
+HLP_VAULTS = (
+    "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303",  # parent
+    "0x010461c14e146ac35fe42271bdc1134ee31c703a", "0x2e3d94f0562703b25c83308a05046ddaf9a8dd14",
+    "0x2ed5c4484ea3ff8b57d5f2fb152a40d9f2b68308", "0x31ca8395cf837de08b24da3f660e77761dfb974b",
+    "0x469f690213c467c39a23efacfd2816896009d7d8", "0x5e177e5e39c0f4e421f5865a6d8beed8d921cb70",
+    "0xb0a55f13d22f66e6d495ac98113841b2326e9540",
+)  # fmt: skip
+_HLP_IN = ", ".join(f"'{a}'" for a in HLP_VAULTS)
 # The cards whose own forward journal is a collector table (docs/ideas/IDEA-*-<slug>.md, «Форвард» / «Прогрес» / «Реєстрація»).
 # Every other forward card names only ``idea:`` plans (or a journal not built yet): its journal is the plan row above.
 CARD_JOURNALS: dict[str, Journal] = {
@@ -116,6 +154,37 @@ CARD_JOURNALS: dict[str, Journal] = {
         "coingecko_trending", "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM coingecko_trending WHERE ts >= ? AND ts <= ?",
         "годинних знімків trending",
         "перше читання n = 40 подій, вердикт n = 150 (малий ефект — 300); події визначає крок 1", "крок 1 (тест) ≈ {+90}",
+    ),
+    "hlp-inventory-crowding": Journal(
+        "trader_positions",
+        "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM trader_positions WHERE "
+        f"(venue = '{HLP_VENUE}' OR (venue = 'hyperliquid' AND account IN ({_HLP_IN}))) AND ts >= ? AND ts <= ?",
+        "запусків із рядками позицій сховищ HLP (журнал змін і щозапускові рядки ≥ $2.5 млн)",
+        "≥ 180 діб щогодинних знімків позицій кожного сховища HLP (з ліквідаторами), OI і funding",
+        "≥ 180 діб повного запису: не раніше {F+180}",
+        also=(
+            Part(
+                "hl_oi_cap_snapshot", "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM hl_oi_cap_snapshot WHERE ts >= ? AND ts <= ?",
+                "годинних знімків OI / funding",
+            ),
+        ),
+        full=Part(
+            "trader_polls",
+            # complete run ('whole'): every polled vault answered and at least len(HLP_VAULTS) = 8 were polled.
+            # Complete runs, first / last, spells > GAP_S = 5400 s between consecutive complete runs and the longest one,
+            # all runs, fewest / most vaults polled in a run (literal 8 and 5400: tested against the constants)
+            "SELECT COUNT(CASE WHEN whole THEN 1 END), MIN(CASE WHEN whole THEN ts END), MAX(CASE WHEN whole THEN ts END), "
+            "SUM(whole AND gap > 5400), MAX(CASE WHEN whole THEN gap END), COUNT(*), MIN(polled), MAX(polled) FROM ("
+            "SELECT ts, polled, whole, ts - LAG(ts) OVER (PARTITION BY whole ORDER BY ts) AS gap FROM ("
+            "SELECT ts, COUNT(*) AS polled, SUM(ok) = COUNT(*) AND COUNT(*) >= 8 AS whole FROM trader_polls "
+            "WHERE venue = 'hyperliquid_hlp' AND ts >= ? AND ts <= ? GROUP BY ts))",
+            f"повних запусків (venue = '{HLP_VENUE}': ≥ {len(HLP_VAULTS)} сховищ опитано, усі ok = 1)",
+            cols=("gaps", "longest", "runs", "fewest", "most"),
+        ),
+        partial=(
+            "лише сховища HLP, що випадково потрапляли в топ-100 за pnl_all (venue = 'hyperliquid'); три з семи дочірніх "
+            "так не опитувались жодного разу (звірка 26.11)"
+        ),
     ),
     "hl-oi-cap-state-forward": Journal(
         "hl_oi_cap_snapshot", "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM hl_oi_cap_snapshot WHERE ts >= ? AND ts <= ?",
@@ -140,6 +209,21 @@ CARD_JOURNALS: dict[str, Journal] = {
     "polymarket-vs-options-forward": Journal(
         "pm_gap_snapshot", _PM_SQL, "годинних знімків від T0", _PM_MIN, "не раніше {VOPT} UTC", since=T0_TS,
     ),
+    "polymarket-touch-ladder-event-days": Journal(
+        "pm_gap_snapshot",
+        # the card's ladder is the daily one («What price will Bitcoin hit on <date>?», window 00:00 ET + 1 day), not the weekly
+        "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM pm_gap_snapshot WHERE kind = 'touch' AND asset = 'BTC' "
+        "AND ROUND((end_ts - window_start) / 86400.0) = 1 AND ts >= ? AND ts <= ?",
+        "знімків (запусків колектора, ≈ щогодини) денних драбин BTC на дотик (kind = 'touch')",
+        "перший погляд при 24 днях подій CPI / NFP (≈ 12 міс.), остаточний при ≥ 40 (≈ 20 міс.); дні подій і 2 контрольні "
+        "дні на місяць визначає крок аналітика картки",
+        "перший погляд ≈ {+365}",
+        note=(
+            "відхилення від реєстрації: знімки біля 00:00 і 07:00 ET спостережено о :20–:25 (02–26.11; фаза від старту "
+            "служби, а не розклад), тобто на 5–10 хв раніше за зареєстровані 00:30 і 07:30 ET, і лише верх книги "
+            "(best bid / ask і USD на ньому), без last і без глибини"
+        ),
+    ),
     "forward-paper-carry": Journal(
         "cp_cycle",
         # only 'done' cycles count and set the freshness (an engine failing every cycle collects nothing); all statuses aside
@@ -151,6 +235,7 @@ CARD_JOURNALS: dict[str, Journal] = {
 }  # fmt: skip
 JOURNALS_NAME = "Картки forward: власні журнали"
 STALE_S = 2 * 86_400  # every journal above writes at least every 8 h: two silent days = not collecting
+GAP_S = 5_400  # hourly complete record (HLP): more than 90 min between complete runs = a missed hour
 
 
 def connect_ro(db: str) -> sqlite3.Connection:
@@ -215,21 +300,32 @@ def load_plans(con: sqlite3.Connection) -> list[dict[str, Any]]:
     return [{**dict(r), "tags": _json(r["tags"]) or []} for r in con.execute(q)]
 
 
+def _count(con: sqlite3.Connection, names: set[str], table: str, sql: str, since: int, now_s: int, cols: Sequence[str]) -> dict[str, Any]:
+    """``{"n", "first", "last"}`` of one journal query (plus its further columns named by ``cols``), ``{"absent": True}``
+    without its table, ``{"error": name}`` when it fails."""
+    if table not in names:
+        return {"absent": True}
+    try:
+        n, first, last, *rest = con.execute(sql, (since, now_s)).fetchone()
+    except sqlite3.Error as e:
+        return {"error": type(e).__name__}
+    return {"n": int(n or 0), "first": first, "last": last} | {c: int(v or 0) for c, v in zip(cols, rest, strict=False)}
+
+
 def load_journals(con: sqlite3.Connection, now_ms: int) -> dict[str, dict[str, Any]]:
     """Per card of ``CARD_JOURNALS``: ``{"n", "first", "last"}`` up to ``now_ms`` (plus ``"all"`` when the query has a
     fourth column), ``{"absent": True}`` without its table, or ``{"error": name}`` when its query fails (one card's
-    failure does not hide the others). Counters only."""
-    names, out = _tables(con), {}
+    failure does not hide the others); a journal with ``also`` / ``full`` parts adds ``"also"`` (a list, same shape) and
+    ``"full"`` (same shape, its further columns by ``Part.cols``). Counters only."""
+    names, out, now_s = _tables(con), {}, now_ms // 1000
     for slug, j in CARD_JOURNALS.items():
-        if j.table not in names:
-            out[slug] = {"absent": True}
+        out[slug] = _count(con, names, j.table, j.sql, j.since, now_s, ("all",))
+        if not out[slug].get("n"):  # the parts are shown only next to a journal with observations
             continue
-        try:
-            n, first, last, *rest = con.execute(j.sql, (j.since, now_ms // 1000)).fetchone()
-        except sqlite3.Error as e:
-            out[slug] = {"error": type(e).__name__}
-            continue
-        out[slug] = {"n": int(n or 0), "first": first, "last": last} | ({"all": int(rest[0] or 0)} if rest else {})
+        if j.also:
+            out[slug]["also"] = [_count(con, names, p.table, p.sql, j.since, now_s, p.cols) for p in j.also]
+        if j.full is not None:
+            out[slug]["full"] = _count(con, names, j.full.table, j.full.sql, j.since, now_s, j.full.cols)
     return out
 
 
@@ -237,6 +333,57 @@ def _plan_count(card: Mapping[str, Any], plans: Sequence[Mapping[str, Any]], now
     tags = card.get("tags") or frozenset()
     ok = [p for p in plans if isinstance(c := p.get("created_ts"), (int, float)) and not isinstance(c, bool) and c <= now_s]
     return sum(1 for p in ok if {t for t in (p.get("tags") or []) if isinstance(t, str)} & tags)
+
+
+def _part_text(p: Part, got: Mapping[str, Any]) -> str:
+    """One ``also`` table of a journal by counters: observations, first and last."""
+    if not got:
+        return f"{p.table}: не прочитано"
+    if got.get("absent"):
+        return f"{p.table}: таблиці в цій БД нема"
+    if "error" in got:
+        return f"{p.table}: запит не вдався ({got['error']})"
+    if not got.get("n"):
+        return f"{p.table}: {p.unit} 0"
+    return f"{p.table}: {p.unit} {got['n']}, з {_utc(int(got['first']))} до {_utc(int(got['last']))} UTC"
+
+
+def _full_text(j: Journal, full: Mapping[str, Any], also: Sequence[Mapping[str, Any]], now_s: int, text: str) -> tuple[str, str]:
+    """(prefix, text) of a journal whose registration names a complete record (``j.full``, HLP: runs in which every
+    vault answered). «частково — » while there is no complete run, the last one is older than ``STALE_S`` or an
+    ``also`` table is missing, empty or stale; else «повний запис з <first complete run> — », «(з пропусками)» when
+    consecutive complete runs (or the last one and the report moment) are more than ``GAP_S`` apart. Runs, not hours,
+    are compared by time: extra runs after a restart do not cover a missed hour. The days before the first complete run
+    are named as partial, so the label never covers more than the complete record does."""
+    p = j.full
+    assert p is not None
+    # an also table unread, missing, empty or stale (its counters follow in the text)
+    lack = [q.table for q, g in zip(j.also, also, strict=True) if not (g.get("n") and now_s - int(g["last"]) <= STALE_S)]
+    need = f"; для повного запису бракує свіжого {', '.join(lack)} (лічильники далі)" if lack else ""
+    polled = f"опитано сховищ за запуск {full.get('fewest', 0)}–{full.get('most', 0)}"
+    if full.get("absent") or "error" in full or not full.get("n"):
+        state = (
+            "не прочитано" if not full
+            else f"таблиці {p.table} у цій БД нема" if full.get("absent")
+            else f"запит до {p.table} не вдався ({full['error']})" if "error" in full
+            else f"0 з {full['runs']} запусків ({polled})" if full.get("runs")
+            else "у БД ще нема"
+        )  # fmt: skip
+        return "частково — ", f"{text}; {j.partial}; повного запису ({p.table}: {p.unit}) {state}{need}"
+    f0, f1, n = int(full["first"]), int(full["last"]), int(full["n"])
+    tail = now_s - f1
+    gaps = int(full.get("gaps", 0)) + (tail > GAP_S)
+    longest = max(int(full.get("longest", 0)), tail)
+    got = f"{p.table}: {p.unit} {n} з {full.get('runs', n)} запусків, з {_utc(f0)} до {_utc(f1)} UTC, {polled}"
+    if gaps:
+        got += f"; розривів між повними запусками понад {GAP_S // 60} хв (з хвостом до моменту звіту) {gaps}, найдовший {longest / 3600:.1f} год"
+    before = f"до {_utc(f0)} UTC — частково: {j.partial}"
+    if tail > STALE_S:
+        return "частково — ", f"{text}; повний запис зупинився ({got}){need}; {before}"
+    if lack:
+        return "частково — ", f"{text}; повний запис {got}{need}; {before}"
+    holes = " (з пропусками)" if gaps else ""
+    return f"повний запис з {_utc(f0)} UTC{holes} — ", f"{text}; повний запис {got}; {before}"
 
 
 def journal_row(
@@ -248,7 +395,7 @@ def journal_row(
     now_s = now_ms // 1000
     counters: dict[str, Any] = {}
     idle: list[str] = []
-    collecting = 0
+    collecting = partial = 0
     for card in cards:
         slug, j = card["slug"], CARD_JOURNALS.get(card["slug"])
         got = (journals or {}).get(slug) if j is not None else None
@@ -269,23 +416,37 @@ def journal_row(
             first, last = int(got["first"]), int(got["last"])
             verdict = re.sub(r"\{\+(\d+)\}", lambda m, t0=first: _utc(t0 + int(m.group(1)) * 86_400, "%Y-%m-%d"), j.verdict)
             verdict = verdict.replace("{V2G}", _utc(verdict_ts_v2g(T0_V2G_TS, T0_TS))).replace("{VOPT}", _utc(verdict_ts(T0_TS)))
+            full = got.get("full") or {}
+            if "{F+" in verdict:
+                if full.get("n"):
+                    f0 = int(full["first"])
+                    verdict = re.sub(r"\{F\+(\d+)\}", lambda m, t0=f0: _utc(t0 + int(m.group(1)) * 86_400, "%Y-%m-%d"), verdict)
+                else:
+                    verdict = "дату не визначено, доки нема повного запису"
             other = f" (усіх записів {got['all']})" if "all" in got else ""
-            counters[slug] = (
-                f"журнал {j.table}: {j.unit} {got['n']}{other}, з {_utc(first)} до {_utc(last)} UTC; мінімум: {j.minimum}; "
-                f"вердикт: {verdict}"
-            )
-            fresh = now_s - last <= STALE_S
+            text = f"журнал {j.table}: {j.unit} {got['n']}{other}, з {_utc(first)} до {_utc(last)} UTC"
+            also = got.get("also") or [{}] * len(j.also)
+            head, text = _full_text(j, full, also, now_s, text) if j.full is not None else ("", text)
+            for p, g in zip(j.also, also, strict=True):
+                text += f"; {_part_text(p, g)}"
+            if j.note:
+                text += f"; {j.note}"
+            counters[slug] = f"{head}{text}; мінімум: {j.minimum}; вердикт: {verdict}"
+            # a fresh complete record counts too: unchanged vault positions under $2.5M write no trader_positions row
+            fresh = now_s - max(last, int(full["last"]) if full.get("n") else 0) <= STALE_S
             done = " зі статусом done" if "all" in got else ""
             why = None if fresh else f"останній запис {j.table}{done} {_utc(last)} UTC"
+            partial += int(fresh and head.startswith("частково"))
         if fresh or _plan_count(card, plans, now_s):  # idea: plans are a journal too (the row above)
             collecting += 1
         elif why is not None:
             idle.append(f"{slug} ({why})")
     if idle:
         counters[f"форвард без збору ({len(idle)})"] = "; ".join(idle)
+    of_them = f" (з них частково {partial})" if partial else ""
     row: dict[str, Any] = {
         "key": "ideas:journals", "group": "ideas", "name": JOURNALS_NAME, "n": collecting, "metric": None, "band": None,
-        "metric_name": f"лише лічильники; карток {len(cards)}, збирають дані {collecting}", "verdict": COUNTS_ONLY,
+        "metric_name": f"лише лічильники; карток {len(cards)}, збирають дані {collecting}{of_them}", "verdict": COUNTS_ONLY,
         "side": None, "embargo": False, "counters": counters, "criteria": [], "notes": [],
     }  # fmt: skip
     if not cards:

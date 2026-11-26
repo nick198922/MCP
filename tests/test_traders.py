@@ -4,14 +4,22 @@ the daily snapshot and position-change jobs (fixtures: real responses of 2026-10
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
 from conftest import NOW, FakeEx, make_transports
-from tradedesk.collector.scheduler import _collect_trader_positions, _collect_traders, build_default_scheduler
+from tradedesk.collector.scheduler import (
+    TRADER_POSITIONS_REWRITE_USD,
+    _collect_trader_positions,
+    _collect_traders,
+    build_default_scheduler,
+)
 from tradedesk.config import Settings
 from tradedesk.core.errors import ProviderError
 from tradedesk.core.ratelimit import TokenBucket
@@ -162,7 +170,11 @@ async def test_daily_snapshot_and_positions_written_only_on_change(state):
         assert [r[1] for r in await cur.fetchall()] == [1, 2]
         first = await _collect_trader_positions(rt)
         assert first == 2 * 2 + 2 * 2  # 2 HL accounts x 2 positions; 2 Polymarket wallets x 2 open positions >= $100
-        assert await _collect_trader_positions(rt) == 0  # nothing changed
+        # nothing changed: only the HL positions >= $2.5M (both fixture ones, $5.8M and $40M) are re-written
+        rt.now = lambda: NOW + timedelta(hours=1)
+        assert await _collect_trader_positions(rt) == 2 * 2
+        cur = await rt.store.conn.execute("SELECT venue, COUNT(*) FROM trader_positions GROUP BY venue ORDER BY venue")
+        assert [tuple(r) for r in await cur.fetchall()] == [("hyperliquid", 8), ("polymarket", 4)]
         cur = await rt.store.conn.execute("SELECT DISTINCT side FROM trader_positions WHERE venue = 'polymarket'")
         assert {r[0] for r in await cur.fetchall()} == {"No", "Grizzlies"}  # the REDEEMABLE and the < $100 rows dropped
     finally:
@@ -337,3 +349,291 @@ async def test_positions_are_a_change_log(state):
         assert await st.record_trader_positions(400, "hyperliquid", "0xa", []) == 2  # everything closed
     finally:
         await rt.aclose()
+
+
+# ---------- schema 42: per-run rows of big HL positions and poll markers (hl-whale-liquidation-magnet, recount rev. 3/4)
+
+
+async def _log_rows(st, account: str = "0xa") -> list[dict]:
+    cur = await st.conn.execute(
+        "SELECT ts, account, market, side, size, value_usd, liq_px FROM trader_positions WHERE account = ? ORDER BY ts, market",
+        (account,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def test_big_positions_are_rewritten_every_run_and_the_diff_still_works(state):
+    """(i): an unchanged position worth >= the floor gets a row at every run with its current values (fresh liq_px);
+    an unchanged smaller one does not. The next run's diff still sees real changes and closes, and the venue without
+    the floor (Polymarket) stays a pure change log."""
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        st, floor = rt.store, 2_500_000.0
+        big = {"market": "ETH", "side": "short", "size": 1000.0, "value_usd": 3_000_000.0, "liq_px": 3300.0}
+        small = {"market": "SOL", "side": "long", "size": 100.0, "value_usd": 20_000.0, "liq_px": None}
+        assert await st.record_trader_positions(100, "hyperliquid", "0xa", [big, small], rewrite_min_usd=floor) == 2  # baseline
+        moved = dict(big, value_usd=2_900_000.0, liq_px=3250.0)  # same side and size, the mark and liq_px moved
+        assert (
+            await st.record_trader_positions(200, "hyperliquid", "0xa", [moved, dict(small, value_usd=21_000.0)], rewrite_min_usd=floor)
+            == 1
+        )
+        rows = await _log_rows(st)
+        assert [(r["ts"], r["market"], r["liq_px"], r["value_usd"]) for r in rows if r["ts"] == 200] == [(200, "ETH", 3250.0, 2_900_000.0)]
+        # below the floor at this run: no repeated row, even though it was big before
+        assert (
+            await st.record_trader_positions(300, "hyperliquid", "0xa", [dict(big, value_usd=2_400_000.0), small], rewrite_min_usd=floor)
+            == 0
+        )
+        # a real change and a close next to a repeat: the diff compares with the stored last full set as before
+        grown = dict(big, size=1500.0, value_usd=4_500_000.0, liq_px=3100.0)
+        assert await st.record_trader_positions(400, "hyperliquid", "0xa", [grown], rewrite_min_usd=floor) == 2
+        rows = await _log_rows(st)
+        assert [(r["market"], r["side"], r["size"]) for r in rows if r["ts"] == 400] == [("ETH", "short", 1500.0), ("SOL", "closed", 0.0)]
+        assert await st.record_trader_positions(500, "hyperliquid", "0xa", [grown], rewrite_min_usd=floor) == 1  # repeat only
+        assert await st.record_trader_positions(600, "hyperliquid", "0xa", [], rewrite_min_usd=floor) == 1  # the close
+        # no floor (Polymarket): an unchanged position worth millions is not re-written
+        pm = {"market": "777", "side": "Yes", "size": 5e6, "value_usd": 4e6}
+        assert await st.record_trader_positions(100, "polymarket", "0xp", [pm]) == 1
+        assert await st.record_trader_positions(200, "polymarket", "0xp", [pm]) == 0
+        # the boundary of the collector's floor: exactly $2.5M is re-written on an unchanged run, a dollar less is not
+        at = dict(big, value_usd=2_500_000.0)
+        below = dict(small, value_usd=2_499_999.0)
+        floor = TRADER_POSITIONS_REWRITE_USD
+        assert await st.record_trader_positions(100, "hyperliquid", "0xedge", [at, below], rewrite_min_usd=floor) == 2  # baseline
+        assert await st.record_trader_positions(200, "hyperliquid", "0xedge", [at, below], rewrite_min_usd=floor) == 1
+        assert [r["market"] for r in await _log_rows(st, "0xedge") if r["ts"] == 200] == ["ETH"]
+    finally:
+        await rt.aclose()
+
+
+async def test_a_repeated_row_changes_only_liq_px_and_row_time_in_both_replays(state):
+    """(i): replaying a log with repeated rows (smart_money.replay_positions, hl_liq_magnet.replay_account) gives the
+    same positions, sides and sizes as without them; only liq_px (and the current value) and the row's ts move."""
+    from tradedesk.analytics.hl_liq_magnet import replay_account  # noqa: PLC0415
+    from tradedesk.analytics.smart_money import position_changes, replay_positions  # noqa: PLC0415
+
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        st, floor = rt.store, 2_500_000.0
+        big = {"market": "ETH", "side": "short", "size": 1000.0, "value_usd": 3_000_000.0, "liq_px": 3300.0}
+        small = {"market": "SOL", "side": "long", "size": 100.0, "value_usd": 20_000.0, "liq_px": 50.0}
+        await st.record_trader_positions(100, "hyperliquid", "0xa", [big, small], rewrite_min_usd=floor)
+        # exact size drifts below the 4-significant-digit change granularity: still "unchanged", written as a repeat
+        await st.record_trader_positions(200, "hyperliquid", "0xa", [dict(big, size=1000.3, liq_px=3250.0), small], rewrite_min_usd=floor)
+        rows = await _log_rows(st)
+        assert {r["ts"] for r in rows} == {100, 200}
+        without = [r for r in rows if r["ts"] == 100]
+
+        s1, s2 = replay_positions(rows, 100)["0xa"], replay_positions(without, 100)["0xa"]
+        assert set(s1) == set(s2) == {"ETH", "SOL"}
+        assert {m: p["side"] for m, p in s1.items()} == {m: p["side"] for m, p in s2.items()}
+        assert s1["ETH"]["size"] == pytest.approx(s2["ETH"]["size"], rel=1e-3)  # the same at 4 significant digits
+        assert (s1["ETH"]["liq_px"], s2["ETH"]["liq_px"], s1["ETH"]["ts"]) == (3250.0, 3300.0, 200)
+        assert s1["SOL"] == s2["SOL"]
+        assert position_changes({"0xa": s2}, {"0xa": s1}, ["0xa"]) == []  # a repeat is not a trade
+
+        groups: dict[int, list] = {}
+        for r in rows:
+            groups.setdefault(r["ts"], []).append(r)
+        (t1, st1, since1), (t2, st2, since2) = replay_account(sorted(groups.items()), 100)
+        assert (t1, t2) == (100, 200) and set(st1) == set(st2) == {"ETH", "SOL"}
+        assert st2["ETH"]["side"] == st1["ETH"]["side"] and st2["SOL"] == st1["SOL"]
+        assert (st1["ETH"]["liq_px"], st2["ETH"]["liq_px"]) == (3300.0, 3250.0)
+        assert since1 == {"ETH": 100, "SOL": 100} and since2 == {"ETH": 200, "SOL": 100}  # the repeat makes liq_px fresh
+    finally:
+        await rt.aclose()
+
+
+HL_A, HL_B = "0x" + "0" * 39 + "1", "0x" + "0" * 39 + "2"  # the fixture's two watched Hyperliquid accounts
+
+
+async def _markers(rt) -> dict[str, int]:
+    cur = await rt.store.conn.execute("SELECT ts, venue, account, ok FROM trader_polls ORDER BY account")
+    rows = [tuple(r) for r in await cur.fetchall()]
+    assert {(t, v) for t, v, _, _ in rows} <= {(int(NOW.timestamp()), "hyperliquid")}  # the run's ts, HL only
+    return {a: ok for _, _, a, ok in rows}
+
+
+def _spy_hl(rt, on_call):
+    """Wrap the HL clearinghouseState request: ``on_call(account)`` runs (and may raise) before the real request."""
+    real = rt.hyperliquid.clearinghouse_state
+
+    async def spy(user: str):
+        await on_call(user)
+        return await real(user)
+
+    rt.hyperliquid.clearinghouse_state = spy
+
+
+async def test_poll_markers_exist_before_the_first_request_and_turn_ok_after_success(state):
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        await _collect_traders(rt)
+        seen: list[dict[str, int]] = []
+
+        async def look(user: str) -> None:
+            if not seen:
+                seen.append(await _markers(rt))
+
+        _spy_hl(rt, look)
+        assert await _collect_trader_positions(rt) == 2 * 2 + 2 * 2
+        assert seen == [{HL_A: 0, HL_B: 0}]  # the whole intended list, not ok, before any request
+        assert await _markers(rt) == {HL_A: 1, HL_B: 1}
+        cur = await rt.store.conn.execute("SELECT DISTINCT ts FROM trader_positions WHERE venue = 'hyperliquid'")
+        assert [r[0] for r in await cur.fetchall()] == [int(NOW.timestamp())]  # rows and markers share the run's ts
+    finally:
+        await rt.aclose()
+
+
+async def test_a_failed_request_keeps_its_marker_not_ok(state):
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        await _collect_traders(rt)
+
+        async def fail_b(user: str) -> None:
+            if user == HL_B:
+                raise ProviderError("hyperliquid", "backend_error", "down")
+
+        _spy_hl(rt, fail_b)
+        assert await _collect_trader_positions(rt) == 2 + 2 * 2  # HL_A's two positions and Polymarket
+        assert await _markers(rt) == {HL_A: 1, HL_B: 0}
+        cur = await rt.store.conn.execute("SELECT COUNT(*) FROM trader_positions WHERE account = ?", (HL_B,))
+        assert (await cur.fetchone())[0] == 0
+    finally:
+        await rt.aclose()
+
+
+async def test_accounts_a_stopped_run_never_reached_keep_their_marker_not_ok(state):
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        await _collect_traders(rt)
+        calls: list[str] = []
+
+        async def stop_at_second(user: str) -> None:
+            calls.append(user)
+            if len(calls) == 2:
+                raise asyncio.CancelledError  # the run is cancelled mid-way (service stop)
+
+        _spy_hl(rt, stop_at_second)
+        with pytest.raises(asyncio.CancelledError):
+            await _collect_trader_positions(rt)
+        assert sorted(calls) == [HL_A, HL_B]
+        assert await _markers(rt) == {calls[0]: 1, calls[1]: 0}
+        assert await rt.store.table_count("trader_polls") == 2
+
+        # cancelled before its first request: every intended account stays not ok
+        rt.now = lambda: NOW + timedelta(hours=1)
+        calls.clear()
+
+        async def stop_at_once(user: str) -> None:
+            calls.append(user)
+            raise asyncio.CancelledError
+
+        _spy_hl(rt, stop_at_once)
+        with pytest.raises(asyncio.CancelledError):
+            await _collect_trader_positions(rt)
+        cur = await rt.store.conn.execute(
+            "SELECT account, ok FROM trader_polls WHERE ts = ? ORDER BY account", (int(NOW.timestamp()) + 3600,)
+        )
+        assert [tuple(r) for r in await cur.fetchall()] == [(HL_A, 0), (HL_B, 0)] and len(calls) == 1
+    finally:
+        await rt.aclose()
+
+
+async def test_a_marker_turns_ok_only_after_the_account_rows_are_written(state):
+    """(ii): a failed position-row write stops the run with that account not ok (else it would read as "polled, no big
+    position"); the account written before it is ok, the one never reached stays not ok."""
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        await _collect_traders(rt)
+        third = {"account": "0x" + "0" * 39 + "4", "account_value": 600_000.0, "pnl_month": -1e12, "pnl_all": -1e12}
+        await rt.store.insert_trader_snapshot("2026-10-10", 0, "hyperliquid", [third])  # ranked last in both lists
+        order = await rt.store.tracked_traders("hyperliquid", rt.settings.traders_top_n, rt.settings.traders_min_account_usd)
+        assert len(order) == 3 and order[2] == third["account"]
+        first, second, later = order
+        real = rt.store.record_trader_positions
+
+        async def fail_second(ts, venue, account, positions, **kwargs):
+            if account == second:
+                raise sqlite3.OperationalError("database is locked")
+            return await real(ts, venue, account, positions, **kwargs)
+
+        rt.store.record_trader_positions = fail_second
+        with pytest.raises(sqlite3.OperationalError):
+            await _collect_trader_positions(rt)
+        assert await _markers(rt) == {first: 1, second: 0, later: 0}
+        cur = await rt.store.conn.execute("SELECT DISTINCT account FROM trader_positions")
+        assert [r[0] for r in await cur.fetchall()] == [first]
+    finally:
+        await rt.aclose()
+
+
+async def test_a_failed_marker_write_polls_nobody(state):
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        await _collect_traders(rt)
+        calls: list[str] = []
+
+        async def note(user: str) -> None:
+            calls.append(user)
+
+        async def broken(ts, venue, accounts):
+            raise sqlite3.OperationalError("database is locked")
+
+        _spy_hl(rt, note)
+        rt.store.start_trader_polls = broken
+        before = len(rt._calls)  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="poll markers not written, nobody polled"):
+            await _collect_trader_positions(rt)
+        assert calls == [] and rt._calls[before:] == []  # type: ignore[attr-defined]  # no HL and no Polymarket request
+        assert await rt.store.table_count("trader_positions") == 0
+        assert await rt.store.table_count("trader_polls") == 0
+    finally:
+        await rt.aclose()
+
+
+async def test_poll_markers_are_not_prunable(state):
+    """The recount needs >= 60 days of markers: the collector's retention cannot delete them."""
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        with pytest.raises(ValueError, match="unknown table"):
+            await rt.store.prune("trader_polls", 10**12)
+    finally:
+        await rt.aclose()
+
+
+async def test_migration_42_adds_trader_polls_to_a_v41_store(tmp_path):
+    from tradedesk.store import SCHEMA_VERSION, Store  # noqa: PLC0415
+    from tradedesk.store.schema import MIGRATIONS  # noqa: PLC0415
+
+    path = tmp_path / "v41.sqlite"
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        if v <= 41:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("PRAGMA user_version = 41")
+    con.execute(
+        "INSERT INTO trader_positions (ts, venue, account, market, side, size) VALUES (1, 'hyperliquid', '0xa', 'BTC', 'long', 1.0)"
+    )
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert await s.version() == SCHEMA_VERSION >= 42
+        assert await s.table_count("trader_positions") == 1  # the old log is kept
+        assert await s.start_trader_polls(5, "hyperliquid", ["0xa", "0xb"]) == 2
+        await s.set_trader_poll_ok(5, "hyperliquid", "0xb")
+        cur = await s.conn.execute("SELECT account, ok FROM trader_polls ORDER BY account")
+        assert [tuple(r) for r in await cur.fetchall()] == [("0xa", 0), ("0xb", 1)]
+    finally:
+        await s.aclose()

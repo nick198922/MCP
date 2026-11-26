@@ -10,6 +10,9 @@ from tradedesk.analytics.carry_cost_breakdown import (
     concentration,
     concentration_reading,
     cost_block,
+    depth_short_block,
+    depth_short_by,
+    funding_flag_venues,
     payment_published,
     reliability,
     side_records,
@@ -154,3 +157,119 @@ def test_results_before_t_do_not_change_with_later_data():
     assert cost_block(side_records(rows, as_of_ms=t)) == cost_block(side_records(later, as_of_ms=t))
     cyc = [cycle(0), cycle(1, flags=[{"symbol": "X/USDT:USDT", "issue": "i"}])]
     assert reliability(cyc, as_of_ms=t) == reliability(cyc + [cycle(5, flags=[{"symbol": "Z/USDT:USDT", "issue": "j"}])], as_of_ms=t)
+
+
+# ------------------------------------------------------------------------------------------ perp-perp book (B)
+
+
+def pp_row(coin: str, venue: str, leg: str, event: str, half_spread: float, *, k: int = 0, fee: float = 0.0005, bk=None):
+    """A side of the perp-perp book: legs long / short on two venues, the venue's own taker fee."""
+    side = ("buy" if leg == "long" else "sell") if event == "open" else ("sell" if leg == "long" else "buy")
+    ex = leg_execution(bk if bk is not None else book(half_spread), side, 2000.0, fee=fee, model_slippage=0.0005, cycle_ts=T0 + k * H8)
+    payload = {
+        "trade_id": f"B:{coin}/USDT:USDT:{k}",
+        "event": event,
+        "leg": leg,
+        "venue": venue,
+        "symbol": f"{coin}/USDT:USDT",
+        "perp_symbol": f"{coin}/USDT:USDT",
+        "model_price": 100.0,
+        **ex,
+    }
+    return {"cycle_ts": T0 + k * H8, "trade_id": payload["trade_id"], "payload": payload}
+
+
+def test_pp_venue_fees_and_venue_grouping():
+    rows = [pp_row("X", "binanceusdm", "short", "open", 0.001), pp_row("X", "bybit", "long", "open", 0.001, fee=0.00055)]
+    recs = side_records(rows, as_of_ms=T0)
+    assert [x["venue"] for x in recs] == ["binanceusdm", "bybit"] and {x["coin"] for x in recs} == {"X"}
+    g = by_group(recs, lambda x: x["venue"])
+    # binance: actual 0.0005 + 0.001 over model 0.001 -> 1.5; bybit: 0.00155 / 0.00105
+    assert g["binanceusdm"]["ratio"] == pytest.approx(1.5) and g["bybit"]["ratio"] == pytest.approx(0.00155 / 0.00105)
+    pooled = cost_block(recs)["ratio"]
+    assert pooled == pytest.approx((0.0015 + 0.00155) / (0.001 + 0.00105))
+    assert pooled == pytest.approx(cost_realism([r["payload"] for r in rows])["ratio"])
+
+
+def test_depth_short_share_matches_cost_realism_and_groups():
+    thin = book(0.001, qty=1.0)  # $100 of depth per side, notional $2000
+    rows = [
+        pp_row("X", "binanceusdm", "short", "open", 0.001),
+        pp_row("X", "bybit", "long", "open", 0.001, bk=thin),
+        pp_row("Y", "bybit", "long", "close", 0.002, k=1),
+        pp_row("Y", "binanceusdm", "short", "close", 0.0, k=1, bk={}),  # no book: outside the share's denominator
+    ]
+    recs = side_records(rows, as_of_ms=T0 + H8)
+    ds = depth_short_block(recs)
+    assert (ds["with_book"], ds["depth_short"]) == (3, 1) and ds["share"] == pytest.approx(1 / 3)
+    assert ds["share"] == pytest.approx(cost_realism([r["payload"] for r in rows])["share_depth_short"])
+    assert ds["thin_ratio"] == pytest.approx(1.5)  # fee 0.0005 + half spread 0.001 on the depth it had, model 0.001
+    by_v = depth_short_by(recs, lambda x: x["venue"])
+    assert by_v["bybit"]["depth_short"] == 1 and by_v["bybit"]["share"] == pytest.approx(0.5)
+    assert by_v["bybit"]["share_of_short"] == pytest.approx(1.0) and by_v["binanceusdm"]["share_of_short"] == pytest.approx(0.0)
+    none = depth_short_by(side_records(rows[:1], as_of_ms=T0), lambda x: x["venue"])
+    assert none["binanceusdm"]["share_of_short"] is None
+
+
+def test_coin_permutation_custom_stratum():
+    # each coin alone in its own venue x event stratum: no permutation can move a label, so p = 1
+    rows = [pp_row("A", "binanceusdm", "short", "open", 0.0, k=i) for i in range(4)]
+    rows += [pp_row("B", "bybit", "long", "open", 0.01, k=i) for i in range(4)]
+    recs = side_records(rows, as_of_ms=T0 + 10 * H8)
+    res = coin_permutation(recs, n_perm=200, seed=1, stratum=lambda x: (x["venue"], x["event"]))
+    assert res["p"] == pytest.approx(1.0)
+    # the default (leg x event) strata split the same way here (leg differs by venue): same answer
+    assert coin_permutation(recs, n_perm=200, seed=1)["p"] == pytest.approx(1.0)
+
+
+def test_reliability_key_extra_splits_provider_missing_by_field():
+    f1 = {"issue": "provider_missing", "field": "bybit.funding", "reason": "timeout"}
+    f2 = {"issue": "provider_missing", "field": "binanceusdm.tickers", "reason": "x"}
+    cyc = [cycle(0, flags=[f1]), cycle(1, flags=[f2]), cycle(2)]
+    assert reliability(cyc, as_of_ms=T0 + 2 * H8)["incomplete_by_issue"] == {"provider_missing": 2}  # default unchanged
+    r = reliability(cyc, as_of_ms=T0 + 2 * H8, key_extra=("field",))
+    assert r["incomplete_by_issue"] == {"provider_missing [binanceusdm.tickers]": 1, "provider_missing [bybit.funding]": 1}
+    assert r["incomplete_by_coin"] == {"-": {"provider_missing [binanceusdm.tickers]": 1, "provider_missing [bybit.funding]": 1}}
+    assert r["share_good_without"]["provider_missing [bybit.funding]"] == pytest.approx(2 / 3)
+
+
+def test_funding_flag_venues_points_to_the_venue():
+    sym = "X/USDT:USDT"
+    flags = [
+        {"cycle_ts": T0, "symbol": sym, "coin": "X", "key": "funding_payment_missing / scheduled_payment_missing"},
+        {"cycle_ts": T0, "symbol": sym, "coin": "X", "key": "funding_gap_confirmed / payment_gap"},
+        {"cycle_ts": T0, "symbol": sym, "coin": "X", "key": "provider_missing [bybit.funding]"},  # not a funding-history flag
+    ]
+    h4 = 4 * 3_600_000
+    funding = {
+        "binanceusdm": {sym: [T0 - k * H8 for k in range(9, -1, -1)]},  # regular 8 h up to and including the cycle
+        "bybit": {sym: [T0 - 3 * 86_400_000 + k * h4 for k in range(13)] + [T0 - h4]},  # 4 h until T0 - 24 h, then a 20 h hole; none at T0
+    }
+    out = funding_flag_venues(flags, funding, as_of_ms=T0 + H8)
+    assert len(out) == 2 and all(x["suspect_venues"] == ["bybit"] for x in out)
+    bn, bb = out[0]["venues"]["binanceusdm"], out[0]["venues"]["bybit"]
+    assert bn["scheduled"] and bn["max_gap_h"] == pytest.approx(8.0) and bn["interval_h_before"] == pytest.approx(8.0)
+    assert not bb["scheduled"] and bb["max_gap_h"] == pytest.approx(20.0) and bb["interval_h_before"] == pytest.approx(4.0)
+    # a symbol with no stored payment on a venue is suspect there
+    missing = funding_flag_venues(flags[:1], {"binanceusdm": funding["binanceusdm"], "bybit": {}}, as_of_ms=T0)
+    assert missing[0]["venues"]["bybit"]["stored"] == 0 and missing[0]["suspect_venues"] == ["bybit"]
+
+
+def test_funding_flag_venues_gap_without_missing_scheduled_payment():
+    sym = "X/USDT:USDT"
+    flags = [{"cycle_ts": T0, "symbol": sym, "coin": "X", "key": "funding_payment_missing / payment_gap"}]
+    regular = [T0 - k * H8 for k in range(9, -1, -1)]
+    holey = [x for x in regular if x != T0 - H8]  # 16 h step inside the last day, scheduled payment present
+    out = funding_flag_venues(flags, {"binanceusdm": {sym: holey}, "bybit": {sym: regular}}, as_of_ms=T0)
+    assert out[0]["suspect_venues"] == ["binanceusdm"]
+    assert out[0]["venues"]["binanceusdm"]["scheduled"] and out[0]["venues"]["binanceusdm"]["max_gap_h"] == pytest.approx(16.0)
+
+
+def test_funding_flag_venues_ignores_payments_after_as_of():
+    sym = "X/USDT:USDT"
+    flags = [{"cycle_ts": T0, "symbol": sym, "coin": "X", "key": "funding_payment_missing / scheduled_payment_missing"}]
+    before = {"binanceusdm": {sym: [T0 - 2 * H8, T0 - H8]}, "bybit": {sym: [T0 - 2 * H8, T0 - H8]}}
+    later = {v: {sym: s[sym] + [T0 + 3_600_000, T0 + 2 * H8]} for v, s in before.items()}
+    cut = T0 + 60_000
+    assert funding_flag_venues(flags, before, as_of_ms=cut) == funding_flag_venues(flags, later, as_of_ms=cut)
+    assert funding_flag_venues(flags, later, as_of_ms=T0 + H8)[0]["suspect_venues"] == []

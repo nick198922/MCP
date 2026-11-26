@@ -17,7 +17,7 @@ from pydantic import Field
 from ..analytics.instruments import expiry_token
 from ..analytics.option_replay import build_legs, strike_roles
 from ..analytics.options import OptionRow, black76_greeks, build_chain, group_by_expiry
-from ..analytics.rec_paper import open_paper, settle_paper, summarize
+from ..analytics.rec_paper import comparable_groups, open_paper, paper_vs_simulation, settle_paper, summarize
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS, find_expiry, finite_float, r, store_failed, store_num, store_ready
@@ -115,6 +115,40 @@ def _view(t: dict[str, Any]) -> dict[str, Any]:
             r_study=r(t["r_study"], 3),
         )
     return out
+
+
+VS_SIM_TRADES = 50
+
+
+def _rnd(v: Any, nd: int = 5) -> Any:
+    """Round floats in a (nested) comparison result; ints, bools, strings and None pass through."""
+    if isinstance(v, float):
+        return round(v, nd)
+    if isinstance(v, list):
+        return [_rnd(x, nd) for x in v]
+    if isinstance(v, dict):
+        return {k: _rnd(x, nd) for k, x in v.items()}
+    return v
+
+
+def _iso_safe(ts: float | None) -> str | None:
+    try:
+        return None if ts is None else _iso(int(ts))
+    except (OverflowError, OSError, ValueError):  # an out-of-range timestamp written by another writer
+        return None
+
+
+def _vs_sim_view(c: dict[str, Any]) -> dict[str, Any]:
+    """Compact `paper_vs_simulation` result: floats rounded, timestamps as ISO, newest VS_SIM_TRADES trades."""
+    trades = [
+        {
+            **{k: v for k, v in t.items() if k not in ("opened_ts", "expiry_ts")},
+            "opened": _iso_safe(t["opened_ts"]),
+            "expiry": _iso_safe(t["expiry_ts"]),
+        }
+        for t in c["trades"][:VS_SIM_TRADES]
+    ]
+    return _rnd({**c, "trades": trades})
 
 
 async def prepare_chain(
@@ -327,7 +361,29 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "reported separately: 'method' (chain trades booked first / after an expiry, comparable with the walk-forward), "
             "'method_triggered' (extra trades on a regime change or an event; they overlap the chain, so they are not independent) "
             "and 'manual' (not a test of the method): n, win share, mean % of spot, mean R (both kinds), sum USD. A trade whose delivery price is not yet "
-            "published stays open and is listed in `missing`. Few trades: the statistics are descriptive, not evidence."
+            "published stays open and is listed in `missing`. Few trades: the statistics are descriptive, not evidence. "
+            "`vs_simulation` compares ONLY the settled 'method' chain trades (triggered, manual and other rows are counted in "
+            "`excluded`, never mixed in) with (a) the method's own simulation booked at entry (`vs_method_sim`: per trade "
+            "actual minus expected and whether actual fell below the booked 5 % quantile, nominal share 0.05; the booked "
+            "`method_*_pct` are fractions of the entry forward and are put on the spot scale here; the simulation charges "
+            "0.03 % of F per leg each way, so expected is low by ~0.0006 of spot for two legs). When the booked q05 is at or "
+            "under the trade's own worst loss (bought strangles: q05 is the whole premium plus the simulation's fees), the "
+            "trade cannot fall below it: `q05_at_floor` true, left out of the share and counted in `n_q05_at_floor`. "
+            "(b) The 2026-10-18 walk-forward H1 (`vs_walk_forward.reference`: mean -0.0059 of spot, block-bootstrap CI "
+            "[-0.0243; +0.0151], n = 27, win share 0.30, mean R -0.12). It is not the same experiment: the study decided only "
+            "on the 40-day straddle's expiry (skipping ~40 days after 'no trade' or a 14-day pick), the paper chain re-enters "
+            "after its own expiry and re-decides daily, so the 14-day / 40-day mix and entry days differ (`by_horizon` splits "
+            "them at the method's expiry bands, held <= 21 / >= 28 days); its CI is a block bootstrap, the paper's a Student t; "
+            "`mean_minus_reference` is a point difference with no interval; other period (2021-04..2026-10 vs 2026-10 on); "
+            "premium Black-76 on the forward here vs inverse marks at spot there (~ the basis). All P&L values are decimal "
+            "fractions of the entry spot per 1 BTC of structure. Below `min_n` (28) rows a part has status 'too_few' and gives "
+            "counts and per-trade raw numbers only; from `min_n` on it is 'descriptive', NOT a conclusion: means, share below "
+            "q05 and a Student-t 95 % interval, the interval withheld (`ci_withheld`) when holding periods overlap or are "
+            "unknown. With 28 trades only a gross gap shows (80 % power: ~0.04-0.06 of spot or ~0.57 R against a fixed value, "
+            "~0.056-0.083 of spot against H1); the study's open +0.2 R edge would need ~225 chain trades. Rows lacking a "
+            "needed field or out of sane bounds are counted in `missing_fields`. Trades share volatility regimes and the "
+            "method's expectation is selection-biased upward (it picks its best-scoring structure), so no output here is "
+            "evidence of an edge."
         ),
     )
     async def assistant_paper_status(
@@ -379,14 +435,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             open_now = await rt.store.rec_paper_list(status="open", limit=5000)
             settled = await rt.store.rec_paper_list(status="settled", limit=5000)
             summary: dict[str, Any] = {}
-            meth = [x for x in settled if x["source"] == "method"]
-            groups = {
-                # 'method' = the chain trades (first / after expiry), the ones comparable with the H1 walk-forward;
-                # 'method_triggered' = extra trades opened on a regime change or an event (overlap the chain, correlated)
-                "method": [x for x in meth if x.get("trigger") in (None, "chain")],
-                "method_triggered": [x for x in meth if x.get("trigger") not in (None, "chain")],
-                "manual": [x for x in settled if x["source"] == "manual"],
-            }
+            # 'method' = the chain trades (first / after expiry), the ones comparable with the H1 walk-forward;
+            # 'method_triggered' = extra trades opened on a regime change or an event (overlap the chain, correlated)
+            groups = comparable_groups(settled)
             for src, rows_ in groups.items():
                 s = summarize(rows_)
                 for k, nd in (
@@ -405,7 +456,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     f"paper trade(s) {bad_legs[:10]} have stored legs that are not a list of [strike, is_call, qty, exec_iv, "
                     "entry_price] numbers; only the well-formed legs are shown"
                 )
-            data: dict[str, Any] = {"label": "hypothesis", "open": [_view(x) for x in open_now], "summary_settled": summary}
+            data: dict[str, Any] = {
+                "label": "hypothesis",
+                "open": [_view(x) for x in open_now],
+                "summary_settled": summary,
+                "vs_simulation": _vs_sim_view(paper_vs_simulation(open_now + settled)),
+            }
             if include_settled:
                 data["settled"] = [_view(x) for x in settled[:200]]
             return b.build(data)

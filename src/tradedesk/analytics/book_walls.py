@@ -6,11 +6,12 @@ one price level of one side that is unusually large:
 
 * inside ``BAND`` (+-2 %) of the mid and inside ``VIEW_MARGIN`` of the part of the book the feed shows (``Book.view``);
 * size >= ``K_MEDIAN`` x the median size of the ``TOP_N`` levels of its side nearest the mid, and >= the coin minimum
-  of the symbol (``MIN_QTY``).
+  of the symbol (``MIN_QTY``, or the venue's own ``MIN_QTY_VENUE``).
 
 Live 2026-11-18 the median of the top 50 levels is dust (BTC 0.003-0.03, ETH 2-6 coins), so in practice the coin
-minimum sets the bar; the largest levels were 15-115 BTC and 600-5000 ETH. The constants are a first guess for a
-descriptive calibration on the first day of data (card, item 1), not fitted values.
+minimum sets the bar; the largest levels were 15-115 BTC and 600-5000 ETH. The constants were a first guess; the
+descriptive calibration on the first day of data (2026-11-25, card item 1) kept all of them except the coin minimum of
+Binance spot ETH (``MIN_QTY_VENUE``); the bar was the coin minimum for >= 99 % of the walls, so K never bound.
 
 Life cycle: a wall opens when a level passes the bar; it stays open while its size stays >= ``HOLD_FRACTION`` x the bar
 it opened at (so a wall that is half eaten or briefly trimmed is the same wall), and closes when it drops below that or
@@ -53,6 +54,25 @@ K_MEDIAN = 50.0  # a wall is >= this many times that median ...
 # ... and >= this many coins (~$1.6 M / ~$1.3 M on 2026-11-18). A 3-minute live trial with 10 BTC / 300 ETH found 15-57
 # walls open per symbol and ~1.4k stored a minute: that bar caught ordinary market-maker size, not walls.
 MIN_QTY: dict[str, float] = {"BTC": 25.0, "ETH": 750.0}
+# Per collector venue (job name, as in TRADEDESK_COLLECT_BOOK_WALLS_VENUES), from the first day of data (2026-11-24 11:21
+# .. 2026-11-25, docs/changes/2026-11-25-book-walls-calibration.md, scripts/book_walls_calibration.py). Criteria: (a) on
+# average <= 1 wall open at once (both sides), as on Binance USD-M at the common minimum (0.7-0.8); (b) >= 10 walls a
+# day per symbol (the card's bar for spot).
+# * Binance spot ETH (b fails: 1 wall in the day at 750): a lower bar is not derivable from stored walls, so a 20-min
+#   live trial (2026-11-25 ~09:48 UTC, scripts/book_walls_trial.py): 500 -> 0 walls, 375 -> 7 walls with 0.24 open on
+#   average, 250 -> 4.7 open. Weak: 20 minutes of one hour, off the round grid, and the rule "the largest trial minimum
+#   with walls" leans low (one wall in 20 min needs ~70 a day, (b) needs 10); a day of the new bar checks it (card).
+# * Bybit and Coinbase stay on the common minimum on purpose. There (a) fails: a market maker's ladder (levels of a
+#   near-constant size at a near-constant distance, requoted every ~13-40 s, never traded) gives 1.4-11 "walls" open at
+#   any minute. No coin minimum separates it while keeping >= 10 walls a day: the size distribution is continuous, the
+#   bar where the ladder thins out (Bybit 150 BTC / 4000 ETH, Coinbase 75 / 1000) cuts its tail and leaves ~0-3
+#   traded / consumed / pulled_near walls a day, while the common bar holds ~120-310 of them a day on Bybit. These two
+#   venues are kept out of the card's item 2 and their rows stay one regime at the common bar, so a ladder-aware
+#   definition can be applied later (rows lost to a higher bar cannot be recovered; the cost is ~10 MB a day).
+# * Binance spot BTC (46 a day, 0.07 open) and Binance USD-M keep the common one.
+MIN_QTY_VENUE: dict[str, dict[str, float]] = {
+    "binance_spot": {"ETH": 375.0},
+}
 HOLD_FRACTION = 0.5  # an open wall stays open while its size >= this share of the bar it opened at
 CONSUMED_SHARE = 0.5  # traded on the level >= this share of the wall's largest size -> consumed (card)
 NEAR_DIST = 0.001  # removed within 10 bp of the mid -> pulled_near (spoof-like), else withdrawn
@@ -70,11 +90,13 @@ EVENT_KEYS = (
 )  # fmt: skip
 
 
-def min_qty_for(symbol: str) -> float | None:
-    """The coin minimum of a USDT- or USD-quoted symbol ('BTCUSDT', Coinbase 'BTC-USD' -> MIN_QTY['BTC']), None for a
-    base without one."""
+def min_qty_for(symbol: str, venue: str | None = None) -> float | None:
+    """The coin minimum of a USDT- or USD-quoted symbol ('BTCUSDT', Coinbase 'BTC-USD' -> MIN_QTY['BTC']) on collector
+    ``venue`` (``MIN_QTY_VENUE`` first), None for a base without one."""
     base = symbol.upper().removesuffix("USDT").removesuffix("-USD")
-    return MIN_QTY.get(base)
+    if base not in MIN_QTY:
+        return None
+    return MIN_QTY_VENUE.get(venue or "", {}).get(base, MIN_QTY[base])
 
 
 def near_mid(

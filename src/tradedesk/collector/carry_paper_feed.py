@@ -14,6 +14,7 @@ keeps this engine at 400). Price bars are fetched only for entry candidates and 
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import statistics
 import time
@@ -23,6 +24,7 @@ from typing import Any
 
 from ..analytics.carry import DAY_MS, _Leg, _Market
 from ..analytics.carry_rules import DECISION_DELAY_MS, FUNDING_STEP_MS
+from ..analytics.derivatives import parse_interval_hours
 from ..core.envelope import Builder
 from ..core.errors import ProviderError
 from ..runtime import Runtime
@@ -151,6 +153,38 @@ def _flag_incomplete(got: dict[str, Any], sym: str, venue: str, flags: list[dict
         flags.append({"symbol": sym, "venue": venue, "issue": "funding_rows_dropped", "dropped_rows": int(got.get("dropped_rows") or 0)})
 
 
+def _valid_hours(v: Any, parse: Callable[[Any], float]) -> float | None:
+    """``parse(v)`` as hours when ``v`` is a plain value and the result lies between one minute and one day, else None
+    (a missing field, bool, NaN, +-inf, zero, a negative or unparseable value: garbage is ignored, never compared)."""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return None
+    try:
+        h = parse(v)
+    except (ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        return None
+    return h if 1 / 60 <= h <= 24 else None  # NaN fails the range too
+
+
+def interval_mismatches(venue: str, bulk: dict[str, Any], current: dict[str, dict[str, Any]], symbols: Any) -> list[dict[str, Any]]:
+    """Used symbols (`symbols` in `current`) whose ccxt interval differs from Bybit's own ticker field, both in hours.
+
+    ccxt takes Bybit's interval from the market list loaded at process start (``"8h"``), so a change mid-process (8h ->
+    4h) is not seen there, while ``info.fundingIntervalHour`` (a string of hours, ``"8"``) in the same ticker row is
+    live. The engine keeps getting ccxt's value (``current_funding`` prefers it); this only records the disagreement
+    for the cycle journal (standing card item 462). Both sources must give a valid interval; anything else is skipped."""
+    out: list[dict[str, Any]] = []
+    for s in sorted(symbols):
+        x = bulk.get(s) if s in current else None
+        if not isinstance(x, dict):
+            continue
+        info = x.get("info")
+        ccxt_h = _valid_hours(x.get("interval"), lambda v: parse_interval_hours(v, default=math.nan))
+        ticker_h = _valid_hours(info.get("fundingIntervalHour") if isinstance(info, dict) else None, float)
+        if ccxt_h is not None and ticker_h is not None and abs(ccxt_h - ticker_h) > 1e-9:
+            out.append({"symbol": s, "venue": venue, "ccxt_hours": ccxt_h, "ticker_hours": ticker_h})
+    return out
+
+
 class LiveFeed:
     def __init__(self, rt: Runtime, *, workers: int = 4, pacer: Pacer | None = None) -> None:
         self.rt = rt
@@ -256,20 +290,38 @@ class LiveFeed:
         rows = await store.cp_funding_rows(venue, sym, since, until)
         return [{"ts_ms": ts, "rate": r} for ts, r in rows] or None
 
-    async def _current(self, b: Builder, venue: str, markets: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    async def _current(
+        self, b: Builder, venue: str, markets: dict[str, Any], bulk_out: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Current funding rows for the engine; `bulk_out` (when given) receives the venue's bulk rows read here, unchanged."""
         cur = await current_funding(self.rt, b, venue, markets)
         if any(x.get("interval_source") == "assumed" for x in cur.values()):
-            # No interval source (Binance fundingInfo failed): do not feed the engine a guessed 8h. With None it falls back to
-            # the spacing of the stored history up to the position's last payment, and current_funding has already warned.
+            # No interval source (Binance fundingInfo failed, or a Bybit row reports none): do not feed the engine a guessed
+            # 8h. With None it falls back to the spacing of the stored history up to the position's last payment;
+            # current_funding has already warned, and the cycle flag is in `missing` (Binance) or `_interval_flags` (Bybit).
             for x in cur.values():
                 if x.get("interval_source") == "assumed":
                     x["interval_hours"] = None
         bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", self.rt.exchanges.funding_rates(venue)) or {}
+        if bulk_out is not None:
+            bulk_out.update(bulk)
         for sym, x in cur.items():
             raw = bulk.get(sym) or {}
             x["index"] = float(raw["indexPrice"]) if raw.get("indexPrice") else None
             x["floor"] = None
         return cur
+
+    def _interval_flags(self, venue: str, cur: dict[str, dict[str, Any]], symbols: Any, flags: list[dict[str, Any]]) -> None:
+        """Flag each used symbol (`symbols`: the universe with the held ones) whose current funding interval no source
+        reported, on a venue without an interval list (Bybit in ccxt 4.5; standing card item 461). `current_funding` only
+        warns there, and a warning does not reach the cycle, so without this the engine would get ``interval_hours`` None
+        in a cycle counted complete. A venue with a list (Binance) is left as it was: a failed list read is already one
+        ``provider_missing`` [``funding_intervals:<venue>``] flag for the cycle, so its symbols are not flagged again."""
+        if self.rt.exchanges.lists_funding_intervals(venue):
+            return
+        for s in sorted(symbols):
+            if (cur.get(s) or {}).get("interval_source") == "assumed":
+                flags.append({"symbol": s, "venue": venue, "issue": "funding_interval_unreported"})
 
     async def _gather(self, coros: list[Any], workers: int) -> list[Any]:
         sem = asyncio.Semaphore(workers)
@@ -312,6 +364,7 @@ class LiveFeed:
                 base = s.split("/")[0]
                 m = MULT.match(base)
                 uni[s] = (f"{m.group(2) if m else base}/USDT", int(m.group(1)) if m else 1)
+        self._interval_flags(PERP_VENUE, current, uni, flags)  # Binance has an interval list: no flag (see the method)
 
         async def hist(sym: str) -> tuple[str, list[dict[str, Any]] | None]:
             since = min(t - lb - DAY_MS, opened.get(sym, t) - 3_600_000)
@@ -353,10 +406,16 @@ class LiveFeed:
             raise RuntimeError("market lists unavailable: " + "; ".join(m.field for m in b.missing))
         uni, excluded = universe_b(pa, pb)
         cur_a = await self._current(b, PERP_VENUE, pa)
-        cur_b = await self._current(b, BYBIT, pb)
+        bulk_b: dict[str, Any] = {}
+        cur_b = await self._current(b, BYBIT, pb, bulk_b)
         flags: list[dict[str, Any]] = []
         opened = {p["state"]["symbol"]: int(p["state"]["open_ts"]) for p in open_positions}
         uni = sorted(set(uni) | {s for s in opened if s in pa and s in pb})
+        self._interval_flags(PERP_VENUE, cur_a, uni, flags)
+        self._interval_flags(BYBIT, cur_b, uni, flags)
+        # Diagnostic only, not a flag: the engine still gets ccxt's interval, and a flag would mark the cycle incomplete
+        # (criterion (d)) for a disagreement that does not stop the cycle from running on its usual input.
+        mismatches = interval_mismatches(BYBIT, bulk_b, cur_b, uni)
         reload = _reload_from(open_positions)
 
         async def hist(sym: str) -> tuple[str, list[Any] | None, list[Any] | None]:
@@ -398,4 +457,6 @@ class LiveFeed:
         current = {s: {"a": cur_a.get(s) or {}, "b": cur_b.get(s) or {}} for s in uni}
         for m in b.missing:
             flags.append({"issue": "provider_missing", "field": m.field, "reason": m.reason})
-        return FeedData(markets=markets, excluded=excluded, current=current, universe_size=len(uni), flags=flags)
+        return FeedData(
+            markets=markets, excluded=excluded, current=current, universe_size=len(uni), flags=flags, interval_mismatches=mismatches
+        )

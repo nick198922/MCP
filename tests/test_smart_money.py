@@ -238,6 +238,17 @@ def test_net_flow_and_book() -> None:
     assert book["BTC"] == {"long": 230.0, "short": 0.0, "net": 230.0, "holders": 1}
 
 
+def test_size_drift_below_the_log_granularity_is_not_a_change() -> None:
+    """Schema 42 re-writes big HL positions at every run with their exact size: a drift that the collector does not
+    log as a change (same size to 4 significant digits) is neither a position change nor a flow; a logged one is."""
+    before = {"x": {"ETH": {"side": "short", "size": 1000.0, "value_usd": 3e6}}}
+    drift = {"x": {"ETH": {"side": "short", "size": 1000.3, "value_usd": 3e6}}}  # '1000' at 4 significant digits
+    traded = {"x": {"ETH": {"side": "short", "size": 1001.0, "value_usd": 3e6}}}  # '1001': the collector logs it
+    assert position_changes(before, drift, ["x"]) == [] and net_flow(before, drift, ["x"]) == {}
+    assert [c["kind"] for c in position_changes(before, traded, ["x"])] == ["increased"]
+    assert net_flow(before, traded, ["x"])["ETH"] == pytest.approx(-1.0 * 3e6 / 1001.0)
+
+
 def test_position_changes_and_weekly_points() -> None:
     log = _log()
     s100, s400 = replay_positions(log, 300, until=100), replay_positions(log, 300, until=400)

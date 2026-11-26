@@ -8,7 +8,9 @@ default without a line there (``default_on``: ``atm_term``, ``basis``, ``funding
 how its rows map to a time ``stamp`` (unix seconds) and the cadence it promises: one snapshot per UTC-aligned bucket of
 ``period_s`` seconds, due ``due_s`` seconds after the bucket's start. A series (the job, or one of its ``groups``: a
 currency, a venue, a strategy) is checked from the later of the window start and its first stored stamp, so a job
-switched on recently is not counted for days before it existed; a bucket that is not due yet is not expected.
+switched on recently is not counted for days before it existed; a bucket that is not due yet is not expected. A venue
+that the job's ``_VENUES`` switch in features.env leaves out is not expected either (:func:`spec_groups`; for now only
+``book_walls``).
 
 The cadences are read from the collectors and the schema (each spec's ``note`` says where). Assumptions:
 
@@ -22,7 +24,8 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
 * ``paper_carry``: a cycle (00/08/16 UTC) counts only with status ``done``; ``skipped`` (missed) and ``failed`` are gaps.
 * ``trader_positions`` is a change log (store ``record_trader_positions``): an hour counts when at least one watched
   position changed. With ~200 Hyperliquid and ~200 Polymarket accounts watched that is every hour (167 of 168 hours for
-  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap.
+  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap. From schema 42 (2026-11-25) every
+  Hyperliquid run also re-writes each position worth >= $2.5M, so a quiet Hyperliquid hour is rarer still.
 * ``traders`` and ``supply`` run every ``collect_*_seconds`` from the service start (not aligned to the day) and key
   their rows by the UTC day of the run; a day is due by its end.
 * ``assistant_paper`` (a paper trade only on a trigger) and ``plan_resolve`` (scores existing plans, writes nothing in a
@@ -75,6 +78,10 @@ class Spec:
     hours_utc: frozenset[int] | None = None  # buckets expected only when their start hour (UTC) is in this set
     note: str = ""
     default_on: bool = False  # the collector runs it unless ``flag`` is set off (no line in features.env needed)
+    # A TRADEDESK_*_VENUES switch that can turn some venues of the job off, and (job venue as written there, group as
+    # stored in the table) pairs; without the switch in features.env every group of ``groups`` is expected.
+    venues_flag: str | None = None
+    venue_groups: tuple[tuple[str, str], ...] = ()
 
 
 SPECS: tuple[Spec, ...] = (
@@ -120,7 +127,10 @@ SPECS: tuple[Spec, ...] = (
         "book_walls", "TRADEDESK_COLLECT_BOOK_WALLS_ENABLED", "book_depth_minute", "ts", MINUTE, 2 * MINUTE,
         group_col="venue", groups=("binanceusdm", "bybit", "binance", "coinbase"),
         note="WebSocket book streams (VENUES=binance,bybit,binance_spot,coinbase; venue binance = spot); one depth row "
-        "per symbol and minute; a run restart or a resync can skip a minute",
+        "per symbol and minute; a run restart or a resync can skip a minute; a venue switched off in _VENUES is not "
+        "expected",
+        venues_flag="TRADEDESK_COLLECT_BOOK_WALLS_VENUES",
+        venue_groups=(("binance", "binanceusdm"), ("bybit", "bybit"), ("binance_spot", "binance"), ("coinbase", "coinbase")),
     ),
     Spec(
         "cycle_regime_log", "TRADEDESK_COLLECT_CYCLE_REGIME_ENABLED", "cycle_regime_log", _DAY_TS.format("date"), DAY,
@@ -174,7 +184,8 @@ SPECS: tuple[Spec, ...] = (
     Spec(
         "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_positions", "ts", HOUR, HOUR,
         group_col="venue", groups=("hyperliquid", "polymarket"), default_on=True,
-        note="hourly change log; an hour counts with >= 1 changed position; both Polymarket boards stored as 'polymarket'",
+        note="hourly change log (plus HL positions >= $2.5M at every run); an hour counts with >= 1 row; both Polymarket "
+        "boards stored as 'polymarket'",
     ),
 )  # fmt: skip
 
@@ -194,6 +205,18 @@ def enabled_specs(switches: Mapping[str, str], specs: Iterable[Spec] = SPECS) ->
         return s.default_on if v is None else str(v).strip().lower() in ("1", "true", "yes", "on")
 
     return [s for s in specs if on(s)]
+
+
+def spec_groups(spec: Spec, switches: Mapping[str, str]) -> tuple[str, ...]:
+    """The series of ``spec`` expected under ``switches`` (parsed features.env): all of ``groups``, except that a job
+    with a ``venues_flag`` set there expects only the groups of the venues it lists (comma-separated, as the collector's
+    scheduler reads it: trimmed, case-insensitive)."""
+    v = switches.get(spec.venues_flag) if spec.venues_flag else None
+    if v is None:
+        return spec.groups
+    on = {x.strip().lower() for x in str(v).split(",") if x.strip()}
+    keep = {group for venue, group in spec.venue_groups if venue in on}
+    return tuple(g for g in spec.groups if g in keep)
 
 
 def expected_buckets(spec: Spec, start: int, now: int) -> list[int]:

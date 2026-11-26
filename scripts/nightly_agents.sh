@@ -57,15 +57,16 @@ dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
 # head_utf8 <bytes> <file>: the first bytes of a file without a character cut in half (`head -c` alone left a broken
 # UTF-8 byte in history.tsv on 10.11, and every status message after it failed).
 head_utf8() { head -c "$1" "$2" 2>/dev/null | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; }
-# True when everything this work changed against main (commits on the work branch plus the working tree) is run notes
-# under docs/agents/runs/, and something did change.
+# True when everything this work changed against main (commits on the work branch plus the working tree, throwaway
+# scripts/_* aside) is run notes (docs/agents/runs/) and their changelog entries (docs/changes/), and something did
+# change.
 only_run_notes() {
   local files
-  files="$( (git -C "$WT" diff --name-only origin/main...HEAD 2>/dev/null; git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null | cut -c4-) | sort -u)"
+  files="$( (git -C "$WT" diff --name-only origin/main...HEAD 2>/dev/null; git -C "$WT" status --porcelain --untracked-files=all -- . ':!scripts/_*' 2>/dev/null | cut -c4-) | sort -u)"
   [[ -n "$files" ]] || return 1
   local f
   while IFS= read -r f; do
-    [[ "$f" == docs/agents/runs/* ]] || return 1
+    [[ "$f" == docs/agents/runs/* || "$f" == docs/changes/* ]] || return 1
   done <<<"$files"
 }
 
@@ -528,6 +529,12 @@ if [[ $MODE == continue && -n "$WORK_BR" && -n "$NEXT" && ! -f .agent/branch ]];
     printf 'Agents: %s\n\nRun %s of %s; .agent/commit-msg.txt was not written, see the run summary.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n' \
       "$WORK_BR" "$RUNS" "$MAX_RUNS" >.agent/commit-msg.txt
   fi
+fi
+# A delivery that holds nothing but the run's own notes is an idle run, whatever .agent/next says short of more work
+# (19-24.11: 236 such pull requests, counted "delivered", so the loop paused 5 minutes instead of 30 and never called
+# the idle doctor). The request is dropped here and the block below reports the run as idle.
+if [[ $DRY -eq 0 && "$NEXT" != continue && "$NEXT" != park ]] && only_run_notes; then
+  rm -f .agent/branch
 fi
 if [[ $DRY -eq 0 ]]; then
   deliver "$SUMMARY" "$BRANCH_RE" "$WORK_BR" || echo "delivery refused: $NOTE"

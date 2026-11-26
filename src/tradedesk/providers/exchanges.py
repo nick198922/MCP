@@ -255,6 +255,23 @@ class Exchanges:
 
         return await self._call(ex_id, "fetch_funding_intervals", {}, 300, go)  # short TTL: Binance flips 8h<->4h at extreme funding
 
+    def lists_funding_intervals(self, ex_id: str) -> bool:
+        """Whether ``funding_intervals`` can answer for the venue at all, decided without a request.
+
+        ``has["fetchFundingIntervals"]`` True / False decides. ccxt leaves it None for venues it says nothing about
+        (Bybit in ccxt 4.5): then only a venue class with its own ``fetch_funding_intervals`` counts, because the base
+        class method raises NotSupported and asking would only add a ``missing`` entry (standing card item 461).
+        Never raises: a venue that cannot even be built (unknown id) has no list (False)."""
+        try:
+            ex = self.get(ex_id)
+            flag = (getattr(ex, "has", {}) or {}).get("fetchFundingIntervals")
+            if flag is not None:
+                return bool(flag)
+            own = getattr(type(ex), "fetch_funding_intervals", None)
+            return own is not None and own is not getattr(ccxt_async.Exchange, "fetch_funding_intervals", None)
+        except Exception:  # noqa: BLE001 - a yes/no capability check must not break the tool (invariant 1)
+            return False
+
     async def funding_rate_history_range(
         self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60, trust_short_page: bool = False
     ) -> Fetched:

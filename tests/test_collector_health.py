@@ -302,6 +302,33 @@ def test_default_jobs_count_without_a_switch():
     assert {s.name for s in ch.enabled_specs({"TRADEDESK_COLLECT_SUPPLY_ENABLED": "1"})} == defaults
 
 
+def test_a_venue_switched_off_in_venues_is_not_expected(tmp_path):
+    from tradedesk.collector.book_walls import VENUE_ID
+
+    bw = SPEC["book_walls"]
+    assert dict(bw.venue_groups) == VENUE_ID and sorted(bw.groups) == sorted(VENUE_ID.values())  # rows carry VENUE_ID
+    on = {bw.flag: "1"}
+    assert ch.spec_groups(bw, on) == bw.groups  # no _VENUES line: the collector's default, every venue
+    off = on | {bw.venues_flag: "binance, Bybit,binance_spot"}  # parsed as the scheduler does
+    assert ch.spec_groups(bw, off) == ("binanceusdm", "bybit", "binance")
+    assert ch.spec_groups(SPEC["pm_gap"], off) == ("",)  # a job without a _VENUES switch: unchanged
+    # Coinbase wrote rows, then was switched off: no book_walls:coinbase series, so no stale / low alarm for it
+    db = _fresh_db(tmp_path)
+    con = sqlite3.connect(db)
+    q = "INSERT INTO book_depth_minute (venue, symbol, ts, mid, spread, walls_bid, walls_ask, gaps, short_walls) VALUES (?,?,?,1.0,0.0,0,0,0,0)"
+    for venue in VENUE_ID.values():
+        last = NOW - 2 * D if venue == "coinbase" else NOW - 60
+        for ts in range(NOW - 3 * D, last + 1, 60):
+            con.execute(q, (venue, "BTCUSDT", ts))
+    con.commit()
+    con.close()
+    only = {s.flag: "0" for s in ch.SPECS if s.default_on}
+    labels = {r["label"]: r["status"] for r in script.collect(db, only | off, NOW)}
+    assert labels == {"book_walls:binanceusdm": "ok", "book_walls:bybit": "ok", "book_walls:binance": "ok"}
+    every = {r["label"]: r["status"] for r in script.collect(db, only | on, NOW)}
+    assert every["book_walls:coinbase"] == "low"  # the false alarm before the fix (2 of 3 days missing)
+
+
 def test_traders_gap_in_one_venue_is_visible_and_empty_db(tmp_path):
     db = _fresh_db(tmp_path)
     only_traders = {"TRADEDESK_COLLECTOR_ENABLED": "0", "TRADEDESK_COLLECT_SUPPLY_ENABLED": "0"}  # traders: no switch

@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import socket
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
@@ -237,6 +238,14 @@ OPEN_TIMEOUT = 10.0
 PING_INTERVAL = 20.0
 PING_TIMEOUT = 30.0
 CLOSE_TIMEOUT = 5.0
+# Every stream connects over IPv4. Bybit (CloudFront), OKX and Coinbase (Cloudflare) also publish AAAA records and the
+# server has IPv6, so their streams went over IPv6 and Binance (IPv4 only) over IPv4. On the same event loop and the
+# same ping settings, Bybit / OKX / Coinbase dropped together several times an hour (keepalive ping timeout / reset)
+# while Binance failed in 1 of 297 hours (2026-11-25). Suspected, not proven: the IPv6 connections to these CDNs. This
+# switch tests that; IPv4 also lands on other CDN edges, so even a fix cannot tell the host, its upstream and the CDN's
+# IPv6 edge apart. Criterion and rollback: docs/changes/2026-11-25-ws-stream-stalls.md. ``StreamStats.peer`` shows the
+# address used.
+WS_FAMILY = socket.AF_INET
 # Application heartbeat after this many seconds without a message. OKX drops a connection that has pushed nothing for
 # 30 s and wants the text "ping" (docs v5 "Overview / Connect"); Bybit asks for {"op":"ping"} every 20 s (docs v5
 # "Connect / How to send the heartbeat packet"). Binance pings us itself.
@@ -286,6 +295,8 @@ class StreamStats:
     last_message_ts: float | None = None
     last_row_ts: float | None = None
     connected_since: float | None = None  # clock stamp from which the open connection is not yet in ``hours``
+    # Venue IP of the latest connection (':' in it = IPv6), so a failure can be tied to the address family.
+    peer: str | None = None
     hours: dict[int, dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
 
     def stamp(self) -> float | None:
@@ -436,11 +447,14 @@ async def _ws_consume(
                 ping_interval=PING_INTERVAL,
                 ping_timeout=PING_TIMEOUT,
                 close_timeout=CLOSE_TIMEOUT,
+                family=WS_FAMILY,
                 **frame,
             ) as ws:
                 opened, opened_at = True, loop.time()
                 st.connected, st.connects, st.last_connect_ts = True, st.connects + 1, st.stamp()
                 st.connected_since = st.last_connect_ts
+                addr = getattr(ws, "remote_address", None)
+                st.peer = str(addr[0]) if isinstance(addr, tuple) and addr else None
                 if st.consecutive_failures:
                     st.reconnects += 1
                     st.count("reconnects", st.last_connect_ts)

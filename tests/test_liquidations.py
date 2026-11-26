@@ -410,6 +410,53 @@ async def test_stream_reconnects_and_resubscribes_after_drops():
     assert (kw["open_timeout"], kw["ping_interval"], kw["ping_timeout"]) == (10.0, 20.0, 30.0)
 
 
+async def test_every_stream_connects_over_ipv4(monkeypatch):
+    # 2026-11-25: Bybit, OKX and Coinbase resolve to IPv6 first on the server and dropped together several times an
+    # hour, Binance (IPv4 only) almost never; the IPv4 switch is the test of that. Each public stream asks for AF_INET.
+    import socket
+
+    import websockets
+
+    from tradedesk.providers import orderbook_stream as obs
+
+    fake = _FakeConnect([], default=[])
+    monkeypatch.setattr(websockets, "connect", fake)
+    await _drain(liq.binance_liquidation_stream(max_seconds=0.02))
+    await _drain(liq.bybit_liquidation_stream(["BTCUSDT"], max_seconds=0.02))
+    await _drain(liq.okx_liquidation_stream({}, max_seconds=0.02))
+    await _drain(obs.coinbase_book_stream(["BTC-USD"], max_seconds=0.02, stats=obs.StreamGroup()))
+    assert len(fake.kwargs) == 4
+    assert [kw.get("family") for kw in fake.kwargs] == [socket.AF_INET] * 4
+
+
+def test_the_socket_module_is_used_only_for_the_address_family_constant():
+    # test_network_boundary.py allows `import socket` in this file for WS_FAMILY alone: no socket may be opened here.
+    import inspect
+    import re
+
+    source = inspect.getsource(liq)
+    assert set(re.findall(r"\bsocket\.(\w+)", source)) == {"AF_INET"}
+    assert not re.search(r"^\s*from socket import", source, re.MULTILINE)
+
+
+async def test_stream_stats_record_the_venue_address_of_the_connection():
+    class _Addr(_FakeConnect):
+        @contextlib.asynccontextmanager
+        async def _cm(self, step):
+            ws = _FakeWS(step)
+            ws.remote_address = ("2600:9000::1", 443, 0, 0) if not self.opened else ("18.245.199.103", 443)
+            self.opened.append(ws)
+            yield ws
+
+    fake = _Addr([[ConnectionResetError("reset")]], default=[])
+    st = StreamStats()
+    await _drain(liq._ws_consume(liq.BYBIT_WS_URL, None, lambda ev: [], max_seconds=0.2, stats=st, connect=fake, backoff_base=0.01))
+    assert len(fake.opened) == 2 and st.peer == "18.245.199.103" and st.as_dict()["peer"] == "18.245.199.103"
+    plain = StreamStats()  # a connection object without remote_address (the other fakes): no peer, no error
+    await _drain(liq._ws_consume(liq.OKX_WS_URL, None, lambda ev: [], max_seconds=0.05, stats=plain, connect=_FakeConnect([[]])))
+    assert plain.connects == 1 and plain.peer is None
+
+
 async def test_stream_down_for_the_whole_window_fails_the_run_after_backing_off():
     fake = _FakeConnect([], default=TimeoutError("timed out during opening handshake"))
     st = StreamStats()

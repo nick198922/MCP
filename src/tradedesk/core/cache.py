@@ -36,19 +36,31 @@ class TTLCache:
         self._data[key] = (time.monotonic() + ttl, value)
 
     async def get_or_fetch(self, key: Any, ttl: float, fetch: Callable[[], Awaitable[Any]]) -> tuple[Any, bool]:
-        """Return (value, from_cache). Concurrent callers with the same key share one fetch."""
-        hit, value = self.peek(key)
-        if hit:
-            return value, True
-        fut = self._inflight.get(key)
-        if fut is not None:
-            return await asyncio.shield(fut), True
+        """Return (value, from_cache). Concurrent callers with the same key share one fetch.
+
+        Cancellation: a waiter that is cancelled itself raises CancelledError and leaves the shared fetch running for
+        the others (``asyncio.shield``). When the caller running the fetch (the leader) is cancelled, its waiters do
+        not inherit that cancellation: they wake with an internal marker and start over, so one of them runs the fetch
+        again and the rest share it. A failure other than cancellation reaches every waiter as before."""
+        while True:
+            hit, value = self.peek(key)
+            if hit:
+                return value, True
+            fut = self._inflight.get(key)
+            if fut is None:
+                break
+            try:
+                return await asyncio.shield(fut), True
+            except _LeaderCancelled:
+                continue  # the leader was cancelled, not us: fetch again (the first to wake leads)
         fut = asyncio.get_running_loop().create_future()
         self._inflight[key] = fut
         try:
             value = await fetch()
         except asyncio.CancelledError:
-            fut.cancel()
+            # Not fut.cancel(): the waiters would raise CancelledError although nobody cancelled them.
+            fut.set_exception(_LeaderCancelled())
+            fut.exception()  # mark as retrieved so asyncio does not log it when nobody waits
             raise
         except BaseException as exc:
             fut.set_exception(exc)
@@ -59,4 +71,9 @@ class TTLCache:
             self.put(key, value, ttl)
             return value, False
         finally:
-            self._inflight.pop(key, None)
+            if self._inflight.get(key) is fut:
+                del self._inflight[key]
+
+
+class _LeaderCancelled(Exception):
+    """Set on the shared future when the caller running the fetch was cancelled; its waiters fetch again."""

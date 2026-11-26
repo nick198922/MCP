@@ -91,7 +91,7 @@ def pick_daily_expiry(
     expiries: Iterable[datetime], now: datetime, tau_min_hours: float = TAU_MIN_HOURS, tau_max_hours: float = TAU_MAX_HOURS
 ) -> datetime | None:
     """The nearest expiry whose time to expiry lies in [tau_min_hours, tau_max_hours]; None when none does (e.g. between
-    06:00 and 10:00 UTC, when today's expiry is too close and tomorrow's too far)."""
+    06:00 and 12:00 UTC for the 08:00 daily expiries at 2-20 h, when today's expiry is too close and tomorrow's too far)."""
     inside = [e for e in set(expiries) if tau_min_hours <= (e - now).total_seconds() / 3600.0 <= tau_max_hours]
     return min(inside) if inside else None
 

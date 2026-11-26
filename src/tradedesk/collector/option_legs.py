@@ -20,12 +20,23 @@ attempt is retried within minutes. ``ts`` is the real snapshot time (a late snap
 A currency whose book summary failed writes nothing and is retried on the next tick; the run raises (the scheduler
 records it) only when nothing was written and a provider reported a problem. Off by default:
 TRADEDESK_COLLECT_OPTION_LEGS_ENABLED=1.
+
+Second pass (review 2026-11-25, remark 3): a leg whose ticker failed with HTTP 429 (``rate_limited``) is written on its
+summary quote like any failed ticker, and once both currencies are written the run waits ``RETRY_PAUSE_SECONDS`` and
+asks those tickers once more. An answer replaces only the quote columns of that stored ``summary`` row
+(``Store.requote_option_legs``); ``ts`` stays the run's clock read, so the reading rules of the condor forward
+(``analytics/condor_forward``: ``ts`` <= 10:00 UTC, expiry, strikes) select exactly the rows they would without it.
+Writing first means a pass that fails, is cancelled or is cut by a restart leaves the day as it was before this
+existed. Other ticker failures are not asked again, and a second 429 or an answer without a numeric mark / mark IV
+keeps the summary quote. A requoted row carries no marker (``quote_ts_ms`` is the instrument's last update, not the
+read time): the INFO line ``option_legs <day>: second pass after ...`` names every requoted leg, and is the only record.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -38,15 +49,29 @@ if TYPE_CHECKING:
 log = logging.getLogger("tradedesk.collector")
 
 CURRENCIES = ("BTC", "ETH")
+RETRY_PAUSE_SECONDS = 15.0  # pause before the one second pass over rate-limited tickers (Deribit refills ~0.8 req/s)
+TICKER = "deribit_ticker:"  # Builder.missing field prefix of a leg ticker
+
+
+def _rate_limited(b: Builder, name: str) -> bool:
+    """True when the latest ``missing`` entry of ``name``'s ticker is a rate limit (HTTP 429 after Http's retries)."""
+    return next((m.reason for m in reversed(b.missing) if m.field == TICKER + name), None) == "rate_limited"
 
 
 async def scan_option_legs(
-    rt: "Runtime", b: Builder, currency: str, now: datetime, entry_rows: list[dict[str, Any]] | None = None
+    rt: "Runtime",
+    b: Builder,
+    currency: str,
+    now: datetime,
+    entry_rows: list[dict[str, Any]] | None = None,
+    requote: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Leg rows of ``currency`` at ``now`` (see ``Store.OPTION_LEG_COLUMNS``). Never raises on a provider failure: it
     lands in ``b.missing`` (book summary down or the expiry absent: no rows; a ticker down: that leg from the summary).
     ``entry_rows`` (Saturday to Thursday: the stored rows of the last Friday entry, possibly empty) adds the held legs
-    ``hold_<role>``; none of them matching the expiry is a warning, the re-picked legs are written anyway."""
+    ``hold_<role>``; none of them matching the expiry is a warning, the re-picked legs are written anyway.
+    ``requote`` (optional) receives ``{currency: {"exp", "expiry", "legs"}}``: the returned legs whose ticker failed
+    with a rate limit, for the job's second pass."""
     summary = await b.guard(f"deribit_options:{currency}", "deribit", rt.deribit.book_summary(currency, "option"))
     if summary is None:
         return []
@@ -65,7 +90,7 @@ async def scan_option_legs(
             b.warn(f"{currency}: no Friday entry snapshot for the {expiry:%d%b%y} expiry stored; hold_ legs skipped")
         legs += held
     names = sorted({leg["instrument"] for leg in legs})  # re-picked and held legs share most instruments: one read each
-    got = await asyncio.gather(*(b.guard(f"deribit_ticker:{n}", "deribit", rt.deribit.ticker(n)) for n in names))
+    got = await asyncio.gather(*(b.guard(TICKER + n, "deribit", rt.deribit.ticker(n)) for n in names))
     tickers = {n: g for n, g in zip(names, got, strict=True) if isinstance(g, dict)}
     out = []
     for leg in legs:
@@ -74,11 +99,70 @@ async def scan_option_legs(
             b.warn(f"{currency}: {leg['role']} {leg['instrument']} has no ticker and no book summary row; skipped")
             continue
         out.append(leg_row(leg, exp, t, currency=currency, expiry=expiry, now=now))
+    if requote is not None:
+        limited = {n for n in names if n not in tickers and _rate_limited(b, n)}
+        again = [leg for leg in legs if leg["instrument"] in limited and leg["instrument"] in exp["rows"]]  # rows written
+        if again:
+            requote[currency] = {"exp": exp, "expiry": expiry, "legs": again}
     return out
 
 
-async def collect_option_legs(rt: "Runtime") -> int:
-    """Collector job. Returns the rows written (0: before 09:00 UTC or the day already stored)."""
+async def _second_pass(
+    rt: "Runtime",
+    b: Builder,
+    day: str,
+    now: datetime,
+    pending: dict[str, dict[str, Any]],
+    pause: float,
+    sleep: Callable[[float], Awaitable[Any]],
+) -> int:
+    """After ``pause``, ask the rate-limited tickers of ``pending`` once more and move the legs that answered from the
+    stored summary quote to the ticker quote (same ``ts`` and ``now``). A leg that fails again, or whose answer lacks a
+    numeric mark / mark IV (a partial ticker must not blank the summary row's mark, mark IV and delta), keeps its summary
+    quote and its first ``missing`` entry; the requoted ones leave ``b.missing`` once the store write succeeded. The
+    INFO line names every requoted leg (currency, role, instrument): the only trace of a later quote, since a stored row
+    carries no marker of it (the post-merge check and condor forward 8j count them from the service journal).
+    Returns the rows updated."""
+    await sleep(pause)
+    again = Builder()
+    rows: list[dict[str, Any]] = []
+    for cur, p in pending.items():
+        names = sorted({leg["instrument"] for leg in p["legs"]})
+        got = await asyncio.gather(*(again.guard(TICKER + n, "deribit", rt.deribit.ticker(n)) for n in names))
+        tickers = {n: g for n, g in zip(names, got, strict=True) if isinstance(g, dict)}
+        for leg in p["legs"]:
+            t = tickers.get(leg["instrument"])
+            if t is None:
+                continue
+            r = leg_row(leg, p["exp"], t, currency=cur, expiry=p["expiry"], now=now)
+            if r["mark"] is None or r["mark_iv"] is None or r["delta"] is None:  # delta is None only at mark IV 0
+                b.warn(f"{cur}: second pass ticker of {leg['role']} {leg['instrument']} has no mark / mark IV; summary kept")
+                continue
+            rows.append(r | {"ts": int(now.timestamp())})
+    asked = sum(len({leg["instrument"] for leg in p["legs"]}) for p in pending.values())
+    legs = sum(len(p["legs"]) for p in pending.values())
+    b.evidence += again.evidence
+    n = await rt.store.requote_option_legs(day, rows) if rows else 0
+    answered = {r["instrument"] for r in rows}  # only after the write: a failed one keeps them named rate_limited
+    b.missing = [m for m in b.missing if not (m.field.startswith(TICKER) and m.field.removeprefix(TICKER) in answered)]
+    log.info(
+        "option_legs %s: second pass after %g s: %d of %d rate-limited tickers answered, %d of %d legs requoted: %s",
+        day,
+        pause,
+        len(answered),
+        asked,
+        n,
+        legs,
+        ", ".join(f"{r['currency']} {r['role']} {r['instrument']}" for r in rows) or "none",
+    )
+    return n
+
+
+async def collect_option_legs(
+    rt: "Runtime", *, retry_pause: float = RETRY_PAUSE_SECONDS, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
+) -> int:
+    """Collector job. Returns the rows written (0: before 09:00 UTC or the day already stored); a second pass's
+    requoted legs are not counted again. ``retry_pause`` / ``sleep``: the second pass's wait (injectable for tests)."""
     if rt.store is None:
         raise RuntimeError("option_legs: needs a SQLite store (set TRADEDESK_DB_PATH)")
     await rt.store.init()
@@ -89,16 +173,28 @@ async def collect_option_legs(rt: "Runtime") -> int:
     b = Builder()
     written = 0
     friday = entry_day(now)
+    pending: dict[str, dict[str, Any]] = {}
     for cur in CURRENCIES:
         if await rt.store.option_legs_has_day(day, cur):
             continue
         entry = None
         if friday is not None:
             entry = [r for r in await rt.store.option_leg_rows(friday, cur) if r["day"] == friday]
-        rows = await scan_option_legs(rt, b, cur, now, entry)
+        rows = await scan_option_legs(rt, b, cur, now, entry, pending)
         for r in rows:
             r["ts"] = int(now.timestamp())
         written += await rt.store.insert_option_legs(day, rows)
+    if pending and written:  # the day is already stored: this pass can only upgrade quotes, never lose the day
+        try:
+            await _second_pass(rt, b, day, now, pending, retry_pause, sleep)
+        except asyncio.CancelledError:
+            for w in b.warnings:
+                log.warning("option_legs %s: %s", day, w)
+            why = "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:6])
+            log.warning("option_legs %s: second pass cancelled, the day keeps its first quotes; missing: %s", day, why)
+            raise
+        except Exception as e:  # noqa: BLE001 - e.g. a store error: the first quotes stay, the run is not failed
+            b.warn(f"second pass on rate-limited tickers failed: {type(e).__name__}: {e}")
     for w in b.warnings:  # the day is stored now and not retried: a gap must at least reach the log
         log.warning("option_legs %s: %s", day, w)
     if b.missing:

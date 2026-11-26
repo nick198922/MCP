@@ -910,7 +910,9 @@ MIGRATIONS: dict[int, list[str]] = {
         # IDEA-20261031-structural-edges-depth item 8d): forward check of H1 / H4 (docs/verification/2026-10-31-options-
         # modules.md), from 09:00 UTC, the nearest Friday 08:00 expiry. 10 re-picked legs per currency a day, plus on
         # Saturday to Thursday up to 10 `hold_<role>` rows (the last Friday entry's instruments), not pruned. The first
-        # snapshot of a (day, currency) is kept. Read-only market data, independent of `journal`.
+        # snapshot of a (day, currency) is kept; from 2026-11-26 the same run may replace a 'summary' quote whose ticker
+        # got HTTP 429 by a second-pass ticker quote (quote columns only, same ts: Store.requote_option_legs).
+        # Read-only market data, independent of `journal`.
         """
         CREATE TABLE IF NOT EXISTS option_leg_snapshot (
             day TEXT NOT NULL,                     -- UTC date YYYY-MM-DD of the snapshot
@@ -1067,8 +1069,9 @@ MIGRATIONS: dict[int, list[str]] = {
         # NULL = the leg is there; 'not_listed' = the venue's chain was read and has no such strike / type / expiry;
         # a ProviderError reason ('rate_limited', 'backend_error', 'network', 'data_unavailable', ...) = that leg's own
         # request failed (Deribit ticker, Bybit option chain); 'summary:<reason>' (Deribit only) = the book summary
-        # failed, so no Deribit ticker was asked; 'bad_response' = the ticker answered with something unusable. NULL on
-        # rows written before this column (20-25.11 the Deribit legs mostly went missing to HTTP 429).
+        # failed, so no Deribit ticker was asked; 'bad_response' = the venue answered with something unusable (a Deribit
+        # ticker; from 2026-11-26 also a Bybit tickers body without result.list, no chain read: before that 'not_listed').
+        # NULL on rows written before this column (20-25.11 the Deribit legs mostly went missing to HTTP 429).
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN d_miss TEXT",
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN b_miss TEXT",
     ],

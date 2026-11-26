@@ -546,6 +546,29 @@ class Store:
             )
         return self.conn.total_changes - before
 
+    OPTION_LEG_QUOTE_COLUMNS = "src bid ask mark mark_iv bid_iv ask_iv bid_size ask_size delta quote_ts_ms open_interest volume".split()
+
+    async def requote_option_legs(self, day: str, rows: list[dict[str, Any]]) -> int:
+        """Replace the book-summary quote of legs already stored for ``day`` by a ticker quote read later in the same run
+        (collector/option_legs.py, second pass over rate-limited tickers). Only a row with ``src = 'summary'`` and the
+        same ``ts`` and instrument is touched, and only its quote columns (``OPTION_LEG_QUOTE_COLUMNS``): ``ts``, the
+        expiry, strike, target, dist and forward stay as first written. No row is inserted. Returns the rows updated."""
+        cols = self.OPTION_LEG_QUOTE_COLUMNS
+        keys = ("currency", "role", "ts", "instrument")
+        payload = [
+            (*(r.get(c) for c in cols), day, *(r[k] for k in keys))
+            for r in rows
+            if r.get("src") == "ticker" and all(r.get(k) for k in keys)
+        ]
+        if not payload:
+            return 0
+        sets = ", ".join(f"{c} = ?" for c in cols)
+        where = "day = ? AND currency = ? AND role = ? AND ts = ? AND instrument = ? AND src = 'summary'"
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(f"UPDATE option_leg_snapshot SET {sets} WHERE {where}", payload)
+        return self.conn.total_changes - before
+
     async def option_legs_has_day(self, day: str, currency: str) -> bool:
         cur = await self.conn.execute("SELECT 1 FROM option_leg_snapshot WHERE day = ? AND currency = ? LIMIT 1", (day, currency))
         return await cur.fetchone() is not None

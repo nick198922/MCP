@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
+import sqlite3
 import statistics
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +16,7 @@ import httpx
 import pytest
 
 from conftest import State, make_transports
+from tradedesk.analytics.condor_forward import friday_entry
 from tradedesk.analytics.option_legs import (
     ROLES,
     entry_day,
@@ -147,7 +151,8 @@ def _ticker(row: dict) -> dict:
 
 def _rt(tmp_path, opts: dict | None = None, **kw) -> tuple[Runtime, list]:
     """Fake Deribit. ``opts`` (read on every request): "down" (all 500), "down_cur" (one currency's summary 500),
-    "bad_ticker" (instrument names answering instrument_not_found)."""
+    "bad_ticker" (instrument names answering instrument_not_found), "limited" (instrument names answering HTTP 429),
+    "shape" (a function applied to every ticker result)."""
     calls: list = []
     opts = opts if opts is not None else {}
     by_name = {r["instrument_name"]: r for cur in ("BTC", "ETH") for r in BOOK[cur]}
@@ -160,8 +165,10 @@ def _rt(tmp_path, opts: dict | None = None, **kw) -> tuple[Runtime, list]:
             return httpx.Response(500, text="down")
         if method == "get_book_summary_by_currency":
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": BOOK[arg]})
+        if method == "ticker" and arg in opts.get("limited", ()):
+            return httpx.Response(429, json={"jsonrpc": "2.0", "error": {"code": 10028, "message": "too_many_requests"}})
         if method == "ticker" and arg in by_name and arg not in opts.get("bad_ticker", ()):
-            return httpx.Response(200, json={"jsonrpc": "2.0", "result": _ticker(by_name[arg])})
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": opts.get("shape", lambda t: t)(_ticker(by_name[arg]))})
         return httpx.Response(200, json={"jsonrpc": "2.0", "error": {"code": 13020, "message": "instrument_not_found"}})
 
     tr = make_transports(State())
@@ -307,6 +314,208 @@ async def test_failed_ticker_falls_back_to_the_summary_quote(tmp_path):
         assert sum(r["src"] == "ticker" for r in rows) == 9
     finally:
         await rt.aclose()
+
+
+# ---- second pass over rate-limited tickers (review 2026-11-25, remark 3) ------------------------------------------
+# Before it, a leg whose ticker got HTTP 429 stayed on src = 'summary' for good (the day is never collected twice), and
+# one such H1 leg on a Friday or Thursday cost the condor forward (8i / 8j) its week.
+
+LIMITED = ("BTC-30OCT26-70000-P", "BTC-30OCT26-78000-P")  # lp = lp15 and sp10 of the fixture's BTC book
+
+
+def _pause(opts: dict, rt: Runtime, seen: list, *, heal: bool = True, cancel: bool = False, shape=None):
+    """A fake ``sleep`` for the second pass: records the pause and the rows stored at that moment, then lets the rate
+    limit pass (``heal``; ``shape`` then rewrites every later ticker result) or raises CancelledError (``cancel``);
+    never sleeps."""
+
+    async def sleep(seconds: float) -> None:
+        seen.append((seconds, await rt.store.option_leg_rows()))
+        if cancel:
+            raise asyncio.CancelledError
+        if heal:
+            opts["limited"] = ()
+            if shape is not None:
+                opts["shape"] = shape
+
+    return sleep
+
+
+async def test_rate_limited_tickers_are_asked_once_more_after_the_day_is_written(tmp_path, caplog):
+    opts = {"limited": LIMITED}
+    rt, calls = _rt(tmp_path, opts)
+    seen: list = []
+    try:
+        with caplog.at_level(logging.INFO, logger="tradedesk.collector"):
+            assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen)) == 20
+        [(pause, first)] = seen  # one pause, and the whole day was already stored before it
+        assert pause == 12.5 and len(first) == 20
+        assert sorted(r["role"] for r in first if r["src"] == "summary") == ["lp", "lp15", "sp10"]
+        rows = await rt.store.option_leg_rows()
+        assert len(rows) == 20 and all(r["src"] == "ticker" and r["ts"] == int(NOW.timestamp()) for r in rows)
+        sp = next(r for r in rows if r["currency"] == "BTC" and r["role"] == "sp10")
+        assert (sp["bid"], sp["ask"], sp["bid_size"], sp["ask_size"]) == (0.0035, 0.0038, 1.5, 2.5)
+        assert sp["bid_iv"] == pytest.approx(0.3574)
+        old = {(r["currency"], r["role"]): r for r in first}
+        quote = set(Store.OPTION_LEG_QUOTE_COLUMNS)
+        for r in rows:  # only the quote columns moved: ts, expiry, strike, dist, forward ... are as first written
+            assert {k: v for k, v in r.items() if k not in quote} == {
+                k: v for k, v in old[(r["currency"], r["role"])].items() if k not in quote
+            }
+        # The registered reading rule picks the same rows (role, ts, instrument) as without the second pass.
+        pick = lambda rs: friday_entry(rs, NOW.date(), "BTC")  # noqa: E731
+        (a, why_a), (b, why_b) = pick(first), pick(rows)
+        assert why_a == why_b == "ok" and a is not None and b is not None
+        assert {k: (v["ts"], v["instrument"]) for k, v in a.items()} == {k: (v["ts"], v["instrument"]) for k, v in b.items()}
+        assert a["sp10"]["src"] == "summary" and b["sp10"]["src"] == "ticker"  # now the cost of this week is computable
+        tickers = Counter(a for m, a in calls if m == "ticker")
+        assert {n: tickers[n] for n in LIMITED} == {n: 3 for n in LIMITED}  # 2 attempts (Http retry) + 1 second pass
+        assert all(v == 1 for n, v in tickers.items() if n not in LIMITED)
+        msgs = [r.getMessage() for r in caplog.records]
+        assert not any("partial snapshot" in m for m in msgs)  # the answered tickers left `missing`
+        [line] = [r for r in caplog.records if "second pass after" in r.getMessage()]
+        msg = line.getMessage()
+        assert line.levelno == logging.INFO  # the service logs at INFO (server.configure_logging): it reaches the journal
+        assert "second pass after 12.5 s: 2 of 2 rate-limited tickers answered, 3 of 3 legs requoted: " in msg
+        requoted = set(msg.split("legs requoted: ", 1)[1].split(", "))  # every leg by currency, role and instrument
+        assert requoted == {"BTC lp BTC-30OCT26-70000-P", "BTC lp15 BTC-30OCT26-70000-P", "BTC sp10 BTC-30OCT26-78000-P"}
+    finally:
+        await rt.aclose()
+
+
+async def test_a_second_rate_limit_keeps_the_summary_quote_and_is_not_asked_again(tmp_path, caplog):
+    opts = {"limited": LIMITED}
+    rt, calls = _rt(tmp_path, opts)
+    seen: list = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
+            assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen, heal=False)) == 20
+        rows = await rt.store.option_leg_rows()
+        assert len(seen) == 1 and sorted(r["role"] for r in rows if r["src"] == "summary") == ["lp", "lp15", "sp10"]
+        assert {r["ts"] for r in rows} == {int(NOW.timestamp())}
+        tickers = Counter(a for m, a in calls if m == "ticker")
+        assert {n: tickers[n] for n in LIMITED} == {n: 4 for n in LIMITED}  # one second pass only (2 attempts each)
+        assert any("partial snapshot" in r.getMessage() and "rate_limited" in r.getMessage() for r in caplog.records)
+        n = len(calls)
+        assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen)) == 0 and len(calls) == n
+        assert len(seen) == 1  # the next tick finds the day stored: no request, no pause
+    finally:
+        await rt.aclose()
+
+
+async def test_other_ticker_failures_get_no_second_pass(tmp_path):
+    opts = {"bad_ticker": {"BTC-30OCT26-78000-P"}}
+    rt, calls = _rt(tmp_path, opts)
+    seen: list = []
+    try:
+        assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen)) == 20
+        assert seen == [] and sum(a == "BTC-30OCT26-78000-P" for _, a in calls) == 1
+        sp = next(r for r in await rt.store.option_leg_rows() if r["currency"] == "BTC" and r["role"] == "sp10")
+        assert sp["src"] == "summary"
+    finally:
+        await rt.aclose()
+
+
+async def test_a_cancelled_second_pass_leaves_the_day_written(tmp_path, caplog):
+    """A restart / stop during the pause: the day is already stored with the first quotes and the same ts, so the next
+    tick makes no request (before this pass existed the day was written at the same moment)."""
+    opts = {"limited": LIMITED}
+    rt, calls = _rt(tmp_path, opts)
+    seen: list = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="tradedesk.collector"), pytest.raises(asyncio.CancelledError):
+            await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen, cancel=True))
+        rows = await rt.store.option_leg_rows()
+        assert len(rows) == 20 and {r["ts"] for r in rows} == {int(NOW.timestamp())}
+        assert sorted(r["role"] for r in rows if r["src"] == "summary") == ["lp", "lp15", "sp10"]
+        assert any("second pass cancelled" in r.getMessage() for r in caplog.records)
+        n = len(calls)
+        assert await collect_option_legs(rt) == 0 and len(calls) == n
+    finally:
+        await rt.aclose()
+
+
+async def test_a_failed_second_pass_keeps_the_run_and_the_first_quotes(tmp_path, caplog):
+    opts = {"limited": LIMITED}
+    rt, _ = _rt(tmp_path, opts)
+
+    async def broken(day, rows):
+        raise sqlite3.OperationalError("database is locked")
+
+    try:
+        await rt.store.init()
+        rt.store.requote_option_legs = broken
+        with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
+            assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, [])) == 20
+        rows = await rt.store.option_leg_rows()
+        assert sorted(r["role"] for r in rows if r["src"] == "summary") == ["lp", "lp15", "sp10"]
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("second pass on rate-limited tickers failed: OperationalError" in m for m in msgs)
+        # The write failed, so the legs are still on the summary quote and the final log still names them rate_limited.
+        [partial] = [m for m in msgs if "partial snapshot" in m]
+        assert all(f"deribit_ticker:{n}: rate_limited" in partial for n in LIMITED)
+        assert not any("second pass after" in m for m in msgs)  # nothing claimed as requoted
+    finally:
+        await rt.aclose()
+
+
+PARTIAL = {
+    "empty": lambda t: {},
+    "no_mark_no_iv": lambda t: {k: v for k, v in t.items() if k not in ("mark_price", "mark_iv")},
+    "no_mark": lambda t: {k: v for k, v in t.items() if k != "mark_price"},
+    "no_mark_iv": lambda t: {k: v for k, v in t.items() if k != "mark_iv"},
+    "mark_null": lambda t: {**t, "mark_price": None},
+    "mark_iv_zero": lambda t: {**t, "mark_iv": 0.0},  # numeric, but no delta: the summary's delta must survive too
+}
+
+
+@pytest.mark.parametrize("partial", list(PARTIAL))
+async def test_a_partial_second_pass_ticker_keeps_the_summary_quote(tmp_path, caplog, partial):
+    """A ticker that answers without a numeric mark / mark IV must not replace the summary row's mark, mark IV and
+    delta by NULL; the leg stays on the summary quote and stays named rate_limited."""
+    opts = {"limited": LIMITED}
+    rt, _ = _rt(tmp_path, opts)
+    seen: list = []
+
+    try:
+        with caplog.at_level(logging.INFO, logger="tradedesk.collector"):
+            assert await collect_option_legs(rt, retry_pause=12.5, sleep=_pause(opts, rt, seen, shape=PARTIAL[partial])) == 20
+        [(_, first)] = seen
+        old = {(r["currency"], r["role"]): r for r in first}
+        rows = await rt.store.option_leg_rows()
+        summary = [r for r in rows if r["src"] == "summary"]
+        assert sorted(r["role"] for r in summary) == ["lp", "lp15", "sp10"]
+        for r in summary:  # untouched: the mark, mark IV and delta of the book summary are still there
+            assert r == old[(r["currency"], r["role"])] and None not in (r["mark"], r["mark_iv"], r["delta"])
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("second pass after 12.5 s: 0 of 2 rate-limited tickers answered, 0 of 3 legs requoted: none" in m for m in msgs)
+        assert sum("has no mark / mark IV; summary kept" in m for m in msgs) == 3
+        [line] = [m for m in msgs if "partial snapshot" in m]
+        assert all(f"deribit_ticker:{n}: rate_limited" in line for n in LIMITED)
+    finally:
+        await rt.aclose()
+
+
+async def test_requote_touches_only_summary_rows_of_the_same_ts(tmp_path):
+    s = Store(str(tmp_path / "m.sqlite"))
+    try:
+        await s.init()
+        x = expiry_surface(BOOK["BTC"], "BTC", EXP, NOW)
+        by_name = {r["instrument_name"]: r for r in BOOK["BTC"]}
+        legs = {g["role"]: g for g in plan_legs(x)[0]}
+        ts = int(NOW.timestamp())
+        row = lambda role, t: {**leg_row(legs[role], x, t, currency="BTC", expiry=EXP, now=NOW), "ts": ts}  # noqa: E731
+        assert await s.insert_option_legs(DAY, [row("sp10", None), row("sc10", _ticker(by_name[legs["sc10"]["instrument"]]))]) == 2
+        tick = {r: row(r, _ticker(by_name[legs[r]["instrument"]])) for r in ("sp10", "sc10", "lc")}
+        assert await s.requote_option_legs(DAY, [{**tick["sp10"], "ts": ts + 1}]) == 0  # another run's ts
+        assert await s.requote_option_legs(DAY, [{**tick["sp10"], "instrument": "BTC-30OCT26-1-P"}]) == 0
+        assert await s.requote_option_legs(DAY, [tick["lc"]]) == 0  # not stored: never inserted
+        assert await s.requote_option_legs(DAY, [row("sp10", None)]) == 0  # a summary quote is no upgrade
+        assert await s.requote_option_legs(DAY, list(tick.values())) == 1  # sp10 only: sc10 was already a ticker
+        got = {r["role"]: r for r in await s.option_leg_rows()}
+        assert set(got) == {"sp10", "sc10"} and got["sp10"]["src"] == "ticker" and got["sp10"]["ts"] == ts
+        assert got["sp10"]["bid_size"] == 1.5
+    finally:
+        await s.aclose()
 
 
 async def test_weekly_expiry_absent_is_missing_not_a_crash(tmp_path):

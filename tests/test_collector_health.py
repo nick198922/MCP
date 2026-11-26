@@ -334,7 +334,7 @@ def test_traders_gap_in_one_venue_is_visible_and_empty_db(tmp_path):
     only_traders = {"TRADEDESK_COLLECTOR_ENABLED": "0", "TRADEDESK_COLLECT_SUPPLY_ENABLED": "0"}  # traders: no switch
     empty = {r["label"]: r["status"] for r in script.collect(db, only_traders, NOW)}
     labels = {"traders:hyperliquid", "traders:polymarket", "traders:polymarket_crypto"}
-    labels |= {"trader_positions:hyperliquid", "trader_positions:polymarket"}
+    labels |= {"trader_positions:hyperliquid", "trader_positions:polymarket", "trader_positions:hyperliquid_hlp"}
     assert empty == dict.fromkeys(labels, "never")
     con = sqlite3.connect(db)
     today = NOW - NOW % D
@@ -348,6 +348,7 @@ def test_traders_gap_in_one_venue_is_visible_and_empty_db(tmp_path):
     pos = "INSERT INTO trader_positions (ts, venue, account, market, side) VALUES (?,?,?,?,?)"
     for ts in _hourly(NOW - 8 * D, NOW - H):
         con.execute(pos, (ts, "hyperliquid", "0xa", "BTC", "long"))
+        con.execute("INSERT INTO trader_polls (venue, ts, account, ok) VALUES ('hyperliquid_hlp', ?, '0xh', 1)", (ts,))
     for ts in _hourly(NOW - 8 * D, NOW - 3 * D - H):  # Polymarket positions stop 72 h ago
         con.execute(pos, (ts, "polymarket", "0xb", "123", "Yes"))
     con.commit()

@@ -865,6 +865,14 @@ class Store:
             )
         return len(accounts)
 
+    async def last_trader_poll_accounts(self, venue: str) -> list[str]:
+        """The accounts the latest run of ``venue`` intended to poll (its poll markers, ok or not); [] without one."""
+        cur = await self.conn.execute(
+            "SELECT account FROM trader_polls WHERE venue = ? AND ts = (SELECT MAX(ts) FROM trader_polls WHERE venue = ?) ORDER BY account",
+            (venue, venue),
+        )
+        return [r[0] for r in await cur.fetchall()]
+
     async def set_trader_poll_ok(self, ts: int, venue: str, account: str) -> None:
         """The run's request for ``account`` succeeded and its position rows are written: its marker becomes ok = 1."""
         async with self._write():

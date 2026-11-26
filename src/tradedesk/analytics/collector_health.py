@@ -25,7 +25,9 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
 * ``trader_positions`` is a change log (store ``record_trader_positions``): an hour counts when at least one watched
   position changed. With ~200 Hyperliquid and ~200 Polymarket accounts watched that is every hour (167 of 168 hours for
   Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap. From schema 42 (2026-11-25) every
-  Hyperliquid run also re-writes each position worth >= $2.5M, so a quiet Hyperliquid hour is rarer still.
+  Hyperliquid run also re-writes each position worth >= $2.5M, so a quiet Hyperliquid hour is rarer still. The HLP
+  vaults the same job polls (venue ``hyperliquid_hlp``, item 471) are a series of their own, read from the run's poll
+  markers (``trader_polls.ok = 1``), so they can neither fill a gap of the watched accounts nor hide their own stop.
 * ``traders`` and ``supply`` run every ``collect_*_seconds`` from the service start (not aligned to the day) and key
   their rows by the UTC day of the run; a day is due by its end.
 * ``assistant_paper`` (a paper trade only on a trigger) and ``plan_resolve`` (scores existing plans, writes nothing in a
@@ -185,7 +187,13 @@ SPECS: tuple[Spec, ...] = (
         "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_positions", "ts", HOUR, HOUR,
         group_col="venue", groups=("hyperliquid", "polymarket"), default_on=True,
         note="hourly change log (plus HL positions >= $2.5M at every run); an hour counts with >= 1 row; both Polymarket "
-        "boards stored as 'polymarket'",
+        "boards stored as 'polymarket'; HLP vaults ('hyperliquid_hlp') are not counted here",
+    ),
+    Spec(  # the same job: the HLP vaults it polls under their own venue (item 471), read from the poll markers
+        "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_polls", "ts", HOUR, HOUR,
+        group_col="venue", groups=("hyperliquid_hlp",), where="ok = 1", default_on=True,
+        note="HLP parent and child vaults, polled every run whatever their rank; an hour counts when >= 1 vault was "
+        "polled ok (trader_polls, not the change log, so quiet vaults are no gap)",
     ),
 )  # fmt: skip
 

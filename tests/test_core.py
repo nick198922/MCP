@@ -48,6 +48,96 @@ async def test_cache_propagates_errors_and_does_not_cache_them():
     assert cache.peek("k") == (False, None)
 
 
+def _gated_fetch(fail: BaseException | None = None):
+    """A fetch that blocks until ``release`` is set; returns f"v{n}" (n = its call number) or raises ``fail``."""
+    state = {"calls": 0, "release": asyncio.Event()}
+
+    async def fetch():
+        state["calls"] += 1
+        n = state["calls"]
+        await state["release"].wait()
+        if fail is not None:
+            raise fail
+        return f"v{n}"
+
+    return fetch, state
+
+
+async def _settle(n: int = 10) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+async def test_cancelled_leader_hands_the_fetch_to_one_waiter():
+    """Cancelling the first caller used to cancel every caller sharing its fetch (fut.cancel()): CancelledError went past
+    Builder.guard into tools and collector jobs although nobody cancelled them (Deribit pacing review, remark 2)."""
+    cache = TTLCache()
+    fetch, st = _gated_fetch()
+    leader = asyncio.create_task(cache.get_or_fetch("k", 5, fetch))
+    await _settle()
+    waiters = [asyncio.create_task(cache.get_or_fetch("k", 5, fetch)) for _ in range(3)]
+    await _settle()
+    leader.cancel()
+    await _settle()
+    st["release"].set()
+    res = await asyncio.gather(*waiters)
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+    assert st["calls"] == 2  # one waiter ran the fetch again, the other two shared it
+    assert [r[0] for r in res] == ["v2"] * 3 and sorted(r[1] for r in res) == [False, True, True]
+    assert cache.peek("k") == (True, "v2") and cache._inflight == {}
+
+
+async def test_cancelled_waiter_is_cancelled_and_the_shared_fetch_goes_on():
+    cache = TTLCache()
+    fetch, st = _gated_fetch()
+    leader = asyncio.create_task(cache.get_or_fetch("k", 5, fetch))
+    await _settle()
+    w1, w2 = (asyncio.create_task(cache.get_or_fetch("k", 5, fetch)) for _ in range(2))
+    await _settle()
+    w1.cancel()
+    await _settle()
+    st["release"].set()
+    assert await leader == ("v1", False) and await w2 == ("v1", True)
+    with pytest.raises(asyncio.CancelledError):
+        await w1
+    assert st["calls"] == 1
+
+
+@pytest.mark.parametrize("gap", [0, 1, 2, 3, 4, 6])
+async def test_waiter_cancelled_together_with_its_leader_stays_cancelled(gap):
+    """The leader and a waiter cancelled in the same tick, or ``gap`` loop steps apart (the shared future may already
+    be done but the waiter not yet resumed): the waiter's own cancellation is never swallowed, the other waiter still
+    gets the value."""
+    cache = TTLCache()
+    fetch, st = _gated_fetch()
+    leader = asyncio.create_task(cache.get_or_fetch("k", 5, fetch))
+    await _settle()
+    w1, w2 = (asyncio.create_task(cache.get_or_fetch("k", 5, fetch)) for _ in range(2))
+    await _settle()
+    leader.cancel()
+    await _settle(gap)
+    w1.cancel()
+    await _settle()
+    st["release"].set()
+    assert (await w2)[0] == f"v{st['calls']}"
+    for t in (leader, w1):
+        with pytest.raises(asyncio.CancelledError):
+            await t
+    assert cache._inflight == {}
+
+
+async def test_leader_error_reaches_every_waiter_once():
+    cache = TTLCache()
+    fetch, st = _gated_fetch(ValueError("x"))
+    tasks = [asyncio.create_task(cache.get_or_fetch("k", 5, fetch)) for _ in range(3)]
+    await _settle()
+    st["release"].set()
+    res = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [type(r) for r in res] == [ValueError] * 3 and st["calls"] == 1
+    assert cache.peek("k") == (False, None) and cache._inflight == {}
+
+
 async def test_token_bucket_throttles():
     tb = TokenBucket(rate=50, burst=1)
     t0 = time.perf_counter()

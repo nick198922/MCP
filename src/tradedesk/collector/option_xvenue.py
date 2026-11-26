@@ -24,7 +24,12 @@ one currency take ~15 s and later ones lag the Bybit read by that much (``d_recv
 Missing legs (schema 43): ``d_miss`` / ``b_miss`` say why a leg is NULL: 'not_listed' (the venue's chain was read and
 has no such strike / type / expiry), the ProviderError reason of that leg's own request ('rate_limited',
 'backend_error', 'network', ...), 'summary:<reason>' (Deribit only: the book summary failed, no ticker was asked) or
-'bad_response' (the ticker answered with something unusable); NULL when the leg is there.
+'bad_response' (the venue answered with something unusable: a Deribit ticker that is not an object, or a Bybit option
+tickers body without a ``result.list``, so no Bybit chain was read; since 2026-11-26, before that such Bybit rows were
+'not_listed'); NULL when the leg is there.
+
+Hours without rows: the daily expiry is 08:00 UTC and only one 2-20 h away is read, so between 06:00 and 12:00 UTC
+there is none (today's is under 2 h away or past, tomorrow's over 20 h) and a snapshot stores nothing.
 
 Caveat seen live: Deribit's ticker ``timestamp`` (``d_ts_ms``) is the instrument's last update, not
 the read time: 0.3-5.7 s BEFORE the request was sent at an RTT of ~30 ms (review probe 23.10 ~04:45 UTC, a quiet hour),
@@ -104,14 +109,22 @@ def _deribit_chain(summary: Any, cur: str) -> tuple[Chain, dict[datetime, float]
     return chain, fwd
 
 
+def _bybit_rows(body: Any) -> list[Any] | None:
+    """``result.list`` of a Bybit v5 tickers answer, or None when the body does not have that shape (then nothing was
+    read: its legs are 'bad_response', not 'not_listed')."""
+    result = body.get("result") if isinstance(body, dict) else None
+    rows = result.get("list") if isinstance(result, dict) else None
+    return rows if isinstance(rows, list) else None
+
+
 def _bybit_chain(body: Any, cur: str, b: Builder, settle: str = BYBIT_SETTLE) -> tuple[Chain, int | None]:
     """Ticker rows by expiry/strike/type and the response time (unix ms) of the Bybit v5 option tickers. Only symbols
     settled in ``settle`` are kept, so a strike listed in two settle currencies is never silently overwritten; any other
-    suffix seen is reported once through ``b.warn``."""
+    suffix seen is reported once through ``b.warn``. An unusable body (see ``_bybit_rows``) gives an empty chain."""
     chain: Chain = {}
     if not isinstance(body, dict):
         return chain, None
-    rows = (body.get("result") or {}).get("list") if isinstance(body.get("result"), dict) else None
+    rows = _bybit_rows(body)
     other: set[str] = set()
     for r in rows or []:
         p = parse_bybit_symbol(str(r.get("symbol", ""))) if isinstance(r, dict) else None
@@ -151,7 +164,7 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime, eac
     d_down = f"summary:{_reason(b, f'deribit_options:{cur}')}" if summary is None else None  # d_miss of every row
     expiry = pick_daily_expiry(d_chain, now)
     if summary is not None and expiry is None:
-        b.warn(f"{cur}: no Deribit expiry {TAU_MIN_HOURS:g}-{TAU_MAX_HOURS:g} h away (normal between 06:00 and 10:00 UTC)")
+        b.warn(f"{cur}: no Deribit expiry {TAU_MIN_HOURS:g}-{TAU_MAX_HOURS:g} h away (normal between 06:00 and 12:00 UTC)")
         return []
     strikes: list[float] = []
     names: list[tuple[float, str, str]] = []
@@ -175,6 +188,10 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime, eac
     }
     b_down = _reason(b, f"bybit_options:{cur}") if b_got is None else None  # b_miss of every row
     body, b_recv = b_got if b_got is not None else (None, None)
+    if b_got is not None and _bybit_rows(body) is None:  # answered, but not {result: {list: [...]}}: no chain was read
+        why = f"Bybit option tickers: unusable body ({type(body).__name__}), no result.list"
+        b.miss(f"bybit_options:{cur}", f"ccxt:{BYBIT}", "backend_error", why)  # REASONS: malformed response
+        b_down, body = "bad_response", None  # b_miss of every row; no "Bybit lists no expiry" either
     b_chain, b_ts = _bybit_chain(body, cur, b)
     if summary is None:  # Deribit down: Bybit picks the expiry and the strikes
         expiry = pick_daily_expiry(b_chain, now)

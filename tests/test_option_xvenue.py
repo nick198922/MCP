@@ -38,6 +38,7 @@ from tradedesk.analytics.option_xvenue import (
     snapshot_crossings,
     sync_ok,
 )
+from tradedesk.analytics.option_xvenue_verdict import snapshot_leg_gaps
 from tradedesk.collector.option_xvenue import OptionXvenueJob, _received, collect_option_xvenue, scan_option_xvenue
 from tradedesk.collector.scheduler import _retention_sweep, build_default_scheduler
 from tradedesk.config import Settings
@@ -248,7 +249,11 @@ def _rt(
             bybit = opts["bybit"]
             if bybit == "down":
                 raise ccxt.NetworkError("bybit unreachable")
+            if bybit == "not_dict":  # answered, but not an object
+                return [SAMPLE["bybit"]]
             body = json.loads(json.dumps(SAMPLE["bybit"]))
+            if bybit == "reshaped":  # answered, but `result` changed shape (the rows moved out of result.list)
+                body["result"] = {"rows": body["result"]["list"]}
             if params["baseCoin"] != "BTC" or bybit == "no_daily":
                 body["result"]["list"] = [r for r in body["result"]["list"] if params["baseCoin"] == "BTC" and "23OCT26" not in r["symbol"]]
             if bybit == "cross":  # Bybit bids 1000 USD for 1 BTC of the ATM call Deribit offers at ~131: a registered crossing
@@ -732,6 +737,40 @@ async def test_bybit_down_or_without_the_expiry_marks_the_bybit_leg(tmp_path):
             assert all(r["d_miss"] is None and r["d_instrument"] for r in rows)
         finally:
             await rt.aclose()
+
+
+@pytest.mark.parametrize("bybit", ["not_dict", "reshaped"])
+async def test_unusable_bybit_body_is_bad_response_not_not_listed(tmp_path, bybit):
+    """An unusable Bybit body used to give an empty chain, so every row said b_miss = 'not_listed' ("the chain was
+    read, no such strike") and `missing` said "Bybit lists no ... expiry" (Deribit pacing review, remark 4)."""
+    rt, _ = _rt(tmp_path, bybit=bybit)
+    try:
+        b = Builder()
+        rows = await scan_option_xvenue(rt, b)
+        assert len(rows) == 14 and {r["b_miss"] for r in rows} == {"bad_response"} and all(r["b_symbol"] is None for r in rows)
+        assert all(r["d_miss"] is None and r["d_instrument"] for r in rows)  # Deribit is unaffected
+        assert [(m.field, m.reason) for m in b.missing] == [("bybit_options:BTC", "backend_error")]  # no "no expiry" claim
+        assert snapshot_leg_gaps(rows)["b_missing"] == 14  # the verdict reader keys on b_symbol, not on b_miss
+        assert await collect_option_xvenue(rt) == 14  # partial snapshot stored, the job does not fail
+        assert {r["b_miss"] for r in await rt.store.option_xvenue_rows()} == {"bad_response"}
+    finally:
+        await rt.aclose()
+
+
+async def test_no_qualifying_expiry_window_is_06_to_12_utc(tmp_path):
+    """The warning used to say "normal between 06:00 and 10:00 UTC"; with 08:00 expiries at 2-20 h it is 06:00-12:00."""
+    day = datetime(2026, 10, 26, tzinfo=UTC)
+    expiries = [day + timedelta(hours=8), day + timedelta(days=1, hours=8)]
+    none = [h for h in range(24) for m in (0, 30) if pick_daily_expiry(expiries, day + timedelta(hours=h, minutes=m)) is None]
+    assert none[0] == 6 and none[-1] == 11 and len(none) == 11  # 06:30 ... 11:30
+    rt, _ = _rt(tmp_path)
+    rt.now = lambda: datetime(2026, 10, 23, 11, 0, tzinfo=UTC)  # the fake's 23OCT26 expiry is past, 24OCT26 21 h away
+    try:
+        b = Builder()
+        assert await scan_option_xvenue(rt, b) == [] and not b.missing
+        assert any("BTC: no Deribit expiry 2-20 h away (normal between 06:00 and 12:00 UTC)" == w for w in b.warnings)
+    finally:
+        await rt.aclose()
 
 
 async def test_migration_43_adds_leg_miss_reasons_to_a_v42_store(tmp_path):

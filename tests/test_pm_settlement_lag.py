@@ -129,6 +129,9 @@ def test_resolved_index_and_ts() -> None:
     assert gamma_ts("2025-11-20T17:00:00.123Z") == 1763658000
     assert gamma_ts("2025-11-20 19:00:00+02:00") == 1763658000
     assert gamma_ts(None) is None and gamma_ts("2025-13-40T00:00:00Z") is None
+    # umaEndDate format seen in the 2026-11-26 full pass (offset with seconds)
+    assert gamma_ts("2025-11-20 17:00:00.925052+00:00:00") == 1763658000
+    assert gamma_ts("2025-11-20 19:00:00+02:00:00") == 1763658000
 
 
 def test_settlement_flags() -> None:

@@ -207,11 +207,13 @@ def is_exact_binary(outcome_prices: Any) -> bool:
     return _two_prices(outcome_prices) in ((1.0, 0.0), (0.0, 1.0))
 
 
-_TS = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)?$")
+_TS = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}(?::?\d{2}(?::\d{2})?)?)?$")
 
 
 def gamma_ts(s: Any) -> int | None:
-    """Gamma timestamps: "2025-11-20T17:00:00Z", "2025-11-20 17:15:23+00" (closedTime), with or without fraction."""
+    """Gamma timestamps: "2025-11-20T17:00:00Z", "2025-11-20 17:15:23+00" (closedTime), with or without fraction,
+    and "2026-07-21 16:16:13.925052+00:00:00" (umaEndDate since ~2026-07: offset with seconds; fix after the
+    2026-11-26 full pass, where 256 such values were unparsed and counted as non-payment in the umaEndDate sensitivity)."""
     if not isinstance(s, str):
         return None
     m = _TS.match(s.strip())

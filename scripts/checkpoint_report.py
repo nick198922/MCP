@@ -32,7 +32,9 @@ mean R below -0.827 -> stop and review the execution; v4 entry, v4 + v9: n >= 10
 «рано» or «тримати»), with n, mean R and a 95 % CI (``tradedesk.analytics.checkpoint.s12_stop_rule``, item 313).
 The carry rows also count criteria (e) and (ye) (item 365): the dated Bybit ladder snapshots of ``docs/paper/ladder/``
 and of the weekly timer's directory (``TRADEDESK_LADDER_DIR``, default ``/var/lib/tradedesk-mcp/ladder``; item 366)
-are read for the Bybit leg's 2x position limit (files only, no network).
+are read for the Bybit leg's 2x position limit (files only, no network). The carry B row notes the recorded Bybit
+funding-interval mismatches (``interval_mismatches`` in the cycle payload, written from the 26.11 00:00 UTC cycle on)
+and how many missed-payment flags fall on a mismatched symbol (``checkpoint.interval_mismatch_notes``, item 477).
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 

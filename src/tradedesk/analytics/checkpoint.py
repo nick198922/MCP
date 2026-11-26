@@ -785,6 +785,132 @@ def ladder_note(ladder: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
     return "(є): " + "; ".join(parts) if parts else None
 
 
+# Item 477: the Bybit funding-interval mismatches carry B records (``interval_mismatches`` in the cycle payload, change
+# docs/changes/2026-11-25-bybit-interval-mismatch.md, merged into main as 12a617a9 on 25.11 17:27 UTC). Only code with
+# that merge writes the field, and only when non-empty. Checked on 26.11 with ``git merge-base --is-ancestor 12a617a9``
+# on the git SHA each cycle stored: the B cycle of 25.11 16:00 UTC ran d26b6931 (without it), the one of 26.11 00:00 UTC
+# 9bf64c44 (with it), so the collector process restarted between them. The stored SHA is the engine's ``git_sha()``:
+# the clone's HEAD read once per process (lru_cache), not a hash of the loaded code. The server deploys main forward,
+# so later cycles are assumed to run the change too; a revert commit is not excluded, and this report does not read
+# the per-cycle SHAs (an absent field after the boundary is read as "no mismatch recorded", see the note's caveat).
+MISMATCH_FROM_MS = _ms(2026, 11, 26)
+MISMATCH_FROM_SHA = "9bf64c44"
+# The ccxt symbol of a Bybit linear perp as the feed writes it ("1000PEPE/USDT:USDT"). The base may be any Unicode
+# letters / digits (venues list perps such as "币安人生/USDT:USDT"); whitespace, "_", punctuation and markup are not
+# letters or digits, so line breaks and injected text are still rejected. Anything else is malformed payload.
+MISMATCH_SYMBOL = re.compile(r"[^\W_]{1,40}/[A-Z0-9]{1,10}:[A-Z0-9]{1,10}")
+MISMATCH_HOURS = (1 / 60, 24.0)  # the feed's valid interval range (carry_paper_feed._valid_hours)
+MISMATCH_MAX_LISTED = 20  # (symbol, hours) groups named in the note; the rest are counted
+MISSED_PAYMENT_ISSUES = ("funding_payment_missing", "funding_gap_confirmed")  # the engine's flags of a held leg's payments
+# A held leg flagged ``funding_payment_missing`` with this detail is our own fetch cut short (page limit, 429 / 418;
+# carry_paper_engine, as criterion (д) reads it), not a missed payment: counted apart, never in the totals or overlap
+OWN_FETCH_DETAIL = "funding_history_incomplete"
+
+
+def _ua_cycles(n: int) -> str:
+    n10, n100 = abs(n) % 10, abs(n) % 100
+    word = "цикл" if n10 == 1 and n100 != 11 else "цикли" if 2 <= n10 <= 4 and not 12 <= n100 <= 14 else "циклів"
+    return f"{n} {word}"
+
+
+def _mismatch_entry(x: Any) -> tuple[str, float, float] | None:
+    """(symbol, ccxt hours, ticker hours) of one ``interval_mismatches`` entry, or None when it is not what the feed
+    writes (untrusted payload: a bad symbol, venue or hours is dropped and never printed)."""
+    if not isinstance(x, Mapping) or x.get("venue") != BYBIT_VENUE:
+        return None
+    try:  # an int too large for a float (10**400) is malformed payload, not a crash of the report
+        sym, a, b = x.get("symbol"), _num(x.get("ccxt_hours")), _num(x.get("ticker_hours"))
+    except OverflowError:
+        return None
+    lo, hi = MISMATCH_HOURS
+    if not isinstance(sym, str) or not MISMATCH_SYMBOL.fullmatch(sym) or a is None or b is None:
+        return None
+    if not (lo <= a <= hi and lo <= b <= hi) or abs(a - b) <= 1e-9:
+        return None
+    return sym, a, b
+
+
+def interval_mismatch_notes(cycles: Sequence[Mapping[str, Any]], now_ms: int) -> list[str]:
+    """Two descriptive notes of the carry B row (item 477): the recorded ``interval_mismatches`` of the done cycles from
+    ``MISMATCH_FROM_MS`` to ``now_ms`` (per symbol and pair of hours, with the number of cycles), and how many of the
+    incomplete cycles' missed-payment flags (``MISSED_PAYMENT_ISSUES``) fall on a symbol with a recorded mismatch, in
+    the same cycle and in any cycle of the window. Flags before the window are only counted. Held legs flagged with
+    ``OWN_FETCH_DETAIL`` (our truncated fetch) are counted apart, in and before the window. No verdict depends on it."""
+    groups: dict[tuple[str, float, float], set[int]] = {}
+    per_cycle: dict[int, set[str]] = {}
+    covered = bad = 0
+    flags: list[tuple[int, str]] = []
+    flags_before = own_in = own_before = 0
+    for c in cycles:
+        ts, p = int(c["cycle_ts"]), c.get("payload")
+        if ts > now_ms or c.get("status") != "done" or not isinstance(p, Mapping):
+            continue
+        payment = [
+            f
+            for f in (p.get("flags") if isinstance(p.get("flags"), list) and not p.get("complete") else [])
+            if isinstance(f, Mapping) and f.get("issue") in MISSED_PAYMENT_ISSUES
+        ]
+        own = sum(1 for f in payment if f.get("detail") == OWN_FETCH_DETAIL)
+        missed = [f.get("symbol") for f in payment if f.get("detail") != OWN_FETCH_DETAIL]
+        if ts < MISMATCH_FROM_MS:
+            flags_before += len(missed)
+            own_before += own
+            continue
+        own_in += own
+        covered += 1
+        flags += [(ts, s) for s in missed if isinstance(s, str)]
+        raw = p.get("interval_mismatches")
+        if raw is None:
+            continue
+        entries = raw if isinstance(raw, list) else [raw]
+        for x in entries:
+            got = _mismatch_entry(x)
+            if got is None:
+                bad += 1
+                continue
+            groups.setdefault(got, set()).add(ts)
+            per_cycle.setdefault(ts, set()).add(got[0])
+    start = datetime.fromtimestamp(MISMATCH_FROM_MS / 1000, UTC).strftime("%Y-%m-%d %H:%M")
+    head = (
+        "Розбіжність інтервалу funding Bybit (інтервал ccxt проти поля тікера fundingIntervalHour; описово, вердикт від "
+        f"неї не залежить): поле interval_mismatches пишеться з циклу {start} UTC (перший цикл B на коді зміни 25.11, git "
+        f"{MISMATCH_FROM_SHA}); раніші цикли його не мають"
+    )
+    if now_ms < MISMATCH_FROM_MS:
+        line = head + "; на дату звіту таких циклів ще немає"
+    else:
+        line = head + f"; записаних циклів у вікні {covered}, з розбіжністю {len(per_cycle)}"
+        if groups:
+            order = sorted(groups, key=lambda k: (k[0], k[1], k[2]))
+            named = [f"{s} (ccxt {a:g} год, тікер {b:g} год): {_ua_cycles(len(groups[(s, a, b)]))}" for s, a, b in order]
+            more = len(named) - MISMATCH_MAX_LISTED
+            line += " — " + ", ".join(named[:MISMATCH_MAX_LISTED]) + (f" і ще {more}" if more > 0 else "")
+            if bad:
+                line += f"; некоректних записів відкинуто {bad} (прапорці з ними не звірено)"
+        elif bad:  # entries were recorded but none is usable: not "none recorded"
+            line += f": придатних записів немає, некоректних відкинуто {bad} (прапорці з ними не звірено)"
+        else:
+            line += ": розбіжностей не записано"
+        line += (
+            ". Відсутність запису не доводить, що розбіжності не було: порожнє поле не пишеться, порівнюються лише "
+            "символи, які B використовує, з обома валідними значеннями і лише в момент циклу"
+        )
+    ever = {s for syms in per_cycle.values() for s in syms}
+    same = sum(1 for ts, s in flags if s in per_cycle.get(ts, ()))
+    anyw = sum(1 for _, s in flags if s in ever)
+    issues = ", ".join(MISSED_PAYMENT_ISSUES)
+    flag_line = (
+        f"Прапорці пропущених виплат funding ({issues}) у неповних циклах вікна: {len(flags)}, з них на символі з "
+        f"розбіжністю в тому ж циклі {same}, у будь-якому циклі вікна {anyw}; до вікна {flags_before} (розбіжністю не "
+        "перевіряються). Збіг прапорця з розбіжністю не доводить причини, а 0 не доводить, що вона нічого не зачепила: "
+        "рушій чекає виплат за інтервалом ccxt, і якщо той задовгий, пропущена виплата може не дати прапорця. Окремо "
+        f"прапорці funding_payment_missing / {OWN_FETCH_DETAIL} на утримуваних позиціях (наш обірваний запит, не пропуск "
+        f"виплати; у числа вище не входять; прапорці фіду {OWN_FETCH_DETAIL} тут не лічаться, вони в розбивці (д)): "
+        f"у вікні {own_in}, до вікна {own_before}"
+    )
+    return [line, flag_line]
+
+
 def _asof(positions: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Positions opened by ``now_ms``; one closed later is open at ``now_ms``."""
     out = []
@@ -989,6 +1115,8 @@ def carry_forward(
     row = _row(f"carry:{strategy}", "carry", CARRY_NAMES[strategy], n=len(pos), metric_name="критерії (б)–(є) реєстрації", criteria=crit)
     if strategy == "B" and (note := ladder_note(ladder, now_ms)):  # only B has a Bybit leg
         row["notes"].append(note)
+    if strategy == "B":  # only B records the Bybit interval mismatches (item 477)
+        row["notes"] += interval_mismatch_notes(cyc, now_ms)
     if e_crit["status"] == PASS:
         row["notes"].append("(е) перевірено частково: TradFi — лише логіка самого фіду, незалежно не перевірено")
     if fails:

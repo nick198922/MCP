@@ -325,6 +325,12 @@ handover() {
     how="👀 Чекає на ваше злиття (${verdict#owner: })."
   fi
   url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY" $ready)"
+  # A compare link means GitHub opened no pull request, so nothing will merge the branch: never a routine outcome
+  # (25.11: one HTTP 500, no message, and the delivered branch waited unseen past its deadline).
+  if [[ "$url" == */compare/* ]]; then
+    AUTO_DELIVERY=""
+    how="⚠️ Pull request не створився (причина в логу прогону), тож гілка сама не зіллється: відкрийте PR за кнопкою й злийте після тестів або напишіть Claude."
+  fi
   rm -f "$WORK" "$LOG_DIR/refusal.txt"
   finish 0 "$status" "$head
 $how
@@ -441,6 +447,9 @@ ALLOWED=(
   # Read-only: grep with the pager off, remote/containing branch listings in the clone (no -d/-D/-m forms).
   "Bash(git -c core.pager=cat grep:*)"
   "Bash(git -C /home/tradedesk/tradedesk-agents branch -r:*)" "Bash(git -C /home/tradedesk/tradedesk-agents branch -a:*)"
+  # Read-only (26.11): diff with the pager off, a dry-run merge that lists conflicts, the clone's tree, the MCP log.
+  "Bash(git -P diff:*)" "Bash(git merge-tree --write-tree:*)" "Bash(git -C /home/tradedesk/tradedesk-agents ls-tree:*)"
+  "Bash(journalctl -u tradedesk-mcp:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and

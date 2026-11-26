@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,12 +67,27 @@ def message(data: object) -> str:
     return " ".join(p for p in (str(data.get("message", "")), errors) if p)
 
 
-def open_pr(call: Call, repo: str, head: str, title: str, body: str, base: str = "main") -> str:
+TRANSIENT = frozenset({0, 500, 502, 503, 504})  # no answer, or GitHub's own error: worth asking again
+RETRY_DELAYS = (5.0, 20.0, 60.0)
+
+
+def open_pr(
+    call: Call, repo: str, head: str, title: str, body: str, base: str = "main", sleep: Callable[[float], None] = time.sleep
+) -> str:
     """The URL of the open PR for `head` (created if there is none). Raises RuntimeError with GitHub's reason.
+
+    A transient failure is retried after RETRY_DELAYS: one HTTP 500 on 25.11 left a finished branch without a PR, so
+    nothing merged it. A request that failed after creating the PR is answered "already exists" on the retry.
 
     A ready `body` (with READY_MARK) replaces the body of an existing PR that lacks the mark: work handed over as
     "stuck" opens an unmarked PR, and its later delivery (nightly_agents.sh revives it once) must make it mergeable."""
-    status, data = call("POST", f"/repos/{repo}/pulls", {"title": title[:250], "head": head, "base": base, "body": body[:BODY_LIMIT]})
+    new = {"title": title[:250], "head": head, "base": base, "body": body[:BODY_LIMIT]}
+    status, data = call("POST", f"/repos/{repo}/pulls", new)
+    for delay in RETRY_DELAYS:
+        if status not in TRANSIENT:
+            break
+        sleep(delay)
+        status, data = call("POST", f"/repos/{repo}/pulls", new)
     if status == 201 and isinstance(data, dict):
         return str(data["html_url"])
     if status == 422 and "already exists" in message(data):

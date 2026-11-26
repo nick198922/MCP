@@ -48,6 +48,7 @@ pythonpath = ["src"]
 markers = [
     "slow: long-running test (minutes); excluded from `make test`, run with `make test-slow` or `pytest -m slow`",
     "allow_network(reason): test may connect to non-loopback addresses (tests/conftest.py blocks them otherwise); give the reason",
+    "live_deribit_pace: a Runtime built in this test keeps the live Deribit pace (tests/conftest.py fast_deribit_pace speeds it up otherwise)",
 ]
 
 [tool.ruff]

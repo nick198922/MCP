@@ -448,7 +448,7 @@ class Store:
         "currency expiry_ts tau_hours strike opt d_instrument b_symbol "
         "d_bid d_ask d_bid_size d_ask_size d_bid_iv d_ask_iv d_mark_iv d_index d_underlying d_ts_ms "
         "b_bid b_ask b_bid_size b_ask_size b_bid_iv b_ask_iv b_mark_iv b_index b_underlying b_ts_ms "
-        "reg_atm d_recv_ms b_recv_ms"
+        "reg_atm d_recv_ms b_recv_ms d_miss b_miss"
     ).split()
 
     async def insert_option_xvenue(self, ts: int, rows: list[dict[str, Any]], mode: str = "hourly") -> int:

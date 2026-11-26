@@ -24,6 +24,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .smart_money import same_size
+
 HOUR = 3600
 DAY = 86400
 WEEK = 7 * DAY
@@ -564,3 +566,86 @@ def recount_outcome(decision: Mapping[str, Any], completeness: Mapping[str, Any]
     if not completeness.get("complete"):
         return "incomplete"
     return "pass" if decision.get("passed") else "kill"
+
+
+# Wait after the period end (not a registered number; it does not change any result): by then the last 15m candle of
+# the period has closed, and the last run with a ts just before the end has finished writing. The collector polls
+# the ~160 Hyperliquid accounts of a run one after another, so its rows (all stamped with the run's ts) keep coming
+# for minutes after that ts; a count right at the end would read that last run incomplete.
+RECOUNT_SETTLE_S = HOUR
+RECOUNT_PREFETCH_DAYS = 2  # registered: --prefetch within 2 days after the period end (15m depth on HL ~52 days)
+RECOUNT_COUNT_DAYS = 7  # registered: the count no later than 7 days after the period end
+
+
+def recount_period(polls_from: int, days: int = RECOUNT_DAYS) -> tuple[int, int]:
+    """[start, end) of the recount: from the first collector run with a poll marker (``polls_from``) for ``days``
+    calendar days, the end excluded."""
+    return int(polls_from), int(polls_from) + days * DAY
+
+
+def recount_runs(position_ts: Iterable[int], poll_ts: Iterable[int], start: int, end: int) -> list[int]:
+    """Collector runs of the recount period: the distinct ts of position rows and of poll markers in [start, end)
+    (a run with markers only, e.g. every request failed, is still a run: exposure depends on it)."""
+    return sorted({int(t) for t in (*position_ts, *poll_ts) if start <= int(t) < end})
+
+
+def recount_stage(stage: str, now: float, end: int) -> dict[str, Any]:
+    """Whether a recount stage may run at ``now`` (unix s). 'prefetch' and 'count' only from ``end`` +
+    ``RECOUNT_SETTLE_S`` on (before it the period is not over and its candles cannot all exist; an early look would
+    also be the completeness check the registration does not allow); 'smoke' prints no metric and always may.
+    ``late``: past the registered deadline (prefetch 2 days, count 7 days after ``end``)."""
+    if stage == "smoke":
+        return {"allowed": True, "late": False, "opens_at": None, "deadline": None}
+    if stage not in ("prefetch", "count"):
+        raise ValueError(f"unknown recount stage {stage!r}")
+    opens = end + RECOUNT_SETTLE_S
+    deadline = end + (RECOUNT_PREFETCH_DAYS if stage == "prefetch" else RECOUNT_COUNT_DAYS) * DAY
+    return {"allowed": now >= opens, "late": now > deadline, "opens_at": opens, "deadline": deadline}
+
+
+def snapshot_age_days(day_starts: Iterable[tuple[int, int]], runs: Sequence[int]) -> list[int | None]:
+    """Descriptive (recount): at each run, the age in whole UTC days of the newest `trader_snapshot` day already
+    written (``day_starts``: (day 00:00 UTC, first ts of that day's rows)); None when none is written yet."""
+    written = sorted((int(first), int(day)) for day, first in day_starts)
+    out: list[int | None] = []
+    i, newest = 0, None
+    for r in sorted(int(x) for x in runs):
+        while i < len(written) and written[i][0] <= r:
+            newest = written[i][1] if newest is None else max(newest, written[i][1])
+            i += 1
+        out.append(None if newest is None else (r // DAY * DAY - newest) // DAY)
+    return out
+
+
+def close_reopen_pairs(
+    groups: Sequence[tuple[int, Sequence[Mapping[str, Any]]]],
+    runs: Sequence[int],
+    delta_start: int | None,
+    start: int,
+    end: int,
+) -> int:
+    """Descriptive (recount): positions closed at a run in [start, end) and opened again, with the same side and size
+    (``same_size``), by a row at the next collector run of ``runs`` (the global run list, not the account's own next
+    observation). If the account has no row at that next run the pair is not counted, and a close at the last run of
+    ``runs`` is never counted. A false empty answer from Hyperliquid would log such a pair and could add an entry (a
+    false pass, not a kill), so the count is shown next to n; it is a rough lower count, nothing depends on it."""
+    order = sorted(int(r) for r in runs)
+    nxt = dict(zip(order, order[1:], strict=False))
+    at = {int(ts): rows for ts, rows in groups}
+    n = 0
+    prev: dict[str, dict[str, Any]] = {}
+    for ts, state, _ in replay_account(groups, delta_start):
+        if start <= ts < end and ts in nxt:
+            for r in at.get(ts, ()):
+                old = prev.get(str(r.get("market") or ""))
+                if str(r.get("side")) != "closed" or old is None:
+                    continue
+                for q in at.get(nxt[ts], ()):
+                    if (
+                        q.get("market") == r.get("market")
+                        and q.get("side") == old.get("side")
+                        and same_size(abs(float(q.get("size") or 0)), abs(float(old.get("size") or 0)))
+                    ):
+                        n += 1
+        prev = state
+    return n

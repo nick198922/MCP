@@ -172,6 +172,11 @@ REVIEWED: dict[str, tuple[int, str]] = {
     "tests/test_contract_risk_solana.py": (2, "GoPlus Solana provider calls on a MockTransport (cache and health); no date logic"),
     "tests/test_dashboard.py": (1, "read_usage gets time.time() and offsets from it: cache ages are relative, no fixed date"),
     "tests/test_forecast_log.py": (1, "test_tool_without_store: the tool answers 'no store' before reading the clock"),
+    "tests/test_hl_liq_magnet_recount.py": (
+        2,
+        "the recount stores are built relative to time.time() (period end = now +/- days), so the stage guard never "
+        "compares the clock with a fixed date; the 2026-11-25 string is an --end that --recount refuses at any time",
+    ),
     "tests/test_option_legs.py": (1, "_live_rt: scan_option_legs is called with the fixture's LIVE_NOW, not rt.now()"),
     "tests/test_radar.py": (1, "test_job_needs_a_store: the job raises on the missing store before rt.now()"),
     "tests/test_stablecoin_supply.py": (

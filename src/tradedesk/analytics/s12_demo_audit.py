@@ -12,6 +12,10 @@ Pure functions, no I/O, time is a parameter.
 - ``exec_costs``: the fees and the exit slippage of one demo trade in the demo's risk units next to what the backtest
   convention (``stop_management.Fees``: maker entry and target, taker stop or time exit plus ``SLIPPAGE``) would charge
   on the same prices and quantity.
+- ``first_n_entry_v4``, ``review_decision``, ``stop_decision``, ``band_verdict_n100``, ``r_variants``: the owner's review
+  of the v4 entry on its first 100 closed demo trades (Q-20261109-1, Q-20261120-2; card section «Попередня реєстрація
+  перегляду S12 на 100 угодах»): a mechanical sample, the frozen floors with strict inequalities, and the three R
+  variants of the 2026-11-26 P&L-mismatch report.
 - ``v7_replay``: a v7 trade replayed with the live v7 detector (``s12_rest_all``) on the live window and the passport's
   limit model (``setup_passport.limit_trade``: filled only when the price trades through the level, pessimistic in the
   fill hour). ``demo_vs_backtest.replay`` uses the v4 detector, so it cannot replay a v7 trade.
@@ -27,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .course_s14_ema import Bars
+from .demo_pnl_check import expected_pnl, pnl_mismatches
 from .demo_vs_backtest import BE_FRAC, setup_window
 from .setup_passport import limit_trade
 from .setup_signals import TF_MS, s12_rest_all
@@ -140,6 +145,76 @@ def contrast_ci(
     lo = out[int(alpha / 2 * (len(out) - 1))]
     hi = out[int((1 - alpha / 2) * (len(out) - 1))]
     return point, (lo, hi)
+
+
+# Owner decision Q-20261109-1, option 1 (kept by Q-20261120-2): the v4 entry (v4 + v9) is reviewed once on its first
+# 100 closed demo trades; a mean R strictly below the rolling p5 of the v4 base for n 100 -> drop it from the demo.
+# v9 alone: n >= 30 and a mean strictly below the rolling p5 for n 30 -> stop and review the execution.
+REVIEW_N = 100
+DROP_FLOOR = V4_BAND_SLIDING_N100[0]  # -0.524
+STOP_N = 30
+STOP_FLOOR = PASSPORTS["v4"].band_sliding[0]  # -0.827
+
+
+def order_key(row: Mapping[str, Any]) -> tuple[int, int, str]:
+    """Close time, then open time, then the venue link id: a total order, so ties at one close minute are mechanical."""
+    return int(row["closed_ts"]), int(row.get("opened_ts") or 0), str(row.get("link_id") or "")
+
+
+def first_n_entry_v4(rows: list[Mapping[str, Any]], n: int = REVIEW_N, *, now_ms: int) -> list[Mapping[str, Any]]:
+    """The first ``n`` closed S12 trades with the v4 entry (traded version v4 or v9, see ``PASSPORT_OF``) in
+    ``order_key`` order; all of them when there are fewer. Rows not ``closed``, without ``closed_ts`` or without
+    ``r_multiple`` are left out (they cannot be ordered or measured). Once ``n`` rows exist, trades closed after the
+    ``n``-th never change the selection."""
+    ok = [
+        r
+        for r in rows
+        if r.get("status", "closed") == "closed"
+        and r.get("closed_ts") is not None
+        and _f(r.get("r_multiple")) is not None
+        and PASSPORT_OF.get(traded_version(r, now_ms=now_ms)[0]) == "v4"
+    ]
+    return sorted(ok, key=order_key)[:n]
+
+
+def band_verdict_n100(mean: float) -> str:
+    """✓ inside the i.i.d. band of 100 trades of the v4 base, ≈ outside it but inside the rolling one, ✗ outside both."""
+    if V4_BAND_IID_N100[0] <= mean <= V4_BAND_IID_N100[2]:
+        return "✓ всередині i.i.d.-смуги n 100"
+    if V4_BAND_SLIDING_N100[0] <= mean <= V4_BAND_SLIDING_N100[2]:
+        return "≈ поза i.i.d., всередині ковзної n 100"
+    return "✗ поза ковзною смугою n 100"
+
+
+def review_decision(mean: float | None, n: int) -> str:
+    """The owner's rule on the v4 entry: 'рано' below ``REVIEW_N`` trades, 'зняти' when the mean is strictly below
+    ``DROP_FLOOR``, otherwise 'тримати' (an edge is not shown by staying above the floor)."""
+    if mean is None or n < REVIEW_N:
+        return "рано"
+    return "зняти" if mean < DROP_FLOOR else "тримати"
+
+
+def stop_decision(mean: float | None, n: int) -> str:
+    """The owner's rule on v9 alone: 'рано' below ``STOP_N``, 'зупинити й розібрати виконання' when the mean is
+    strictly below ``STOP_FLOOR``, otherwise 'тримати'."""
+    if mean is None or n < STOP_N:
+        return "рано"
+    return "зупинити й розібрати виконання" if mean < STOP_FLOOR else "тримати"
+
+
+def r_variants(rows: list[Mapping[str, Any]]) -> tuple[dict[str, list[tuple[Mapping[str, Any], float]]], list[str]]:
+    """The three R variants of the 2026-11-26 P&L-mismatch report on ``rows`` (closed demo rows) and the flagged link
+    ids: 'журнал' (``r_multiple``, the venue P&L with fees and funding; the primary measure), 'з цін' (flagged rows
+    get ``demo_pnl_check.expected_pnl / risk_usd``, i.e. no funding), 'без позначених' (flagged rows dropped)."""
+    flagged = {str(m["id"]) for m in pnl_mismatches(rows)}
+    journal = [(r, float(r["r_multiple"])) for r in rows]
+    price: list[tuple[Mapping[str, Any], float]] = []
+    for r, x in journal:
+        risk, exp = _f(r.get("risk_usd")), expected_pnl(r)
+        flag = str(r.get("link_id")) in flagged
+        price.append((r, exp / risk if flag and exp is not None and risk else x))
+    without = [(r, x) for r, x in journal if str(r.get("link_id")) not in flagged]
+    return {"журнал": journal, "з цін": price, "без позначених": without}, sorted(flagged)
 
 
 def _f(x: Any) -> float | None:

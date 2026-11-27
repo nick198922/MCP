@@ -168,3 +168,63 @@ def test_contrast_ci_point_and_cluster_resampling() -> None:
     assert ci2 is not None and ci2[0] <= d2 <= ci2[1] and ci2 == m.contrast_ci(v, g, c, n_boot=500, seed=7)[1]
     assert m.contrast_ci([1.0, 2.0], [True, True], ["a", "b"])[1] is None  # group B empty
     assert m.contrast_ci([1.0, 2.0], [True, False], ["a", "a"]) == (pytest.approx(-1.0), None)  # one cluster
+
+
+def _closed(i: int, closed_ts: int, version: str | None = "v9", **kw) -> dict:
+    """A closed S12 row opened 1 h before its close; v9 by its tag unless ``version`` is None (epoch / rest_until)."""
+    return {
+        "link_id": f"L{i:03d}", "setup": "S12", "status": "closed", "version": version, "rest_until": None,
+        "opened_ts": closed_ts - H, "closed_ts": closed_ts, "r_multiple": 0.1 * (i % 7) - 0.3, **kw,
+    }  # fmt: skip
+
+
+def test_first_n_entry_v4_is_ordered_by_close_with_a_total_tie_break_and_ignores_later_rows() -> None:
+    now = _ms(11, 27, 12)
+    t0 = _ms(11, 1)
+    rows = [_closed(i, t0 + i * H) for i in range(1, 120)]
+    rows.append(_closed(500, t0 + 5 * H, version="v7"))  # another entry rule: never in the sample
+    rows.append({**_closed(501, t0 + 6 * H), "status": "open"})  # not closed
+    rows.append({**_closed(502, t0 + 7 * H), "r_multiple": None})  # no result
+    rows.append(_closed(503, t0 + 2 * H, version=None, opened_ts=_ms(10, 26, 8)))  # untagged v4 by the open-time epoch
+    pick = m.first_n_entry_v4(rows, 100, now_ms=now)
+    assert len(pick) == 100
+    ids = [r["link_id"] for r in pick]
+    assert "L500" not in ids and "L501" not in ids and "L502" not in ids and "L503" in ids
+    # the untagged v4 closed at t0 + 2h, opened earlier than L002 -> it sorts first among the two
+    assert ids[:3] == ["L001", "L503", "L002"]
+    assert ids[-1] == "L099" and [r["closed_ts"] for r in pick] == sorted(r["closed_ts"] for r in pick)
+    # a tie at the 100th close minute is broken by the open time, then the link id
+    tie_a = _closed(900, t0 + 99 * H, opened_ts=t0 + 99 * H - 2 * H)
+    tie_b = _closed(901, t0 + 99 * H, opened_ts=t0 + 99 * H - 2 * H)
+    pick2 = m.first_n_entry_v4([*rows, tie_b, tie_a], 100, now_ms=now)
+    ids2 = [r["link_id"] for r in pick2]  # L001, L503, L002..L098 = 99, then the earliest-opened, lowest id at 99 h
+    assert ids2[-2:] == ["L098", "L900"] and "L901" not in ids2 and "L099" not in ids2
+    # trades closed after the 100th, or a change of their R, never change the sample
+    later = [_closed(i, t0 + (200 + i) * H) for i in range(30)]
+    changed = [{**r, "r_multiple": 9.0} if r["closed_ts"] > pick[-1]["closed_ts"] else r for r in rows]
+    assert m.first_n_entry_v4([*changed, *later], 100, now_ms=now) == pick
+    assert len(m.first_n_entry_v4(rows[:10], 100, now_ms=now)) == 10  # fewer than n: all of them
+
+
+def test_review_and_stop_decisions_use_strict_inequalities_at_the_frozen_floors() -> None:
+    assert m.DROP_FLOOR == -0.524 and m.STOP_FLOOR == -0.827 and m.REVIEW_N == 100 and m.STOP_N == 30
+    assert m.review_decision(-0.6, 99) == "рано"
+    assert m.review_decision(-0.524, 100) == "тримати"  # equal to the floor: not below it
+    assert m.review_decision(-0.5241, 100) == "зняти"
+    assert m.review_decision(+0.3, 100) == "тримати"
+    assert m.stop_decision(-0.827, 30) == "тримати" and m.stop_decision(-0.83, 30).startswith("зупинити")
+    assert m.stop_decision(-2.0, 29) == "рано"
+    assert m.band_verdict_n100(0.259).startswith("✓") and m.band_verdict_n100(-0.30).startswith("≈")
+    assert m.band_verdict_n100(-0.524).startswith("≈") and m.band_verdict_n100(-0.53).startswith("✗")
+    assert m.band_verdict_n100(0.66).startswith("✗")
+
+
+def test_r_variants_follow_the_26_11_report() -> None:
+    base = {"status": "closed", "side": "long", "fill": 100.0, "qty": 1.0, "fees_usd": 0.0, "risk_usd": 10.0}
+    ok = {**base, "link_id": "a", "exit": 110.0, "pnl_usd": 10.0, "r_multiple": 1.0}  # P&L = price P&L
+    off = {**base, "link_id": "b", "exit": 90.0, "pnl_usd": 5.0, "r_multiple": 0.5}  # price says −10 USD: flagged
+    v, flagged = m.r_variants([ok, off])
+    assert flagged == ["b"]
+    assert [x for _, x in v["журнал"]] == [1.0, 0.5]
+    assert [x for _, x in v["з цін"]] == [1.0, pytest.approx(-1.0)]
+    assert [x for _, x in v["без позначених"]] == [1.0]

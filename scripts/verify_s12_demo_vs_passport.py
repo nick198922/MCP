@@ -4,6 +4,8 @@ the card, section «Попередня реєстрація звірки S12»).
     uv run python scripts/verify_s12_demo_vs_passport.py --stage smoke   # data checks, prints no outcome metric
     uv run python scripts/verify_s12_demo_vs_passport.py --stage run     # the registered comparison
     ... --stage run --cutoff 2026-11-20T16:00 --seen-cutoff 2026-11-12T06:00 --out-tag s12_v9_20261120   # a repeat
+    ... --stage run --cutoff 2026-11-27T06:00 --first-n 100 --seen-cutoff 2026-11-20T16:00 --out-tag s12_review100_20261127
+        # the owner's review of the v4 entry on its first 100 closed trades (section «… перегляду S12 на 100 угодах»)
 
 The closed S12 demo trades (``demo_trade``, read over a ``mode=ro`` connection: nothing is written) closed before
 ``--cutoff`` are grouped by the version they ran under (``analytics/s12_demo_audit.traded_version``) and set against the
@@ -78,6 +80,78 @@ def load_s12(db: str, cutoff_ms: int, setup: str = SETUP) -> dict[str, list[dict
         elif int(r["signal_ts"]) < cutoff_ms:
             out["other"].append(r)
     return out
+
+
+def review_sample(closed: list[dict[str, Any]], n: int, cutoff_ms: int) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+    """(the sample, the effective cutoff, the v4-entry trades left out) of the review on the first ``n`` closed v4-entry
+    trades (``s12_demo_audit.first_n_entry_v4``): the sample is those ``n`` plus the other-entry (v7) trades closed by the
+    ``n``-th close, kept for the descriptive rows; the effective cutoff is one ms after the ``n``-th close, so open,
+    missed and shadow rows are taken as of then. Fewer than ``n`` before ``cutoff_ms`` stops the script."""
+    pick = audit.first_n_entry_v4(closed, n, now_ms=cutoff_ms)
+    if len(pick) < n:
+        raise SystemExit(f"only {len(pick)} closed v4-entry trades before the cutoff, {n} registered")
+    last = int(pick[-1]["closed_ts"])
+    ids = {r["link_id"] for r in pick}
+    other = [r for r in closed if r["passport"] != "v4" and int(r["closed_ts"]) <= last]
+    left = [r for r in closed if r["passport"] == "v4" and r["link_id"] not in ids]
+    return sorted([*pick, *other], key=audit.order_key), last + 1, left
+
+
+SEEN_CUTS = (  # earlier looks at the same series (cutoffs of the 09.11, 12.11, 20.11 runs; the 26.11 P&L report)
+    ("09.11 18:00", "2026-11-09T18:00"),
+    ("12.11 06:00", "2026-11-12T06:00"),
+    ("20.11 16:00", "2026-11-20T16:00"),
+    ("26.11 16:00", "2026-11-26T16:00"),
+)
+
+
+def sample_hash(rows: list[dict[str, Any]]) -> str:
+    """sha1 (12 hex) of the sorted link ids of the v4-entry rows: the registered sample is checked by the run."""
+    return hashlib.sha1("|".join(sorted(str(r["link_id"]) for r in rows if r["passport"] == "v4")).encode()).hexdigest()[:12]
+
+
+def fmt_ms(ms: int) -> str:
+    return f"{datetime.fromtimestamp(ms / 1000, UTC):%Y-%m-%d %H:%M:%S}"
+
+
+def review_smoke(closed: list[dict[str, Any]], n: int, cutoff_ms: int) -> None:
+    """Counts, dates and versions of the review sample; prints no R, P&L or exit outcome."""
+    v4e = [r for r in closed if r["passport"] == "v4"]
+    no_r = [r["link_id"] for r in v4e if r.get("r_multiple") is None]
+    print(f"v4-entry closed < cutoff: {len(v4e)} (without r_multiple {len(no_r)})")
+    pick, eff, left = review_sample(closed, n, cutoff_ms)
+    s = [r for r in pick if r["passport"] == "v4"]
+    print(
+        f"review sample: first {len(s)} by (closed_ts, opened_ts, link_id); first close {fmt_ms(int(s[0]['closed_ts']))}, n-th close {fmt_ms(int(s[-1]['closed_ts']))} UTC"
+    )
+    print(
+        f"  effective cutoff (n-th close + 1 ms) {eff}; v4-entry trades after it before --cutoff: {[(r['symbol'].split('/')[0], fmt_ms(int(r['closed_ts']))) for r in left]}"
+    )
+    ties = sum(int(r["closed_ts"]) == int(s[-1]["closed_ts"]) for r in v4e)
+    print(
+        f"  rows closed at the n-th close ms: {ties}; n-th trade {s[-1]['symbol'].split('/')[0]} {s[-1]['link_id']}; sample hash {sample_hash(s)}"
+    )
+    print(
+        f"  versions in the sample: {sorted(Counter((r['ver'], r['ver_src']) for r in s).items())}; other-entry rows kept (descriptive): {sorted(Counter(r['ver'] for r in pick if r['passport'] != 'v4').items())}"
+    )
+    days = sorted({cmn.ymd_ms(int(r["signal_ts"])) for r in s})
+    print(
+        f"  signal days {len(days)} ({days[0]} .. {days[-1]}); coins {len({r['symbol'] for r in s})}; trades per coin {sorted(Counter(Counter(r['symbol'] for r in s).values()).items())}"
+    )
+    print(
+        f"  sides {dict(Counter(r['side'] for r in s))}; entry kinds {dict(Counter(str(r.get('entry_kind')) for r in s))}; timeframes {dict(Counter(r['timeframe'] for r in s))}; venues {dict(Counter(r['venue'] for r in s))}"
+    )
+    for name, cut in SEEN_CUTS:
+        c = parse_utc(cut)
+        print(
+            f"  closed < {name}: {sum(int(r['closed_ts']) < c for r in s)} (v9 {sum(int(r['closed_ts']) < c and r['ver'] == 'v9' for r in s)}); after: {sum(int(r['closed_ts']) >= c for r in s)}"
+        )
+    _, flagged = audit.r_variants(s)
+    c26 = parse_utc("2026-11-26T16:00")
+    fl = [r for r in s if r["link_id"] in set(flagged)]
+    print(
+        f"  P&L-check flagged rows in the sample: {len(fl)} {[(r['symbol'].split('/')[0], fmt_ms(int(r['closed_ts']))) for r in fl]}; closed >= 26.11 16:00 (not covered by the 26.11 report): {[(r['symbol'].split('/')[0], fmt_ms(int(r['closed_ts']))) for r in fl if int(r['closed_ts']) >= c26]}"
+    )
 
 
 def cached(fetch: dvb.Fetch, cache: Path, venue: str) -> dvb.Fetch:
@@ -160,10 +234,54 @@ def parse_utc(s: str) -> int:
     return int(datetime.strptime(s, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
 
 
-def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, seen_ms: int = PREV_CUTOFF_MS) -> int:
+def review_lines(closed: list[dict[str, Any]]) -> list[str]:
+    """The registered decision rows of the review on the first 100 v4-entry trades (card section «Попередня
+    реєстрація перегляду S12 на 100 угодах»): per R variant of the 26.11 P&L report, the v4 entry against the drop
+    floor and the n 100 bands, v9 alone against the stop floor; then the overlap with the earlier looks."""
+    s = [r for r in closed if r["passport"] == "v4"]
+    variants, flagged = audit.r_variants(s)
+    pp = audit.PASSPORTS["v4"]
+    out = [
+        f"## Перегляд вхід v4 (v4 + v9) на перших {len(s)} закритих угодах (Q-20261109-1 / Q-20261120-2)",
+        f"правило: n ≥ {audit.REVIEW_N} і середній R < {audit.DROP_FLOOR:+.3f} → зняти; v9: n ≥ {audit.STOP_N} і середній R < "
+        f"{audit.STOP_FLOOR:+.3f} → зупинити; смуга n 100 i.i.d. [{audit.V4_BAND_IID_N100[0]:+.3f}; {audit.V4_BAND_IID_N100[2]:+.3f}], "
+        f"ковзна [{audit.V4_BAND_SLIDING_N100[0]:+.3f}; {audit.V4_BAND_SLIDING_N100[2]:+.3f}]; паспорт v4 OOS {pp.oos_mean:+.3f}",
+        f"вибірка: {len(s)} угод, остання закрита {fmt_ms(int(s[-1]['closed_ts']))} UTC ({s[-1]['link_id']}), хеш {sample_hash(s)}",
+        f"позначені перевіркою P&L (demo_pnl_check): {len(flagged)} — "
+        f"{[(r['symbol'].split('/')[0], fmt_ms(int(r['closed_ts']))) for r in s if r['link_id'] in set(flagged)]}",
+    ]
+    for name, pairs in variants.items():
+        rows = [dict(r, r_var=x) for r, x in pairs]
+        st = stat(rows, "r_var")
+        main = "основний" if name == "журнал" else "чутливість"
+        dec = audit.review_decision(st.get("mean"), len(s))  # n of the registered sample, also for the variant without rows
+        ci = st.get("ci")
+        mde = f"{(ci[1] - ci[0]) / 3.92 * 2.80:.3f}" if ci else "—"
+        diff = f"{st['mean'] - pp.oos_mean:+.3f}" if st.get("n") else "—"
+        out.append(f"- [{main}] R {name}, вхід v4: {fmt(st)}")
+        if st.get("n"):
+            out.append(
+                f"    рішення: {dec}; смуга: {audit.band_verdict_n100(st['mean'])}; демо − OOS паспорта {diff}; MDE₈₀ ≈ {mde}R; "
+                f"перевага лише якщо нижня межа CI > 0: {'так' if ci and ci[0] > 0 else 'ні'}"
+            )
+        v9 = [dict(r, r_var=x) for r, x in pairs if r["ver"] == "v9"]
+        s9 = stat(v9, "r_var")
+        out.append(f"    v9 у вибірці: {fmt(s9)}; правило зупинки: {audit.stop_decision(s9.get('mean'), s9.get('n', 0))}")
+    out.append("перекриття з попередніми поглядами (R журналу; описово, не незалежні свідчення):")
+    for name, cut in SEEN_CUTS:
+        c = parse_utc(cut)
+        seen = [dict(r, r_var=float(r["r_multiple"])) for r in s if int(r["closed_ts"]) < c]
+        new = [dict(r, r_var=float(r["r_multiple"])) for r in s if int(r["closed_ts"]) >= c]
+        out.append(f"- закриті < {name}: {fmt(stat(seen, 'r_var'))}; після: {fmt(stat(new, 'r_var'))}")
+    return out
+
+
+def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, seen_ms: int = PREV_CUTOFF_MS, first_n: int | None = None) -> int:
     """Data checks only: counts, version tags, units, one timed replay of each entry rule (levels, no R)."""
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
+    if first_n:
+        review_smoke(closed, first_n, cutoff_ms)
     print(
         f"S12 closed < cutoff: {len(closed)}; missed {len(g['missed'])}; open {len(g['open'])}; "
         f"orphaned {len(g['orphaned'])}; other {len(g['other'])}"
@@ -234,14 +352,19 @@ def main(argv: list[str] | None = None) -> int:
         "--seen-cutoff",
         help="UTC YYYY-MM-DDTHH:MM, the cutoff of an earlier comparison: v9 trades closed after it get own rows (default 09.11 18:00)",
     )
+    ap.add_argument(
+        "--first-n",
+        type=int,
+        help="the review on the first N closed v4-entry (v4 + v9) trades by close time, closed before --cutoff (100 registered)",
+    )
     a = ap.parse_args(argv)
     cutoff_ms = parse_utc(a.cutoff)
     seen_ms = parse_utc(a.seen_cutoff) if a.seen_cutoff else PREV_CUTOFF_MS
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     if a.stage == "smoke":
-        return smoke(a.db, cutoff_ms, cache, a.venue, seen_ms)
-    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag, seen_ms)
+        return smoke(a.db, cutoff_ms, cache, a.venue, seen_ms, a.first_n)
+    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag, seen_ms, a.first_n)
 
 
 def new_rows(v9: list[dict[str, Any]], seen_ms: int) -> list[str]:
@@ -287,10 +410,15 @@ def new_rows(v9: list[dict[str, Any]], seen_ms: int) -> list[str]:
     return out
 
 
-def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12", seen_ms: int = PREV_CUTOFF_MS) -> int:  # noqa: PLR0915 - one linear report
+def run(  # noqa: PLR0915 - one linear report
+    db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12", seen_ms: int = PREV_CUTOFF_MS, first_n: int | None = None
+) -> int:
     now = int(time.time() * 1000)
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
+    if first_n:  # the registered first-N sample; open / missed / orphaned / shadow rows as of its N-th close
+        closed, cutoff_ms, _ = review_sample(closed, first_n, cutoff_ms)
+        g = load_s12(db, cutoff_ms)  # only its missed / open / orphaned rows are read below; ``closed`` stays the sample
     missed = classify(g["missed"], cutoff_ms)
     opened = classify(g["open"], cutoff_ms)
     rt = Runtime(dataclasses.replace(Settings.from_env(), db_path=""))
@@ -341,6 +469,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12", seen
     )
     p(f"сигнальні дні: {len({cmn.ymd_ms(int(r['signal_ts'])) for r in rows})}; монет {len({r['symbol'] for r in rows})}")
     p("")
+    if first_n:
+        L.extend(review_lines(closed))
+        p("")
     p("## Пункт 6: R демо (од. демо, на ризик угоди, не на капітал) проти паспорта версії")
     groups = {
         "v9 (тег)": lambda r: r["ver"] == "v9",

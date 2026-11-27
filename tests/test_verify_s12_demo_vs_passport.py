@@ -149,3 +149,49 @@ def test_new_rows_split_at_the_seen_cutoff():
     changed = [*v9[:3], _v9(14, 3.0), _v9(17, 3.0)]
     assert mod.new_rows(changed, seen_ms)[0] == lines[0]
     assert mod.parse_utc("2026-11-12T06:00") == seen_ms
+
+
+def _row(i: int, closed: int, r: float, version: str | None = "v9") -> dict:
+    """A raw closed S12 demo row whose P&L equals its price P&L (not flagged by the P&L check)."""
+    return {
+        "link_id": f"td-S12-{i:03d}", "setup": "S12", "status": "closed", "version": version, "symbol": f"C{i % 40}/USDT:USDT",
+        "side": "long", "timeframe": "4h", "venue": "bybit-demo", "signal_ts": closed - 12 * HOUR, "opened_ts": closed - 8 * HOUR,
+        "closed_ts": closed, "rest_until": None, "r_multiple": r, "risk_usd": 10.0,
+        "pnl_usd": 10.0 * r, "fill": 100.0, "exit": 100.0 + 10.0 * r, "qty": 1.0, "fees_usd": 0.0, "entry_kind": "maker",
+    }  # fmt: skip
+
+
+def _review(rs: list[float], extra: list[dict] | None = None) -> tuple[list[dict], int, list[dict], list[str]]:
+    t0 = _ms(2026, 11, 1)
+    raw = [_row(i, t0 + i * HOUR, r) for i, r in enumerate(rs)] + (extra or [])
+    cutoff = t0 + 400 * HOUR
+    closed = mod.classify(raw, cutoff)
+    sample, eff, left = mod.review_sample(closed, 100, cutoff)
+    return sample, eff, left, mod.review_lines(sample)
+
+
+def test_review_takes_the_first_100_and_applies_the_frozen_floor():
+    t0 = _ms(2026, 11, 1)
+    v7 = {
+        **_row(900, t0 + 5 * HOUR, 3.0, version=None),
+        "rest_until": _ms(2026, 10, 28),
+    }  # untagged with a resting limit: v7, kept only for descriptive rows
+    sample, eff, left, lines = _review([-0.6] * 100 + [5.0, 5.0], [v7])
+    assert sum(r["passport"] == "v4" for r in sample) == 100 and any(r["ver"] == "v7" for r in sample)
+    assert eff == t0 + 99 * HOUR + 1 and len(left) == 2  # the two later trades are out, whatever their R
+    main = next(i for i, x in enumerate(lines) if x.startswith("- [основний] R журнал"))
+    assert "n 100" in lines[main] and "середнє -0.600" in lines[main]
+    assert "рішення: зняти" in lines[main + 1] and "✗ поза ковзною смугою n 100" in lines[main + 1]
+    assert "правило зупинки: тримати" in lines[main + 2]  # v9 −0.600 is above −0.827
+    # exactly at the floor: not below it -> keep; the sample hash does not depend on R
+    s2, _, _, lines2 = _review([-0.524] * 100)
+    assert "рішення: тримати" in next(x for x in lines2 if x.startswith("    рішення"))
+    assert mod.sample_hash(s2) == mod.sample_hash(sample)
+    # changing the trades after the 100th changes nothing in the decision rows
+    _, _, _, lines3 = _review([-0.6] * 100 + [-9.0, -9.0], [v7])
+    assert lines3 == lines
+
+
+def test_review_stops_with_fewer_than_100_trades():
+    with pytest.raises(SystemExit):
+        _review([0.1] * 99)

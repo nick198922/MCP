@@ -188,7 +188,11 @@ async def test_funding_history_happy_decimal_units():
     assert d["unit"] == "decimal per funding interval"
     assert seen[0].url.path == "/v1/funding-rate-history" and "convert_to_usd" not in seen[0].url.params
     assert any("Binance only" in w and "not annualised" in w for w in env["warnings"])
-    assert any("open/low may carry" in w and "not a carry basis" in w for w in env["warnings"])
+    # 2026-11-27 check (docs/verification/2026-11-27-coinalyze-bybit-check.md): high can carry the previous rate too
+    assert any("open, high and low may carry" in w and "not a carry basis" in w for w in env["warnings"])
+    async with Client(srv) as c:
+        desc = next(t.description or "" for t in (await c.list_tools()).tools if t.name == "perps_funding_history")
+    assert "open, high and low may carry the previous day's last rate" in desc and "high (= largest settlement)" not in desc
     assert not any("hourly bar semantics" in w for w in env["warnings"])
 
 

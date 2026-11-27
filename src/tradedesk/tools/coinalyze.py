@@ -246,8 +246,12 @@ async def funding_history(b: Builder, rt: Runtime, symbol: str, interval: str, d
     _gap_warning(b, data["stats"]["gaps"])
     b.warn(BINANCE_ONLY + " Rates are per funding interval, not annualised.")
     b.warn(
-        "Use close (last settlement) and high (largest settlement); open/low may carry the previous bar's last "
-        "rate. The mean of closes is not the average rate or the sum of payments: not a carry basis."
+        "Use close (last settlement of the bar; for BTC and ETH daily closes matched every Binance and Bybit "
+        "settlement day 2022-10-30..2026-11-26, 1489 days; other symbols and hourly bars not checked). open, high and "
+        "low may carry the previous bar's last rate (BTC/ETH daily Binance bars: open on 6-7 % of days, high and low "
+        "on 1-2 %, nearly all in 2026; when carried, high was above the day's largest settlement and low below its "
+        "smallest), so high is the largest settlement only when no carried rate beats it. The mean of closes is not "
+        "the average rate or the sum of payments: not a carry basis."
     )
     if interval == "hourly":
         b.warn(

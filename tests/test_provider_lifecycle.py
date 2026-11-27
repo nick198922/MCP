@@ -124,6 +124,7 @@ CALLS: dict[str, list[Call]] = {
     "coinalyze": [lambda rt: rt.coinalyze.funding_rate_history("BTCUSDT_PERP.A", "daily", 1791504000, 1791590400)],
     "polymarket": [
         lambda rt: rt.polymarket.market("516700"),
+        lambda rt: rt.polymarket.event("516700"),
         lambda rt: rt.polymarket.book("TOK_YES"),
         lambda rt: rt.polymarket.positions(ADDR),
     ],

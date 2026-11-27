@@ -235,6 +235,14 @@ class Polymarket:
             raise ProviderError(self.name, "backend_error", "unexpected shape at /markets/{id}")
         return f
 
+    async def event(self, event_id: str) -> Fetched:
+        """Gamma `/events/{id}`: one event with its `title`, `slug`, `closed` and nested `markets`. The event title is
+        only here: a `/markets/{id}` answer has no `events` field (observed 2026-11-03 and 2026-11-27)."""
+        f = await self.gamma.get_json(f"/events/{event_id}", params={}, ttl=15, tool="event", args={"id": event_id})
+        if not isinstance(f.data, dict):
+            raise ProviderError(self.name, "backend_error", "unexpected shape at /events/{id}")
+        return f
+
     async def book(self, token_id: str) -> Fetched:
         f = await self.clob.get_json("/book", params={"token_id": token_id}, ttl=2, tool="book", args={"token_id": token_id})
         if not isinstance(f.data, dict):

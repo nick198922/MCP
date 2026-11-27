@@ -1,6 +1,6 @@
 """The registered forward rule of IDEA-20261028-pm-cpi-brackets-vs-nowcast-forward (step 1, item 481):
 analytics/pm_cpi.parse_bracket / is_partition / bracket_prob / taker_fee / rule_signals, the stage helpers (row_why,
-book_why, fallback_stamp, fill, clv, sha256_json, row_digest) and the archive SD (yoy_published, archive_errors,
+book_why, close_quote, fill, clv, sha256_json, row_digest, same_record) and the archive SD (yoy_published, archive_errors,
 sigma_archive)."""
 
 import math
@@ -17,9 +17,9 @@ from tradedesk.analytics.pm_cpi import (
     archive_errors,
     book_why,
     bracket_prob,
+    close_quote,
     clv,
     digest_preimage,
-    fallback_stamp,
     fill,
     is_partition,
     merge_proof_why,
@@ -28,6 +28,7 @@ from tradedesk.analytics.pm_cpi import (
     row_digest,
     row_why,
     rule_signals,
+    same_record,
     same_target,
     sha256_json,
     sigma_archive,
@@ -183,7 +184,7 @@ def test_interior_bracket_q_is_capped_and_a_wider_sd_raises_the_shoulders():
     assert bracket_prob((40, 40), 3.70, s2) > bracket_prob((40, 40), 3.70, s1)  # d = 0.3
 
 
-# ------------------------------------------------------------------------------------------------- row and fallback
+# --------------------------------------------------------------------------------------------- row and T-1 quote
 
 
 def _row(**kw):
@@ -226,11 +227,42 @@ def test_row_why_without_a_row_and_book_why():
     assert book_why({"token": "t"}, 100) == "no book"
 
 
-def test_fallback_is_the_earliest_snapshot_of_the_day_after_17_utc():
-    stamps = ["20261207T1630Z", "20261207T2110Z", "20261207T1705Z", "20261208T0010Z", "junk", "20261206T2300Z"]
-    assert fallback_stamp(stamps, "2026-12-07") == "20261207T1705Z"
-    assert fallback_stamp(["20261207T1700Z"], "2026-12-07") == "20261207T1700Z"
-    assert fallback_stamp(["20261207T1659Z", "20261208T1800Z"], "2026-12-07") is None
+def test_t1_quote_comes_from_the_rows_books_only_and_ignores_the_nowcast_checks():
+    # third review B 481, finding 1: no fallback snapshot for T-1; a row without a YoY nowcast still gives the close
+    import json
+
+    import tradedesk.analytics.pm_cpi as pc
+
+    assert not hasattr(pc, "fallback_stamp") and not hasattr(pc, "FALLBACK_FROM")
+    books = {
+        "brackets": [
+            {"token": "t1", "book": True, "read_ts": 50, "bid": 0.04, "ask": 0.06},  # read before the nowcast
+            {"token": "t2", "book": False},
+            {"token": "t3", "book": True, "read_ts": 200, "ask": 0.1},
+        ]
+    }
+    row = _row(cf_year_sha=None, books=json.dumps(books))  # only the MoM file readable: nowcast_ts 90 > read_ts 50 of t1
+    assert book_why(books["brackets"][0], 90) == "unpaired"  # the T-3 pairing check would drop it; T-1 does not apply it
+    assert row_why(row, "2026-12-09", "2026-11") == "no yoy nowcast"
+    q = close_quote(row, "t1")
+    assert q == {"bid": 0.04, "ask": 0.06, "why": None}
+    assert clv(0.02, 1000.0, q["bid"], q["ask"])["usd"] == pytest.approx(30.0)
+    assert close_quote(row, "t2")["why"] == "no book" and close_quote(row, "t9")["why"] == "no book"
+    assert close_quote(row, None)["why"] == "no book" and close_quote(None, "t1")["why"] == "no row"
+    one_side = close_quote(row, "t3")
+    assert one_side["why"] is None and clv(0.02, 10.0, one_side["bid"], one_side["ask"]) is None  # not filled in
+    assert close_quote({**row, "books": "not json"}, "t1")["why"] == "no book"
+
+
+def test_same_record_tolerates_float_bits_but_not_structure():
+    rec = {"q": 0.2395, "interval": [33, 33], "pick": True, "why": None, "shares": 2450.98}
+    assert same_record(rec, {**rec, "q": 0.2395 * (1 + 1e-12), "interval": (33, 33)})
+    assert not same_record(rec, {**rec, "pick": False})
+    assert not same_record(rec, {**rec, "shares": 2450.99})
+    assert not same_record(rec, {**rec, "why": "no ask"})
+    assert not same_record(rec, {k: v for k, v in rec.items() if k != "why"})
+    assert not same_record([rec], [rec, rec]) and not same_record({"x": 1}, {"x": True})
+    assert same_record([rec, {"edge": None}], [dict(rec), {"edge": None}])
 
 
 # ---------------------------------------------------------------------------------------------- sizing, p_in and CLV

@@ -511,9 +511,10 @@ MAX_PICKS = 2  # brackets per release
 HALF_TICK = 0.05  # pp: BLS publishes the 12-month change to one decimal
 SD_ALT_FACTOR = 1.5  # descriptive q at sd / 1.5 (``q_narrow``) and sd * 1.5 (``q_wide``); never part of the decision
 STALE_DAYS = 4  # the row's last YoY nowcast point may be at most this many calendar days before the row's day
-# The decision of a stage T-d is taken on the day's row as it stands after LATE_END (the job writes nothing then:
-# :func:`plan` returns (False, False)); a fallback snapshot counts only when taken on day T-d at or after WINDOW_END.
-FALLBACK_FROM = WINDOW_END
+# The data of every stage T-d (T-7, T-3, T-1) are the job's row of day T-d as it stands after LATE_END (the job writes
+# nothing then: :func:`plan` returns (False, False)) and nothing else: no fallback snapshot, no other day (third review
+# B 481, finding 1: whoever takes a snapshot sees the live prices, so a snapshot would let a person choose whether and
+# when a number of the verdict is taken). A stage without a usable row is a skip / a missing value, never substituted.
 # Columns of a pm_cpi_snapshot row that the decision reads: their digest (:func:`row_digest`) goes into the record.
 ROW_DIGEST_COLUMNS = (
     "day", "updated_ts", "status", "late", "target", "cf_year_ts", "cf_month_ts", "cf_year_sha", "cf_month_sha",
@@ -701,18 +702,23 @@ def book_why(bracket: Mapping[str, Any], since: int | None) -> str | None:
     return None if since is not None and paired(bracket, since) else "unpaired"
 
 
-def fallback_stamp(stamps: Iterable[str], day: str) -> str | None:
-    """The fallback snapshot of stage day ``day`` (ISO): of the snapshot directory stamps ('YYYYMMDDTHHMMZ', UTC), the
-    earliest taken on that UTC day at or after ``FALLBACK_FROM``; None when there is none (malformed stamps ignored)."""
-    ok = []
-    for s in stamps:
-        try:
-            t = datetime.strptime(str(s), "%Y%m%dT%H%MZ")
-        except ValueError:
-            continue
-        if t.date().isoformat() == day and t.time() >= FALLBACK_FROM:
-            ok.append((t, str(s)))
-    return min(ok)[1] if ok else None
+def close_quote(row: Mapping[str, Any] | None, token: Any) -> dict[str, Any]:
+    """The T-1 quote of the YES ``token`` of a signal, for :func:`clv` (registration п. 5, 8): only from the main set
+    ``books`` of the job's T-1 row as it stands after LATE_END; there is no fallback snapshot and no other day. The
+    nowcast checks of :func:`row_why` do not apply (no decision is taken at T-1), and neither does the pairing of the
+    book with the nowcast download: the bracket counts when ``book_why(bracket, 0)`` is None, i.e. it has a book.
+    -> {"bid", "ask", "why"}: why 'no row', 'no book' (token not in the main set, or without a book) or None; a side
+    of an admitted book may still be None (then :func:`clv` gives None)."""
+    if row is None:
+        return {"bid": None, "ask": None, "why": "no row"}
+    if token not in (None, ""):
+        for b in (books_of(row) or {}).get("brackets") or []:
+            if isinstance(b, Mapping) and str(b.get("token")) == str(token):
+                why = book_why(b, 0)
+                if why is None:
+                    return {"bid": b.get("bid"), "ask": b.get("ask"), "why": None}
+                break
+    return {"bid": None, "ask": None, "why": "no book"}
 
 
 def fill(
@@ -804,6 +810,22 @@ def row_digest(row: Mapping[str, Any]) -> str:
     """Digest of the row columns the decision reads (``ROW_DIGEST_COLUMNS``, as stored; a missing column is null);
     a :func:`digest_preimage` gives the same digest as the row it came from."""
     return sha256_json(digest_preimage(row))
+
+
+def same_record(a: Any, b: Any, rel: float = 1e-9) -> bool:
+    """The recomputed decision equals the recorded one (proof check of item 487, third review B 481, finding 2):
+    the same JSON structure, mappings with the same keys, lists and tuples of the same length in the same order (a
+    tuple written to JSON comes back as a list), equal strings, None and bools; numbers equal within ``rel`` relative
+    (abs 1e-12), so float last bits between Python versions do not matter. A bool never equals a number."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return math.isclose(float(a), float(b), rel_tol=rel, abs_tol=1e-12)
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return set(a) == set(b) and all(same_record(a[k], b[k], rel) for k in a)
+    if isinstance(a, list | tuple) and isinstance(b, list | tuple):
+        return len(a) == len(b) and all(same_record(x, y, rel) for x, y in zip(a, b, strict=True))
+    return type(a) is type(b) and a == b
 
 
 # Stage windows (registration п. 5, 7): the scanner writes the file of stage T-d only from STAGE_FROM on day T-d (the

@@ -183,6 +183,19 @@ def test_vcheck_gives_one_verdict_line_from_the_stored_copies(tmp_path, capsys):
     assert "V fail: cannot read a copy" in capsys.readouterr().out
 
 
+def test_vcheck_unexpected_structure_still_ends_with_a_fail_line(tmp_path, capsys):
+    # third review B 481, finding 7: an exception in the comparison or the check is 'V fail: ...', never a traceback
+    import json
+
+    year, _ = _later_year_copy()
+    (tmp_path / "old.json").write_text(json.dumps(year))
+    for name, body in (("dict.json", {"chart": {}}), ("nochart.json", [{"x": 1}]), ("empty.json", [])):
+        (tmp_path / name).write_text(json.dumps(body))
+        assert m.stage_vcheck(tmp_path / "old.json", tmp_path / name, "2026-11") is False
+        last = capsys.readouterr().out.rstrip().splitlines()[-1]
+        assert last.startswith("V fail: check raised "), (name, last)
+
+
 def test_snapshot_series_falls_back_to_the_default_list(tmp_path):
     assert m.snapshot_series(tmp_path, ["10007"]) == (["10007"], None)
     sids, warn = m.snapshot_series(tmp_path, [])  # no events/ at all (the cache was emptied)

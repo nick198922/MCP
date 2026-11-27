@@ -892,16 +892,20 @@ def compare_capture(old_path: Path, new_path: Path, series_list: tuple[str, ...]
 def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None) -> bool:
     """V1 / V2 of the registration (card п. 4) on one pair of stored copies of a nowcast file: the full comparison
     (compare_capture), then one verdict line from analytics.pm_cpi.vintage_why: 'V pass' or 'V fail: <reason>'. A
-    missing or unreadable file is a fail, never a skipped check."""
-    from tradedesk.analytics.pm_cpi import vintage_why
-
+    missing or unreadable file is a fail, never a skipped check, and so is any exception of the comparison or of the
+    check (review B 481, third round, finding 7): the last line is always 'V pass' or 'V fail: ...'."""
     try:
         old, new = json.loads(old_path.read_text()), json.loads(new_path.read_text())
     except (OSError, ValueError) as e:
         say(f"V fail: cannot read a copy ({type(e).__name__}: {e})")
         return False
-    compare_capture(old_path, new_path, ("CPI Inflation", "Core CPI Inflation"))
-    why = vintage_why(old, new, step_target)
+    try:
+        from tradedesk.analytics.pm_cpi import vintage_why
+
+        compare_capture(old_path, new_path, ("CPI Inflation", "Core CPI Inflation"))
+        why = vintage_why(old, new, step_target)
+    except Exception as e:  # noqa: BLE001 - an unexpected structure fails the check, it never drops the verdict line
+        why = f"check raised {type(e).__name__}: {e}"
     say(f"{old_path.name} vs {new_path.name}" + (f", step target {step_target}" if step_target else ""))
     say("V pass" if why is None else f"V fail: {why}")
     return why is None
@@ -1288,7 +1292,8 @@ def main() -> None:
                 compare_capture(p, new, ("CPI Inflation", "Core CPI Inflation"))
         elif a.stage == "vcheck":
             if not (a.capture and a.against):
-                raise SystemExit("vcheck needs --capture <older copy> and --against <newer copy>")
+                say("V fail: vcheck needs --capture <older copy> and --against <newer copy>")
+                raise SystemExit(1)
             if not stage_vcheck(a.capture, a.against, a.step_target):
                 raise SystemExit(1)
         elif a.stage == "moves":

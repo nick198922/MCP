@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import resource
@@ -51,6 +52,14 @@ from tradedesk.collector.pm_cpi_snapshot import SERIES as DEFAULT_SERIES
 
 DEFAULT_CACHE = Path("~/.cache/tradedesk-agents/pm_cpi").expanduser()
 DEFAULT_DB = Path("/var/lib/tradedesk-mcp/tradedesk.sqlite")
+# S of the registration п. 10: the older side of V1 (the snapshot of 26.11, backed up); the proof of
+# scripts/pm_cpi_forward.py passes its files to --stage vcheck when it re-runs V1 (item 492), only when they are these
+# bytes (sha256 read 27.11; the same in the ~/.cache copy of the snapshot): see v1_older_why
+V1_OLDER = Path("~/.local/state/tradedesk-agents/pm_cpi/snapshots/20261126T1920Z").expanduser()
+V1_OLDER_SHA256 = {
+    "nowcast_year.json": "33758ce12635017dbcd562aa859a559d7eb909f9ec8dccb46fc54c247cf1addd",
+    "nowcast_month.json": "da8d3f57994fe296304082d5cac0b0ac5cfff7e17265f65b9c2795a685821f36",
+}
 QUERIES = ("CPI", "inflation", "core CPI", "CPI year over year", "monthly inflation", "inflation US annual")
 CPI_SLUG = re.compile(r"cpi|inflation", re.I)
 UA = {"User-Agent": "Mozilla/5.0 (research script)"}
@@ -743,11 +752,11 @@ def stage_sigma(cache: Path, nowcast: Path, before: str, vintage: str | None = N
             raise SystemExit(f"sigma: no cached CPI vintage {p.name}")
         asyncio.run(fetch_fred(p, "CPIAUCNS"))
     levels = {}
-    for line in p.read_text().splitlines()[1:]:
+    for line in p.read_text(encoding="utf-8").splitlines()[1:]:  # UTF-8, not the locale's (item 492, third review C, Т4)
         parts = line.split(",")
         if len(parts) >= 2 and parts[1] not in ("", "."):
             levels[parts[0][:7]] = parts[1]
-    rows = archive_errors(json.loads(nowcast.read_text()), yoy_published(levels), before)
+    rows = archive_errors(json.loads(nowcast.read_text(encoding="utf-8")), yoy_published(levels), before)
     sd, n = sigma_archive(rows)
     for r in rows:
         say(f"  {r['target']:7} release {r['release']} point {r['day']} N {r['nowcast']} A {r['actual']} "
@@ -874,8 +883,8 @@ def compare_capture(old_path: Path, new_path: Path, series_list: tuple[str, ...]
     """Vintage check between two dated copies of one Cleveland file (a Wayback capture or an earlier snapshot as
     `old_path`, a later fetch as `new_path`): all shared points per series, and separately the `recent` newest
     target months of the old copy (the ones whose daily points matter for the next release)."""
-    old = json.loads(old_path.read_text())
-    new = json.loads(new_path.read_text())
+    old = json.loads(old_path.read_text(encoding="utf-8"))
+    new = json.loads(new_path.read_text(encoding="utf-8"))
     so, sn = old[-1]["chart"].get("_comment"), new[-1]["chart"].get("_comment")
     say(f"old {old_path} (stamp {so}) vs new {new_path} (stamp {sn})")
     if so == sn:
@@ -894,8 +903,8 @@ def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None)
     (compare_capture), then one verdict line from analytics.pm_cpi.vintage_why: 'V pass' or 'V fail: <reason>'. A
     missing or unreadable file is a fail, never a skipped check, and so is any exception of the comparison or of the
     check (review B 481, third round, finding 7): the last line is always 'V pass' or 'V fail: ...'."""
-    try:
-        old, new = json.loads(old_path.read_text()), json.loads(new_path.read_text())
+    try:  # UTF-8, not the locale's: a UnicodeDecodeError is a verdict of the data (item 492, third review C, Т4)
+        old, new = json.loads(old_path.read_text(encoding="utf-8")), json.loads(new_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         say(f"V fail: cannot read a copy ({type(e).__name__}: {e})")
         return False
@@ -909,6 +918,21 @@ def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None)
     say(f"{old_path.name} vs {new_path.name}" + (f", step target {step_target}" if step_target else ""))
     say("V pass" if why is None else f"V fail: {why}")
     return why is None
+
+
+def v1_older_why() -> str | None:
+    """Why the files of S (``V1_OLDER``) are not the registered ones: missing, unreadable or other bytes than
+    ``V1_OLDER_SHA256`` (None: they are). The proof of scripts/pm_cpi_forward.py asks this before it re-runs V1: such
+    an S gives no verdict there, the V1 line is «not recomputed» (item 492, review C, blocker 2)."""
+    for name, want in V1_OLDER_SHA256.items():
+        p = V1_OLDER / name
+        try:
+            got = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError as e:
+            return f"{p} unreadable ({type(e).__name__})"
+        if got != want:
+            return f"{p} has sha256 {got[:12]}…, not {want[:12]}…"
+    return None
 
 
 def say_new_points(old: Any, new: Any, series_list: tuple[str, ...], recent: int = 3) -> None:
@@ -1125,6 +1149,27 @@ def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
         say(f"NO ROW for {day} in {db}")
         return False
     r = row
+    if export is not None:
+        # first, before any descriptive line (item 492, review C N1, the mirror case: a row whose books do not read
+        # must not stop the export); a stored blob that does not decompress is «NOT exported», as a file not stored
+        export.mkdir(parents=True, exist_ok=True)
+        for kind in ("year", "month"):
+            # a file kept as a reference was resolved by read_rows: its bytes (from the source row, same sha256) are
+            # written under this row's day, so the commands of the registration always name <day>_nowcast_<kind>.json
+            p = export / f"{day}_nowcast_{kind}.json"
+            if r.get(f"cf_{kind}_z") is not None:
+                try:
+                    data = zlib.decompress(r[f"cf_{kind}_z"])
+                except zlib.error as e:
+                    say(f"  NOT exported {p.name}: the stored bytes do not decompress ({type(e).__name__})")
+                    continue
+                p.write_bytes(data)
+                src = r.get(f"_{kind}_from")
+                say(f"  exported {p} (sha256 {r.get(f'cf_{kind}_sha')}" + (f", bytes of row {src})" if src else ")"))
+            else:
+                ref = r.get(f"cf_{kind}_ref")
+                why = f"reference to {ref} not resolved (no such stored file with that sha256)" if ref else "no file in the row"
+                say(f"  NOT exported {p.name}: {why}")
     say(
         f"row {day}: status {r['status']}, late {r['late']}, created {_hm(r['created_ts'])}, updated {_hm(r['updated_ts'])};"
         f" nowcast attempts {r['cf_tries']} (downloads {r['cf_fetches']}), books attempts {r['books_tries']}"
@@ -1168,20 +1213,6 @@ def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
             f" early {len(d.get('early') or [])} books"
         )
     say(f"  missing (latest attempt): {r['missing'] or 'none'}")
-    if export is not None:
-        export.mkdir(parents=True, exist_ok=True)
-        for kind in ("year", "month"):
-            # a file kept as a reference was resolved by read_rows: its bytes (from the source row, same sha256) are
-            # written under this row's day, so the commands of the registration always name <day>_nowcast_<kind>.json
-            p = export / f"{day}_nowcast_{kind}.json"
-            if r.get(f"cf_{kind}_z") is not None:
-                p.write_bytes(zlib.decompress(r[f"cf_{kind}_z"]))
-                src = r.get(f"_{kind}_from")
-                say(f"  exported {p} (sha256 {r.get(f'cf_{kind}_sha')}" + (f", bytes of row {src})" if src else ")"))
-            else:
-                ref = r.get(f"cf_{kind}_ref")
-                why = f"reference to {ref} not resolved (no such stored file with that sha256)" if ref else "no file in the row"
-                say(f"  NOT exported {p.name}: {why}")
     if prev is None:
         say("  no earlier row with a nowcast copy: nothing to compare")
         return True
@@ -1235,6 +1266,9 @@ def main() -> None:
         "--before",
         help="sigma: ISO day; only targets whose release (the 'CPI <Mon>' line) is before it enter (registration: 2027-01-01)",
     )
+    ap.add_argument(
+        "--vintage", help="sigma: YYYYMMDD of a CPIAUCNS CSV already in <cache>/cleveland/fred/ (read, never fetched; item 492)"
+    )
     ap.add_argument("--step-target", help="vcheck: target 'YYYY-M' whose headline must have moved after the older stamp (V1: 2026-11)")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="row: collector database (opened read-only)")
     ap.add_argument("--day", help="row: UTC day YYYY-MM-DD (default: today)")
@@ -1253,7 +1287,7 @@ def main() -> None:
     a = ap.parse_args()
     a.cache_dir.mkdir(parents=True, exist_ok=True)
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    with a.out.open("a") as fh:
+    with a.out.open("a", encoding="utf-8") as fh:  # read back as UTF-8 by the proof (item 492, third review C, Т4)
         _OUT = fh
         say(f"# stage {a.stage} at {datetime.now(UTC).isoformat(timespec='seconds')}")
         if a.stage == "discover":
@@ -1308,7 +1342,9 @@ def main() -> None:
         elif a.stage == "sigma":
             if not (a.against and a.before):
                 raise SystemExit("sigma needs --against <nowcast_year.json of row 11.12 (V2)> and --before 2027-01-01")
-            stage_sigma(a.cache_dir, a.against, a.before)
+            if a.vintage is not None and not re.fullmatch(r"\d{8}", a.vintage):
+                raise SystemExit("sigma: --vintage is YYYYMMDD")
+            stage_sigma(a.cache_dir, a.against, a.before, a.vintage)
 
 
 if __name__ == "__main__":

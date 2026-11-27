@@ -9,9 +9,9 @@
 #    Both pace brakes (this one and OWNER_ONLY_AT) are off while the owner's boost runs: scripts/agents_boost.sh writes
 #    an end time (epoch seconds) into $LOG_DIR/boost-until; the MAX_USAGE brake stays, so the plan is never driven
 #    into its hard limit
-#  - review backlog: if TRADEDESK_AGENTS_MAX_OPEN agent branches wait for the owner, sleep and check again
-#    (the agents' own work in progress is continued anyway: its branch does not wait for the owner; nor do the
-#    doctor's fixes)
+#  - review backlog: if TRADEDESK_AGENTS_MAX_OPEN agent branches wait for the owner, sleep and check again, sooner
+#    when one of them is merged (the agents' own work in progress is continued anyway: its branch does not wait for the
+#    owner; nor do the doctor's fixes)
 #  - idle: if there was nothing to do, sleep longer before the next step
 # Failures call the doctor (scripts/agents_doctor.sh), which fixes what it can and delivers the fix as a PR; it also
 # runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day for failures (the
@@ -356,7 +356,9 @@ while true; do
       [[ -n "$b" ]] && buttons+=(--button "🔀 ${b#agent/}|https://github.com/nick198922/MCP/compare/main...$b?expand=1")
     done <<<"$open"
     announce "review:$open" "⏸ **Агенти чекають, поки зіллються їхні PR** ($n_open гілки). Сторож PR кожні 15 хв перезапускає впалий CI і доливає зелені; якщо CI червоний і після перезапуску, прийде 🔴." ${buttons[@]+"${buttons[@]}"}
-    sleep "$WAIT_REVIEW"
+    # Ends early once one of them is merged: a delivered PR often merges seconds after this check (26-27.11: five
+    # full half-hour waits for PRs already merged).
+    idle_wait "$WAIT_REVIEW"
     continue
   fi
   w="$(usage_wait "$(usage_json)")"

@@ -598,9 +598,21 @@ def t3_payload(
 
 
 # Fields of T-3.json that --stage proof rebuilds from the database row (registration п. 7 (2), as amended 27.11 after
-# review C of item 484): everything but D, the Gamma answers, ``missing`` and the code fields, which it checks apart.
+# review C of item 484): everything but D, the Gamma answers, ``missing`` and the code fields, which it checks apart
+# (``code_sha``, ``M0``, ``CODE_PATHS``, ``code_dirty``). ``modules`` is descriptive and checked by nothing: the record
+# is valid only with an empty ``code_dirty``, and the proof runs the tree of M0, not the modules the file names (R4).
 REBUILT = ("schema", "idea", "release", "stage", "window", "source", "updated_ts", "row_digest", "digest_preimage", "row",
            "events", "nowcast", "decision_input", "decision", "skip")  # fmt: skip
+# Every top-level key of T-3.json as write_stage writes it; the proof takes this tuple from the code of M0 and refuses a
+# file with another key set, «mismatch (keys)» (registration п. 7 (7), as amended 27.11 by item 490, R3).
+T3_KEYS = tuple(sorted((*REBUILT, "D", "gamma", "gamma_events", "missing", "code_sha", "M0", "CODE_PATHS", "modules", "code_dirty")))
+
+
+def keys_why(rec: Mapping[str, Any], keys: Iterable[str]) -> str | None:
+    """None when the top-level keys of ``rec`` are exactly ``keys``, else the difference ('+extra, -missing')."""
+    got, want = set(rec), set(keys)
+    diff = [f"+{k}" for k in sorted(got - want)] + [f"-{k}" for k in sorted(want - got)]
+    return ", ".join(diff) or None
 
 
 def t3_record(
@@ -628,7 +640,28 @@ def rebuild(rec: Mapping[str, Any], release: str, row: Mapping[str, Any] | None,
     the Gamma answers and ``missing`` of the file ``rec``, plus :func:`gamma_why` of the file's Gamma part."""
     recorded = (rec.get("gamma") or {}, rec.get("gamma_events") or {}, list(rec.get("missing") or []))
     out, mids, eids = t3_record(row, release, card_m0, lambda _m, _e: recorded)
-    return {"fields": {k: out.get(k) for k in REBUILT}, "gamma_why": gamma_why(rec, mids, eids)}
+    return {"fields": {k: out.get(k) for k in REBUILT}, "gamma_why": gamma_why(rec, mids, eids), "keys": list(T3_KEYS)}
+
+
+def b_why(rec: Mapping[str, Any]) -> str | None:
+    """'rules' when a T-3 record is procedural for set B by its content (registration п. 8, as amended 27.11 by item
+    490, R1): the release is «no YoY event» and a YoY event of it was excluded only by the rule phrases (its ``why`` is
+    ``rules: no …``; the phrases are checked only on events the slug selection took). The Gamma text behind that is not
+    reproducible from git and the database (п. 7, the proof's limit), so set B rebuilds such a release by п. 8 (в),
+    :func:`fallback_record`. None otherwise (set B then follows the proof's verdict and the skip reason)."""
+    if rec.get("skip") != "no YoY event":
+        return None
+    events = [e for e in rec.get("events") or [] if isinstance(e, Mapping)]
+    return "rules" if any(str(e.get("why") or "").startswith("rules: ") for e in events) else None
+
+
+def fallback_record(row: Mapping[str, Any] | None, release: str, card_m0: str) -> dict[str, Any]:
+    """The ``REBUILT`` fields of a T-3 record by the registered fallbacks of п. 8 (в), with no Gamma answer: the row of
+    day T-3, the fee by the row's ``fee_type``, ``min_size`` from ``books_depth_z``, every event taken by its slug (no
+    rule text). Set B takes a procedural skip from here when neither the copy in main nor the local file is there, and a
+    release of :func:`b_why` always; run by the code of M0 (``--fallback`` of its tree)."""
+    out, _, _ = t3_record(row, release, card_m0, lambda _m, _e: ({}, {}, []))
+    return {k: out.get(k) for k in REBUILT}
 
 
 # ------------------------------------------------------------------------------------------------------- git, code
@@ -905,17 +938,19 @@ def journal_line(line: str) -> None:
 
 def fetch_head(repo: Path) -> datetime | None:
     """The mtime of the clone's ``FETCH_HEAD`` (UTC; written by every ``git fetch`` without ``--no-write-fetch-head``),
-    None when there is none."""
+    None when there is none or it is empty: a failed fetch truncates it first, so its mtime is fresh while
+    ``origin/main`` is not (review C of item 490, finding 3)."""
     p = Path(git(repo, "rev-parse", "--git-path", "FETCH_HEAD").stdout.strip())
     p = p if p.is_absolute() else repo / p
-    return datetime.fromtimestamp(p.stat().st_mtime, UTC) if p.is_file() else None
+    return datetime.fromtimestamp(p.stat().st_mtime, UTC) if p.is_file() and p.stat().st_size > 0 else None
 
 
-def fetch_why(repo: Path, release: str) -> str | None:
+def fetch_why(repo: Path, release: str, bound: datetime | None = None) -> str | None:
     """Why ``origin/main`` of the clone may not show M0 (review C of item 484, finding 5): no ``FETCH_HEAD``, or the
-    last fetch was before 21:00 UTC of day T-3, so a merge before that boundary may be unseen; None otherwise."""
+    last fetch was before ``bound`` (default 21:00 UTC of day T-3), so a merge before that boundary may be unseen;
+    None otherwise."""
     t = fetch_head(repo)
-    bound = datetime.fromisoformat(f"{stage_day('T-3', release)}T21:00:00+00:00")
+    bound = bound or datetime.fromisoformat(f"{stage_day('T-3', release)}T21:00:00+00:00")
     if t is None:
         return "no FETCH_HEAD"
     return None if t >= bound else f"last fetch {t.isoformat(timespec='seconds')} is before {bound.isoformat()}"
@@ -994,6 +1029,16 @@ def t1_check(rec1: Mapping[str, Any], db_row: Mapping[str, Any] | None) -> tuple
     return dig, bool(quotes)
 
 
+def args_why(repo: Path, ref: str, release: str) -> list[str]:
+    """Why a proof run is not one with the registered arguments (registration п. 7, as amended 27.11 by item 490, R5):
+    a ``--ref`` other than ``origin/main``, or the clone's last fetch (mtime of ``FETCH_HEAD``) before 15:00 UTC of the
+    release day, when every merge up to the deadline (12:00 UTC of T-1) may be unseen. Such a run is ``proof fail:
+    args`` and does not count; the proof is run again after ``git fetch origin main``."""
+    out = [f"ref {ref} is not {DEFAULT_REF}"] if ref != DEFAULT_REF else []
+    stale = fetch_why(repo, release, stage_window("result", release)[0])
+    return out + ([f"{stale}; run `git fetch origin main` first"] if stale else [])
+
+
 def proof(release: str, *, repo: Path, ref: str, db: Path, root: Path, tmp: Path, env: Mapping[str, str] | None = None) -> bool:
     """``--stage proof`` (registration п. 7, item 487): every check printed, the last line ``proof pass`` or ``proof
     fail: <reasons>``; any exception is ``proof fail: raised ...``."""
@@ -1013,12 +1058,15 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
     fh = fetch_head(repo)
     say(f"{release} proof args · repo {repo} · ref {ref} = {head or 'unknown'} · db {db} · root {root} · "
         f"FETCH_HEAD {fh.isoformat(timespec='seconds') if fh else 'none'}")  # fmt: skip
+    aw = args_why(repo, ref, release)
+    say(f"  args {'; '.join(aw) if aw else 'registered'}")
+    fails = [f"args ({'; '.join(aw)})"] if aw else []
     fmt = "--format=C %H %cI %ce %cn"
     log = git(repo, "log", ref, "--first-parent", "--name-status", fmt, "--", path).stdout
     why, merge = merge_proof_why(log, deadline)
     when = next((ln.split(" ")[2] for ln in log.splitlines() if merge and ln.startswith(f"C {merge} ")), None)
     say(f"{release} proof · merge {merge or '-'} {when or ''} · merge_proof_why {why}")
-    fails = [f"not merged ({why})"] if why else []
+    fails += [f"not merged ({why})"] if why else []
     if merge is None:
         return fails
     raw = git(repo, "show", f"{merge}:{path}", binary=True).stdout
@@ -1068,7 +1116,7 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
         fails.append("mismatch (row_digest ≠ its preimage)")
     if not db_ok:
         fails.append("mismatch (row_digest ≠ DB row)" if db_row is not None else "mismatch (no DB row)")
-    rc_ok, bad, gw = False, ["not rebuilt (no M0)"], []
+    rc_ok, bad, gw, kw, k_na = False, ["not rebuilt (no M0)"], [], "not checked (no rebuild)", False
     if m0:
         tree = extract(repo, m0, paths, tmp)
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1087,11 +1135,19 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
             got = json.loads(res.stdout)
             bad = [k for k, v in got["fields"].items() if not same_record(v, rec.get(k))]
             gw = list(got["gamma_why"])
+            # item 490, R3: the key set of the file is the one the scanner of M0 writes. An M0 before item 490 gives no
+            # ``keys``, and the check does not apply to its release (registration п. 9: a later change acts from the
+            # next release; review C of item 490, blocker 2); only the code of M0 shapes this answer, not the file.
+            k_na = "keys" not in got
+            kw = None if k_na else keys_why(rec, got["keys"]) if isinstance(got["keys"], list) else "M0 gives no key list"
         else:
             bad = ["rebuild raised"]
             say("  rebuild stderr: " + " | ".join(res.stderr.strip().splitlines()[-3:]))
     say(f"  перерахунок = записаному {'так' if rc_ok else 'ні'} · перебудова з рядка БД = записаному "
-        f"{'так' if not bad else 'ні: ' + ', '.join(bad)} · Gamma {'ok' if not gw else '; '.join(gw)[:300]}")  # fmt: skip
+        f"{'так' if not bad else 'ні: ' + ', '.join(bad)} · Gamma {'ok' if not gw else '; '.join(gw)[:300]} · "
+        f"ключі = M0 {'не застосовно, M0 до пункту 490' if k_na else 'так' if kw is None else 'ні: ' + kw[:200]}")  # fmt: skip
+    if kw is not None:
+        fails.append("mismatch (keys)")
     if not rc_ok:
         fails.append("mismatch (recompute)")
     if bad:
@@ -1118,11 +1174,12 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
 
 
 def inner(argv: list[str]) -> int:
-    """Entry point of the extracted tree (:func:`run_tree`): a write stage, or the recomputation / rebuild of the proof
-    (JSON on stdout)."""
+    """Entry point of the extracted tree (:func:`run_tree`): a write stage, or the recomputation / rebuild of the proof,
+    or the п. 8 (в) record of set B (:func:`fallback_record`) (JSON on stdout)."""
     ap = argparse.ArgumentParser(prog="pm_cpi_forward (tree)")
     ap.add_argument("--recompute", type=Path)
     ap.add_argument("--rebuild", type=Path)
+    ap.add_argument("--fallback", action="store_true")
     ap.add_argument("--stage")
     ap.add_argument("--release")
     ap.add_argument("--at")
@@ -1143,6 +1200,10 @@ def inner(argv: list[str]) -> int:
         rec = json.loads(a.rebuild.read_bytes())
         card = git(a.repo, "show", f"{a.m0}:{CARD}").stdout
         print(json.dumps(rebuild(rec, a.release, read_row(a.db, stage_day("T-3", a.release)), card)))
+        return 0
+    if a.fallback:  # registration п. 8 (в) by the code of this tree (set B; item 490, R1)
+        card = git(a.repo, "show", f"{a.m0}:{CARD}").stdout
+        print(json.dumps(fallback_record(read_row(a.db, stage_day("T-3", a.release)), a.release, card)))
         return 0
     try:
         return write_stage(a.stage, a.release, datetime.fromisoformat(a.at), db=a.db, root=a.root, docs=a.docs, repo=a.repo,

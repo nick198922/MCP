@@ -394,9 +394,28 @@ def test_no_yoy_event_is_a_recorded_skip(tmp_path, how):
     rec = rec_of(tmp_path, "T-3")
     assert rec["skip"] == "no YoY event" and not any(e["taken"] for e in rec["events"])
     assert {e["slug"] for e in rec["events"]} == {b["event_slug"] for b in brs}  # every open event listed with its reason
+    # item 490, R1: excluded only by the rule phrases -> procedural for set B, rebuilt by п. 8 (в) with the event by slug
+    fb = f.fallback_record(f.read_row(db, "2026-12-07"), R, "")
+    assert set(fb) == set(f.REBUILT) and fb["row_digest"] == rec["row_digest"]
     if how == "rule text":
         e1 = next(e for e in rec["events"] if e["event_id"] == "e1")
         assert e1["why"] == "rules: no 'before seasonal adjustment'" and e1["rules"] == "missing"
+        assert f.b_why(rec) == "rules"
+        e1 = next(e for e in fb["events"] if e["event_id"] == "e1")
+        assert fb["skip"] is None and e1["taken"] and e1["rules"] == "unchecked"
+        sig = {r["title"]: r for r in fb["decision"]["rule_signals"]}
+        assert sig["3.8%"]["pick"] and sig["3.8%"]["fee"] == pytest.approx(0.01 * 0.10 * 0.90)  # the fee_type table
+    else:
+        assert f.b_why(rec) is None and fb["skip"] == "no YoY event"  # a data reason: not in set B
+
+
+def test_b_why_takes_only_a_no_yoy_event_excluded_by_the_rule_phrases():
+    ev = [{"event_id": "e1", "why": "rules: no 'one decimal'"}, {"event_id": "e2", "why": "not headline YoY"}]
+    assert f.b_why({"skip": "no YoY event", "events": ev}) == "rules"
+    assert f.b_why({"skip": "no YoY event", "events": ev[1:]}) is None  # renamed / other series: a data reason
+    assert f.b_why({"skip": None, "events": ev}) is None  # a valid release (another YoY event taken) stays as recorded
+    assert f.b_why({"skip": "model", "events": ev}) is None and f.b_why({}) is None
+    assert f.keys_why({"a": 1, "b": 2}, ["b", "c"]) == "+a, -c" and f.keys_why({"a": 1}, ["a"]) is None
 
 
 def test_gamma_down_takes_the_registered_fallbacks(tmp_path):
@@ -584,13 +603,15 @@ def world(tmp_path_factory):
     rc = f.launch("T-3", R, AT_T3, repo=repo, ref="origin/main", db=db, root=base / "state", docs=base / "docs",
                   tmp=base / "tmp", http_retries=0, env=offline_env())  # fmt: skip
     raw = (base / "state" / R / "T-3.json").read_bytes()
+    fetched(repo, "2026-12-10T15:30:00+00:00")  # the `git fetch` of the proof run (item 487, from 10.12 15:00)
     return SimpleNamespace(base=base, home=home, repo=repo, g=g, m0=m0, after=after, side=side, db=db, db2=db2, raw=raw, rc=rc,
                            out=out)  # fmt: skip
 
 
-def _case(w, name, content, *, journal=None, merge_by=GH, merge_at="2026-12-07T22:30:00Z", branch_edits=0, change_after=False):
-    g, path = w.g, w.repo / f.DOCS_DIR / R / "T-3.json"
-    g("checkout", "-q", "-B", f"br-{name}", w.after)
+def _case(w, name, content, *, journal=None, merge_by=GH, merge_at="2026-12-07T22:30:00Z", branch_edits=0, change_after=False,
+          base=None):  # fmt: skip
+    g, path, base = w.g, w.repo / f.DOCS_DIR / R / "T-3.json", base or w.after
+    g("checkout", "-q", "-B", f"br-{name}", base)
     path.parent.mkdir(parents=True, exist_ok=True)
     for k in range(branch_edits):
         path.write_bytes(content + b" " * (k + 1))
@@ -602,7 +623,7 @@ def _case(w, name, content, *, journal=None, merge_by=GH, merge_at="2026-12-07T2
     path.write_bytes(content)
     g("add", "-A")
     g("commit", "-q", "-m", "T-3", when="2026-12-07T22:15:00Z")
-    g("checkout", "-q", "-B", f"mn-{name}", w.after)
+    g("checkout", "-q", "-B", f"mn-{name}", base)
     g("merge", "-q", "--no-ff", "--no-edit", f"br-{name}", when=merge_at, who=merge_by)
     if change_after:
         path.write_bytes(content + b"\n")
@@ -622,11 +643,27 @@ def _ask(inp, title, ask):
     return inp
 
 
+DROP = object()
+
+
 def _edit(raw, **kw):
     rec = json.loads(raw)
     for k, v in kw.items():
-        rec[k] = v(rec) if callable(v) else v
+        if v is DROP:
+            del rec[k]
+        else:
+            rec[k] = v(rec) if callable(v) else v
     return f.dump(rec)
+
+
+def prove(w, ref, **kw):
+    """``--stage proof`` with the registered ref (R5: origin/main only), origin/main of the world pointed at ``ref`` for
+    this one run and put back after."""
+    w.g("update-ref", "refs/remotes/origin/main", ref)
+    try:
+        return f.proof(R, repo=w.repo, ref="origin/main", **kw)
+    finally:
+        w.g("update-ref", "refs/remotes/origin/main", w.after)
 
 
 def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
@@ -635,24 +672,27 @@ def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
     rec = json.loads(world.raw)
     assert rec["code_sha"] == rec["M0"] == world.m0 and rec["code_dirty"] == "" and rec["skip"] is None
     assert set(rec["modules"]) == set(f.CODE_PATHS) and rec["decision"]["fills"]
+    assert tuple(sorted(rec)) == f.T3_KEYS  # item 490, R3: the key set the proof demands is the one written
     assert f.m0_of(world.repo, "origin/main", R) == world.m0
     ref = _case(world, "pass", world.raw)
     capsys.readouterr()
-    assert f.proof(R, repo=world.repo, ref=ref, db=world.db, root=tmp_path, tmp=tmp_path) is True
+    assert prove(world, ref, db=world.db, root=tmp_path, tmp=tmp_path) is True
     out = capsys.readouterr().out.rstrip().splitlines()
     assert out[-1] == "proof pass", out
     # finding 8: the first line names the arguments, the ref with its sha
-    assert out[0].startswith(f"{R} proof args · repo {world.repo} · ref {ref} = ") and f"db {world.db}" in out[0]
+    assert out[0].startswith(f"{R} proof args · repo {world.repo} · ref origin/main = ") and f"db {world.db}" in out[0]
+    assert out[1] == "  args registered"
     assert any("row_digest = БД так" in x for x in out)
-    assert any("перерахунок = записаному так · перебудова з рядка БД = записаному так · Gamma ok" in x for x in out), out
+    assert any("перерахунок = записаному так · перебудова з рядка БД = записаному так · Gamma ok · ключі = M0 так" in x
+               for x in out), out  # fmt: skip
     assert any("T-1: no file" in x for x in out)
     # T-1 checked against the database (finding 3): the verdict stays, the line says which applies
     assert f.write_stage("T-1", R, AT_T1, db=world.db, root=tmp_path / "s", docs=tmp_path / "d", repo=world.repo,
                          code_sha=world.after, m0=None, tree=world.repo, rt_factory=gamma_rt()) == 0  # fmt: skip
     capsys.readouterr()
-    assert f.proof(R, repo=world.repo, ref=ref, db=world.db, root=tmp_path / "s", tmp=tmp_path) is True
+    assert prove(world, ref, db=world.db, root=tmp_path / "s", tmp=tmp_path) is True
     assert any("T-1 (local): row_digest = БД так · close quotes = recomputed так" in x for x in capsys.readouterr().out.splitlines())
-    assert f.proof(R, repo=world.repo, ref=ref, db=world.db2, root=tmp_path / "s", tmp=tmp_path) is False  # T-3 row differs
+    assert prove(world, ref, db=world.db2, root=tmp_path / "s", tmp=tmp_path) is False  # T-3 row differs
     out = capsys.readouterr().out
     assert "T-1 (local): row_digest = БД ні" in out and "the DB row applies" in out
 
@@ -692,11 +732,14 @@ def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
      ("gammakeys", {"edit": {"gamma": lambda r: dict(list(r["gamma"].items())[1:])}}, False,
       "mismatch (gamma: gamma keys ≠ asked (11 vs 12))"),
      ("missing", {"edit": {"missing": lambda r: r["missing"][1:]}}, False, "mismatch (gamma: gamma e1m0: request failed ≠ missing)"),
+     # item 490, R3: a key added or dropped before `git add` (both passed before)
+     ("extrakey", {"edit": {"note": "read me"}}, False, "mismatch (keys)"),
+     ("dropkey", {"edit": {"modules": DROP}}, False, "mismatch (keys)"),
      ("raised", {"raw": b"not json"}, False, "proof fail: raised JSONDecodeError")],
 )  # fmt: skip
 def test_proof_fails_for_every_reason(world, tmp_path, capsys, name, build, db2, want):
     if build is None:
-        ref = "origin/main"
+        ref = world.after
     else:
         build = dict(build)
         raw = build.pop("raw", world.raw)
@@ -704,14 +747,75 @@ def test_proof_fails_for_every_reason(world, tmp_path, capsys, name, build, db2,
         edit = {k: subst.get(v, v) if isinstance(v, str) else v for k, v in (build.pop("edit", {}) or {}).items()}
         ref = _case(world, name, _edit(raw, **edit) if edit else raw, **build)
     capsys.readouterr()
-    assert f.proof(R, repo=world.repo, ref=ref, db=world.db2 if db2 else world.db, root=tmp_path, tmp=tmp_path) is False
-    last = capsys.readouterr().out.rstrip().splitlines()[-1]
+    assert prove(world, ref, db=world.db2 if db2 else world.db, root=tmp_path, tmp=tmp_path) is False
+    out = capsys.readouterr().out.rstrip().splitlines()
+    last = out[-1]
     assert last.startswith("proof fail: ") and want in last, last
     if name in ONLY:  # this reason alone; for all but codesha / dafter it is a check the proof lacked before review C 484,
         assert last == f"proof fail: {want}", last  # so the record passed without it
+    if name == "extrakey":
+        assert any("ключі = M0 ні: +note" in x for x in out), out
+    if name == "dropkey":
+        assert any("ключі = M0 ні: -modules" in x for x in out), out
 
 
-ONLY = {"codesha", "foreign", "paths", "dafter", "skipmodel", "skipnorow", "input", "title", "gammakeys", "missing"}
+ONLY = {"codesha", "foreign", "paths", "dafter", "skipmodel", "skipnorow", "input", "title", "gammakeys", "missing", "extrakey",
+        "dropkey"}  # fmt: skip
+
+
+def test_proof_fails_on_arguments_other_than_the_registered(world, tmp_path, capsys):
+    # item 490, R5: a --ref other than origin/main, or a fetch before 15:00 UTC of the release day, is `args` (the same
+    # record passes with the registered arguments, test above)
+    ref = _case(world, "args", world.raw)
+    capsys.readouterr()
+    assert f.proof(R, repo=world.repo, ref=ref, db=world.db, root=tmp_path, tmp=tmp_path) is False
+    last = capsys.readouterr().out.rstrip().splitlines()[-1]
+    assert last == f"proof fail: args (ref {ref} is not origin/main)", last
+    fetched(world.repo, "2026-12-10T14:59:59+00:00")
+    try:
+        assert prove(world, ref, db=world.db, root=tmp_path, tmp=tmp_path) is False
+    finally:
+        fetched(world.repo, "2026-12-10T15:30:00+00:00")
+    last = capsys.readouterr().out.rstrip().splitlines()[-1]
+    assert last == ("proof fail: args (last fetch 2026-12-10T14:59:59+00:00 is before 2026-12-10T15:00:00+00:00; "
+                    "run `git fetch origin main` first)"), last  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("name", "keys", "want", "line"),
+    [("oldm0", "", "proof pass", "ключі = M0 не застосовно, M0 до пункту 490"),
+     ("badkeys", ', "keys": None', "proof fail: mismatch (keys)", "ключі = M0 ні: M0 gives no key list")],
+)  # fmt: skip
+def test_key_check_does_not_apply_to_an_m0_before_item_490(world, tmp_path, capsys, name, keys, want, line):
+    # review C of item 490, blocker 2: a proof merged after 07.12 21:00 must not fail a lawful record of an M0 whose
+    # scanner gives no key set (registration п. 9); a key field that is not a list still fails
+    g, scanner = world.g, world.repo / "scripts/pm_cpi_forward.py"
+    g("checkout", "-q", "-B", f"m0-{name}", world.m0)
+    text = scanner.read_text()
+    new = text.replace(', "keys": list(T3_KEYS)}', keys + "}")
+    assert new != text, "the rebuild answer of the scanner changed; update this test"
+    scanner.write_text(new)
+    g("commit", "-q", "-am", "M0 before item 490", when="2026-12-07T20:30:00Z")
+    old = g("rev-parse", "HEAD")
+    g("checkout", "-q", "--detach", world.after)
+    ref = _case(world, name, _edit(world.raw, code_sha=old, M0=old), base=old)
+    capsys.readouterr()
+    assert prove(world, ref, db=world.db, root=tmp_path, tmp=tmp_path) is (want == "proof pass")
+    out = capsys.readouterr().out.rstrip().splitlines()
+    assert out[-1] == want, out
+    assert any(line in x for x in out), out
+
+
+def test_fallback_of_set_b_runs_in_the_tree_of_m0(world, tmp_path):
+    # item 490, R1: п. 8 (в) by the code of M0 (`--fallback` of its tree), no Gamma: events by slug, fee by fee_type
+    tree = f.extract(world.repo, world.m0, f.CODE_PATHS, tmp_path)
+    res = f.run_tree(tree, ["--fallback", "--release", R, "--db", str(world.db), "--repo", str(world.repo), "--m0", world.m0],
+                     world.repo, offline_env())  # fmt: skip
+    assert res.returncode == 0, res.stdout + res.stderr
+    got = json.loads(res.stdout)
+    assert f.same_record(got, json.loads(json.dumps(f.fallback_record(f.read_row(world.db, "2026-12-07"), R, ""))))
+    assert got["skip"] is None and got["row_digest"] == json.loads(world.raw)["row_digest"]
+    assert all(e["rules"] == "unchecked" for e in got["events"] if e["taken"]) and got["decision"]["fills"]
 
 
 def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsys):
@@ -730,6 +834,13 @@ def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsy
     _git(bare, "commit", "-q", "-m", "M0 without the scanner", home=world.home)
     _git(bare, "update-ref", "refs/remotes/origin/main", "HEAD", home=world.home)
     # finding 5: origin/main is trusted only after a fetch at or after 21:00 UTC of day T-3; T-3 takes origin/main only
+    assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
+    assert "may be stale (no FETCH_HEAD); run `git fetch origin main` first" in capsys.readouterr().out
+    # review C of item 490, finding 3: a failed `git fetch` leaves an empty FETCH_HEAD with a fresh mtime
+    fh, ts = bare / ".git" / "FETCH_HEAD", datetime(2026, 12, 7, 21, 30, tzinfo=UTC).timestamp()
+    fh.write_text("")
+    os.utime(fh, (ts, ts))
+    assert f.fetch_head(bare) is None
     assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
     assert "may be stale (no FETCH_HEAD); run `git fetch origin main` first" in capsys.readouterr().out
     fetched(bare, "2026-12-07T20:59:59+00:00")

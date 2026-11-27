@@ -1593,6 +1593,155 @@ def test_hlp_journal_without_its_tables_does_not_crash(tmp_path):
     assert "повного запису (trader_polls: " in unread["counters"][HLP] and "не прочитано" in unread["counters"][HLP]
 
 
+CPI = "pm-cpi-brackets-vs-nowcast-forward"
+CPI_CARD = [{"slug": CPI, "tags": frozenset({f"idea:{CPI}"})}]
+CPI_UNIT = "днів complete / stale з книгами в парі (books_paired = 1) і nowcast YoY не старшим за 4 дні"
+CPI_WE = "з них stale у суботу / неділю (Cleveland у вихідні файлів не оновлює)"
+CPI_WD = "з них stale у будній день (свято США, Cleveland не оновив файл або наш повторний запит не вдався)"
+CPI_OLD = "не зараховано: complete / stale, але остання точка YoY nowcast старша за 4 дні від дня рядка"
+CPI_PARTIAL = "не зараховано (partial чи books_paired ≠ 1: файлу nowcast нема чи він не читається, не всі серії Gamma перелічено"
+CPI_MISSING = "днів UTC без жодного рядка від першого запису до останнього дня, чия джоба закрилася (21:00 UTC)"
+CPI_DAY0 = cp._ms(2026, 11, 2) // 1000  # the report day (NOW = 2026-11-02 12:00 UTC, a Monday)
+CpiRow = tuple  # (days before the report day, status, books_paired, late[, nowcast lag in days or None[, YoY or None]])
+
+
+def _cpi_row(r: CpiRow) -> dict:
+    """One fixture row: written 15:30-16:10 UTC of its day; its last YoY nowcast point ``lag`` days before the day
+    (default 0, None = no point), a nowcast value and a book price that must never reach the report."""
+    k, st, paired, late, *rest = r
+    lag, yoy = rest[0] if rest else 0, rest[1] if len(rest) > 1 else 43.21
+    ts = CPI_DAY0 - k * 86_400
+    return {
+        "day": _utc_day(ts), "created_ts": ts + 15 * 3600 + 1800, "updated_ts": ts + 16 * 3600 + 600, "status": st,
+        "books_paired": paired, "late": late, "yoy_headline_pct": yoy, "target": "2026-11", "cf_year_sha": "a",
+        "cf_last_day_year": None if lag is None else _utc_day(ts - lag * 86_400),
+        "books": '{"brackets": [{"bid": 0.4321, "ask": 0.4322}]}',
+    }  # fmt: skip
+
+
+def _cpi(tmp_path: Path, rows: list[CpiRow], *, drop: bool = False, now: int = NOW):
+    """(journal counters, row, report text) of the CPI card on a fixture DB built by the real migrations (rows by
+    :func:`_cpi_row`)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    db = _db(tmp_path)
+    data = [_cpi_row(r) for r in rows]
+    cols = "day, created_ts, updated_ts, status, books_paired, late, yoy_headline_pct, target, cf_year_sha, cf_last_day_year, books"
+    _journal_rows(db, "pm_cpi_snapshot", cols, [tuple(d[c.strip()] for c in cols.split(",")) for d in data])
+    if drop:
+        con = sqlite3.connect(db)
+        con.execute("DROP TABLE pm_cpi_snapshot")
+        con.commit()
+        con.close()
+    inp = script.load_inputs(db, now)
+    got = inp["journals"][CPI]
+    r = script.journal_row(CPI_CARD, inp["journals"], [], now)
+    return got, r, cp.render({"now_ms": now, "forwards": [r], "notes": []})
+
+
+def _utc_day(ts: int) -> str:
+    return script._utc(ts, "%Y-%m-%d")
+
+
+def test_cpi_journal_counts_complete_and_stale_days_apart_from_partial(tmp_path):
+    """Item 499: the CPI card's daily snapshot is its journal; complete / stale days with paired books count (weekend
+    'stale' named apart), partial or unpaired days are named but not counted; the row of the report day, written after
+    the report moment (16:10 > 12:00), is not read; no nowcast or book value is read. Minimum and verdict as the card's
+    registration («Дійсний реліз», «Оцінка», «Ранній kill»)."""
+    rows = [(4, "partial", 0, 1), (3, "stale", 0, 0), (2, "complete", 1, 0), (1, "stale", 1, 0), (0, "complete", 1, 0)]
+    got, r, text = _cpi(tmp_path, rows)
+    first, last = cp._ms(2026, 10, 31, 15, 30) // 1000, cp._ms(2026, 11, 1, 16, 10) // 1000
+    assert got == {"n": 2, "first": first, "last": last, "all": 4, "stale_we": 1, "stale_wd": 0, "old": 0, "partial": 2,
+                   "late": 1, "missing": 0}  # fmt: skip
+    c = r["counters"][CPI]
+    assert r["n"] == 1 and not any(k.startswith("форвард без збору") for k in r["counters"])  # last counted day 20 h ago
+    assert c.startswith(f"журнал pm_cpi_snapshot: {CPI_UNIT} 2 (усіх записів 4), з 2026-10-31 15:30 до 2026-11-01 16:10 UTC; ")
+    assert f"; {CPI_WE} 1; {CPI_WD} 0; {CPI_OLD}" in c and f"; {CPI_PARTIAL}" in c and "законний" not in c
+    assert "збій чи основна серія без відкритих діапазонів" in c and "тут він свіжості не дає) 2;" in c
+    assert "після 17:00 UTC), усіх днів 1;" in c and f"{CPI_MISSING} 0;" in c and "не старший за 30 год" in c
+    assert "мінімум: n = 12 дійсних релізів CPI (дійсність визначає запис T-3" in c
+    assert c.endswith("вердикт: після 12 дійсних релізів (≈ листопад 2027, пропуски відсувають); ранній kill — перші 6 "
+                      "дійсних релізів з розривом q − mid < ask − bid у кожному діапазоні з моделлю")  # fmt: skip
+    assert "43.21" not in text and "4321" not in text
+
+
+def test_cpi_journal_absent_table_is_named(tmp_path):
+    got, r, _ = _cpi(tmp_path, [], drop=True)
+    assert got == {"absent": True}
+    assert r["counters"][CPI].startswith("журналу pm_cpi_snapshot у цій БД нема; мінімум: n = 12 дійсних релізів CPI")
+    assert r["counters"]["форвард без збору (1)"] == f"{CPI} (журналу pm_cpi_snapshot у БД нема)"
+
+
+def test_cpi_journal_of_partial_days_only_collects_nothing(tmp_path):
+    """Fresh partial days alone are not a collection: n = 0, «без збору», the partial days named."""
+    got, r, _ = _cpi(tmp_path, [(3, "partial", None, 0), (2, "partial", 0, 1), (1, "partial", 0, 0)])
+    assert (got["n"], got["all"], got["partial"], got["stale_we"], got["stale_wd"], got["last"]) == (0, 3, 3, 0, 0, None)
+    c = r["counters"][CPI]
+    assert r["n"] == 0 and c.startswith(f"журнал pm_cpi_snapshot: {CPI_UNIT} 0 (усіх записів 3, жодного зарахованого); {CPI_WE} 0")
+    assert f"{CPI_PARTIAL}" in c and "тут він свіжості не дає) 3;" in c
+    assert r["counters"]["форвард без збору (1)"] == f"{CPI} (у журналі pm_cpi_snapshot {CPI_UNIT} 0 з 3 записів)"
+
+
+def test_cpi_journal_silent_longer_than_its_threshold_is_without_collection(tmp_path):
+    """The job stopped (last day 3 days ago, the two days since without a row), or it goes on writing only partial
+    days: «без збору» with the time of the last counted day."""
+    silent = [(5, "complete", 1, 0), (4, "stale", 1, 0), (3, "complete", 1, 0)]
+    for name, rows, missing in (("silent", silent, 2), ("partial_after", [*silent, (2, "partial", 0, 0), (1, "partial", 0, 0)], 0)):
+        got, r, _ = _cpi(tmp_path / name, rows)
+        assert (got["n"], got["all"], got["stale_wd"], got["missing"]) == (3, len(rows), 1, missing), name
+        assert r["n"] == 0 and f"{CPI_WD} 1;" in r["counters"][CPI] and f"{CPI_MISSING} {missing};" in r["counters"][CPI], name
+        idle = r["counters"]["форвард без збору (1)"]
+        assert idle == f"{CPI} (останній запис pm_cpi_snapshot зарахованого дня 2026-10-30 16:10 UTC)", name
+
+
+def test_cpi_weekday_stale_row_is_not_called_a_weekend(tmp_path):
+    """Review C of item 499, blocker 2: 'stale' on Friday (a US holiday or Cleveland not updating) and on the weekend
+    are named apart; no label calls a weekday 'stale' a legitimate day."""
+    got, r, _ = _cpi(tmp_path, [(3, "stale", 1, 0, 1), (2, "stale", 1, 0, 2), (1, "stale", 1, 0, 3)])  # Fri, Sat, Sun
+    assert (got["n"], got["stale_wd"], got["stale_we"], got["old"]) == (3, 1, 2, 0)
+    c = r["counters"][CPI]
+    assert f"; {CPI_WE} 2; {CPI_WD} 1;" in c and "законний" not in c and r["n"] == 1
+
+
+def test_cpi_counted_days_follow_row_why_staleness(tmp_path):
+    """A day counts only when analytics.pm_cpi.row_why would admit its nowcast: last YoY point 0..STALE_DAYS days
+    before the row's day and a YoY value present; the SQL takes the bound from the constant."""
+    from tradedesk.analytics.pm_cpi import LATE_END, STALE_DAYS, row_why
+
+    assert STALE_DAYS == 4  # CPI_UNIT / CPI_OLD spell the registered 4 days
+    sql = script.CARD_JOURNALS[CPI].sql
+    assert f"BETWEEN 0 AND {STALE_DAYS}" in sql and f"date(w.t1 - {LATE_END.hour * 3600}, 'unixepoch')" in sql
+    rows = [(6, "complete", 1, 0, 0, None), (5, "complete", 1, 0, -1), (4, "stale", 1, 0, STALE_DAYS + 1),
+            (3, "stale", 1, 0, STALE_DAYS), (2, "complete", 1, 0, None), (1, "complete", 1, 0, 0)]  # fmt: skip
+    got, r, _ = _cpi(tmp_path, rows)
+    admitted = [row_why(d, d["day"], "2026-11") is None for d in map(_cpi_row, rows)]
+    assert admitted == [False, False, False, True, False, True]
+    assert (got["n"], got["old"], got["partial"], got["all"]) == (sum(admitted), 4, 0, 6)
+    assert f"{CPI_OLD}, пізніша за нього чи значення нема (row_why: nowcast stale / no yoy nowcast) 4;" in r["counters"][CPI]
+
+
+def test_cpi_frozen_source_is_without_collection(tmp_path):
+    """The Cleveland files froze on Tuesday 27.10 while the job goes on writing 'stale' rows with paired books: the
+    days up to 31.10 (last point 0..4 days old) count, 01.11 does not, and 43.8 h after the last counted day (inside
+    the shared 2 days, beyond the journal's 30 h) the card is «без збору»."""
+    got, r, _ = _cpi(tmp_path, [(k, "stale", 1, 0, 6 - k) for k in range(6, 0, -1)])
+    assert (got["n"], got["old"], got["stale_wd"], got["stale_we"], got["missing"]) == (5, 1, 4, 1, 0)
+    assert script.CPI_STALE_S < NOW // 1000 - int(got["last"]) < script.STALE_S
+    assert r["n"] == 0 and f"{CPI_OLD}" in r["counters"][CPI]
+    assert r["counters"]["форвард без збору (1)"] == f"{CPI} (останній запис pm_cpi_snapshot зарахованого дня 2026-10-31 16:10 UTC)"
+
+
+def test_cpi_days_without_a_row_are_counted(tmp_path):
+    """Review C of item 499, blocker 3: a gap inside the journal and its tail are counted as UTC days without a row; the
+    report day is missing only once its job has closed (21:00 UTC, analytics.pm_cpi.LATE_END)."""
+    got, r, _ = _cpi(tmp_path / "gap", [(6, "complete", 1, 0), (1, "complete", 1, 0)])  # 27.10 and 01.11
+    assert (got["n"], got["missing"]) == (2, 4) and r["n"] == 1 and f"{CPI_MISSING} 4;" in r["counters"][CPI]
+    tail = [(2, "complete", 1, 0), (1, "complete", 1, 0)]
+    for name, now, missing, fresh in (("20:59", NOW + 9 * H - 60_000, 0, 1), ("21:00", NOW + 9 * H, 1, 1), ("00:00", NOW + 12 * H, 1, 0)):
+        got, r, _ = _cpi(tmp_path / name.replace(":", ""), tail, now=now)
+        assert (got["missing"], r["n"]) == (missing, fresh), name
+        assert f"{CPI_MISSING} {missing};" in r["counters"][CPI], name
+
+
 def test_hlp_vaults_match_the_collector_and_the_live_fixture():
     from tradedesk.collector.scheduler import HLP_VENUE
     from tradedesk.providers.hyperliquid import HLP_VAULT

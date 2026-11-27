@@ -4,7 +4,11 @@
   START. OI is in base-asset coins, or USD when the request set `convert_to_usd=true`.
 * Funding is in PERCENT per funding interval (0.01 = 0.01 % = 1e-4); `FUNDING_PCT_TO_DECIMAL` turns it into our
   decimal fraction. Checked 2026-10-18 against Binance USDT-M payments (docs/reviews/2026-10-18-doubletop-parity-1b.md):
-  the daily `c` is the last settlement of the UTC day, `h` the largest settlement in the bar.
+  the daily `c` is the last settlement of the UTC day, `h` the largest settlement in the bar. Rechecked 2026-11-27
+  for BTC and ETH daily bars only, 1489 days 2022-10-30..2026-11-26 (docs/verification/2026-11-27-coinalyze-bybit-check.md):
+  `c` matches every day on Binance `.A` and Bybit `.6`; on Binance `o` (6-7 % of days), `h` and `l` (1-2 %, nearly
+  all in 2026) are the previous day's last settlement instead (on every such day; the carried `h` lies above the
+  day's own maximum, `l` below its minimum); on Bybit never for BTC/ETH daily bars in that window.
 * `/long-short-ratio-history` rows: `{"t", "r": long/short, "l": % of accounts long, "s": % short}` (l + s = 100;
   matches Binance `globalLongShortAccountRatio`, accounts, not notional). We return l and s as fractions in [0, 1].
 """

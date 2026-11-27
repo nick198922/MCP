@@ -64,6 +64,27 @@ at() { date -d "+$1 seconds" '+%H:%M' 2>/dev/null || date -v+"$1"S '+%H:%M'; }
 
 # Telegram only when the state changes (one message per wait, not one per check).
 STATE_NOW=""
+WAIT_SEEN=""
+
+# ensure_prs "<branches, one per line>": an agent branch without a pull request never merges and holds an open-branch
+# slot for good (25-27.11: GitHub answered HTTP 500 when agent/2026-11-25-deribit-collector-gaps was delivered, and
+# nothing retried). Open (or find) its PR; mark it ready when its step was handed over (delivered or stuck) and its
+# paths merge by themselves, the same rule as the launcher's handover.
+ensure_prs() {
+  local b stamp status body verdict ready
+  while IFS= read -r b; do
+    [[ -n "$b" ]] || continue
+    IFS=$'\t' read -r stamp status _ < <(grep -F "\`$b\`" "$LOG_DIR/history.tsv" 2>/dev/null | tail -1) || true
+    body="$LOG_DIR/${stamp:-none}.summary.md"
+    [[ -s "$body" ]] || body=/dev/null
+    verdict="$(git -C "$REPO" diff --name-only "origin/main...origin/$b" 2>/dev/null | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
+    ready=()
+    [[ ("${status:-}" == delivered || "${status:-}" == stuck) && "$verdict" == auto ]] && ready=(--ready)
+    python3 "$REPO/scripts/gh_pr.py" --repo nick198922/MCP --head "$b" --title "Agents: $b" --body-file "$body" ${ready[@]+"${ready[@]}"} >/dev/null 2>&1 ||
+      log "PR for $b could not be opened (will retry)"
+  done <<<"$1"
+}
+
 announce() {
   local key="$1"
   shift
@@ -139,11 +160,20 @@ wip_branch() {
   return 1
 }
 # Agent branches that wait to be merged: not merged, not a doctor's fix, not work in progress.
+# A branch whose last commit is older than STALE_OPEN seconds no longer holds a slot (owner 2026-11-27: «Щоб більше
+# такого не було!» — a branch whose work the doctor had already carried into main held one of two slots for two days).
+# It is not forgotten: its PR stays open, pr_watch reports a red or conflicting one, and the weekly audit lists leftovers.
+STALE_OPEN="${TRADEDESK_AGENTS_STALE_OPEN_SECONDS:-21600}"
+
 open_branches() {
-  local work b
+  local work b now
   work="$(work_branch)"
+  now="$(date +%s)"
   git -C "$REPO" branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##' | grep -v -- '-fix-' |
-    grep -vxF -- "${work:-//none//}" | while read -r b; do wip_branch "$b" || echo "$b"; done || true
+    grep -vxF -- "${work:-//none//}" | while read -r b; do
+    (($(git -C "$REPO" log -1 --format=%ct "origin/$b" 2>/dev/null || echo 0) < now - STALE_OPEN)) && continue
+    wip_branch "$b" || echo "$b"
+  done || true
 }
 
 # doctor "<what happened>" ["<failure signature>"]: the doctor, unless the usage limit is near. For a failure (with a
@@ -351,11 +381,17 @@ while true; do
   if ((n_open >= MAX_OPEN && leftovers == 0)); then
     log "waiting ${WAIT_REVIEW}s: $n_open agent branches await the owner's review"
     loop_state "чекають на злиття: $n_open гілки"
+    ensure_prs "$open"
     buttons=()
     while IFS= read -r b; do
       [[ -n "$b" ]] && buttons+=(--button "🔀 ${b#agent/}|https://github.com/nick198922/MCP/compare/main...$b?expand=1")
     done <<<"$open"
-    announce "review:$open" "⏸ **Агенти чекають, поки зіллються їхні PR** ($n_open гілки). Сторож PR кожні 15 хв перезапускає впалий CI і доливає зелені; якщо CI червоний і після перезапуску, прийде 🔴." ${buttons[@]+"${buttons[@]}"}
+    # Told only when the same branches still wait a round later: a fresh PR merging after CI is routine, not news
+    # (owner 2026-11-27: the ⏸ after every delivered step).
+    if [[ "$open" == "$WAIT_SEEN" ]]; then
+      announce "review:$open" "⏸ **Агенти чекають, поки зіллються їхні PR** ($n_open гілки) уже понад $((WAIT_REVIEW / 60)) хв. Сторож PR кожні 15 хв перезапускає впалий CI і доливає зелені; якщо CI червоний і після перезапуску, прийде 🔴." ${buttons[@]+"${buttons[@]}"}
+    fi
+    WAIT_SEEN="$open"
     # Ends early once one of them is merged: a delivered PR often merges seconds after this check (26-27.11: five
     # full half-hour waits for PRs already merged).
     idle_wait "$WAIT_REVIEW"

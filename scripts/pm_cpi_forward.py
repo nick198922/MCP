@@ -1075,19 +1075,27 @@ async def fetch_result(
 
 
 def load_stage(stage: str, release: str, root: Path, docs: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """A stage record: the clone's copy (merged into main) when there is one, else the local file (as :func:`load_t3`).
-    A file that is there but is not a JSON object gives None with its ``error`` named (review C of item 491, R4: never
-    taken for a missing file, never raised)."""
+    """A stage record: the clone's copy (merged into main) when it reads as a JSON object, else the local file (review
+    C of item 491, N1 (b): a clone's copy that does not read falls back to the local file). A file that is there but
+    is not a JSON object is never taken for a missing file and never raised (R4): when no copy reads, None with the
+    ``error`` of the first. Every other copy there is listed under ``also`` (kind, path, sha256, error), so a copy that
+    differs from the one read shows in the record."""
+    found: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
     for kind, p in (("docs", docs / release / f"{stage}.json"), ("local", root / release / f"{stage}.json")):
         if p.is_file():
             raw = p.read_bytes()
-            src = {"kind": kind, "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": None}
+            rec: Any = None
             try:
                 rec = json.loads(raw)
+                err = None if isinstance(rec, dict) else "not an object"
             except (ValueError, RecursionError) as e:
-                return None, {**src, "error": type(e).__name__}
-            return (rec, src) if isinstance(rec, dict) else (None, {**src, "error": "not an object"})
-    return None, {"kind": None, "path": None, "sha256": None, "error": None}
+                err = type(e).__name__
+            found.append(({"kind": kind, "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": err},
+                          rec if err is None else None))  # fmt: skip
+    if not found:
+        return None, {"kind": None, "path": None, "sha256": None, "error": None, "also": []}
+    src, rec = next((x for x in found if x[1] is not None), found[0])
+    return rec, {**src, "also": [s for s, _ in found if s is not src]}
 
 
 def t1_compare(rec1: Mapping[str, Any] | None, src: Mapping[str, Any], row: Mapping[str, Any] | None) -> tuple[bool, bool] | str | None:
@@ -1321,6 +1329,25 @@ def fetch_why(repo: Path, release: str, bound: datetime | None = None) -> str | 
     return None if t >= bound else f"last fetch {t.isoformat(timespec='seconds')} is before {bound.isoformat()}"
 
 
+def t3_journal_why(repo: Path, ref: str, release: str, root: Path, docs: Path) -> str | None:
+    """Why the T-3 record the result would read does not count (registration п. 7, result; review C of item 491, N1):
+    its sha256 (:func:`load_stage`) must be the one on the single line '<release> T−3 …' of «Форвард-журнал» in the
+    card on ``ref`` (:func:`journal_sha`), or there is neither a T-3 file nor such a line. A copy not read (the local
+    file beside a readable clone's copy) does not count here; the record lists it under ``also``. None when they
+    agree."""
+    card = git(repo, "show", f"{ref}:{CARD}", check=False)
+    if card.returncode != 0:
+        return f"no card on {ref}"
+    jsha, jwhy = journal_sha(card.stdout, release)
+    if jsha is None and jwhy != f"0 journal lines of {release} T-3":
+        return f"the journal of {ref}: {jwhy}"
+    _, src = load_stage("T-3", release, root, docs)
+    if src["sha256"] == jsha:  # the same sha256, or no file and no line
+        return None
+    have = f"{src['kind']} T-3.json has sha256 {src['sha256']}" if src["sha256"] else "no T-3.json in the clone or the state directory"
+    return f"{have}, the journal of {ref} {'has ' + jsha if jsha else 'has no T-3 line'}"
+
+
 def launch(
     stage: str,
     release: str,
@@ -1334,9 +1361,13 @@ def launch(
     tmp: Path,
     http_retries: int = 2,
     env: Mapping[str, str] | None = None,
+    default_db: Path = DEFAULT_DB,
 ) -> int:
     """A write stage from the command line: refuse early, pick the commit (T-3: M0; result: R; else HEAD), extract its
-    CODE_PATHS and run that tree's scanner in a subprocess with ``now`` as D."""
+    CODE_PATHS and run that tree's scanner in a subprocess with ``now`` as D. The result reads only ``default_db``
+    (the collector's database; tests supply their own) and only a T-3 record that agrees with the journal of main
+    (:func:`t3_journal_why`; review C of item 491, N1 (b)): a written file with other inputs would not count, and it is
+    written once."""
     why = stage_why(stage, release, now)
     if why is not None:
         say(f"not written: {stage} {release} at {now.isoformat()} is outside its window ({why}): {stage_window(stage, release)}")
@@ -1364,6 +1395,9 @@ def launch(
         if ref != DEFAULT_REF:
             say(f"not written: the result takes R from {DEFAULT_REF} only (registration п. 7), not from {ref}")
             return 1
+        if db != default_db:
+            say(f"not written: the result reads the collector's database {default_db} only (registration п. 7, result), not {db}")
+            return 1
         stale = fetch_why(repo, release, pub)
         if stale is not None:
             say(f"not written: {DEFAULT_REF} may be stale ({stale}); run `git fetch origin main` first (registration п. 7)")
@@ -1381,6 +1415,11 @@ def launch(
             say(f"not written: the scanner of R {sha[:12]} (main before the publication {pub.isoformat()}) has no result "
                 "stage: item 491 reached main after it. Nothing is run, not HEAD either: the code of the result must be "
                 "older than the outcome (registration п. 7, result)")  # fmt: skip
+            return 1
+        t3why = t3_journal_why(repo, ref, release, root, docs)
+        if t3why is not None:
+            say(f"not written: the T-3 record the result would read is not the journal's ({t3why}); take the copy of "
+                f"{DOCS_DIR}/{release}/T-3.json from {ref} and run again (registration п. 7, result)")  # fmt: skip
             return 1
         m0 = None
     else:

@@ -748,14 +748,26 @@ def test_result_clv_comes_from_the_database_row_not_from_t1_json(tmp_path):
 @pytest.mark.parametrize(("stage", "raw", "err"), [("T-1", b"not json", "JSONDecodeError"), ("T-1", b"[1, 2]", "not an object"),
                                                    ("T-3", b"not json", "JSONDecodeError"), ("T-3", b"[1, 2]", "not an object")])  # fmt: skip
 def test_result_with_an_unreadable_stage_file_is_written_and_says_so(tmp_path, stage, raw, err):
-    # review C of item 491, R4: neither unwritable nor taken for a missing file
+    # review C of item 491, R4: neither unwritable nor taken for a missing file; N1 (b): a clone's copy that does not
+    # read falls back to the local file, and both are recorded
     db = _staged(tmp_path)
-    p = tmp_path / "docs" / R / f"{stage}.json"
+    key = {"T-1": "t1_file", "T-3": "t3_file"}[stage]
+    p, local = tmp_path / "docs" / R / f"{stage}.json", tmp_path / "state" / R / f"{stage}.json"
+    good = local.read_bytes()
     p.write_bytes(raw)
+    bad = {"kind": "docs", "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": err}
     assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 0
     rec = rec_of(tmp_path, "result")
-    src = rec[{"T-1": "t1_file", "T-3": "t3_file"}[stage]]
-    assert src == {"kind": "docs", "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": err}
+    assert rec[key] == {"kind": "local", "path": str(local), "sha256": hashlib.sha256(good).hexdigest(), "error": None, "also": [bad]}
+    assert rec["absent"] == [] and rec["markets_from"] == "T-3 record" and rec["clv_rel"]["n"] > 0
+    assert rec["t1_check"] == {"row_digest_db": True, "quotes": True}
+    # no copy reads: the error of the clone's copy, the other listed; the file is written all the same
+    for out in (tmp_path / "state" / R / "result.json", tmp_path / "docs" / R / "result.json"):
+        out.unlink()
+    local.write_bytes(raw)
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    assert rec[key] == {**bad, "also": [{**bad, "kind": "local", "path": str(local)}]}
     if stage == "T-1":
         assert rec["t1_check"] == {"unreadable": f"unreadable ({err})"} and rec["clv_rel"]["n"] > 0  # CLV from the row
     else:
@@ -1145,7 +1157,8 @@ def test_result_runs_the_code_of_r_not_head(world, tmp_path, capsys, monkeypatch
     # and origin/main, changes the Brier code and is not run
     assert f.publication_utc(R) == datetime(2026, 12, 10, 13, 30, tzinfo=UTC)
     assert f.publication_utc("2027-07-15") == datetime(2027, 7, 15, 12, 30, tzinfo=UTC)  # daylight saving: 08:30 EDT
-    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path}
+    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path,
+          "default_db": world.db}  # fmt: skip
 
     def later(repo):
         p = repo / "src/tradedesk/analytics/pm_cpi.py"
@@ -1183,7 +1196,7 @@ def test_result_runs_the_code_of_r_not_head(world, tmp_path, capsys, monkeypatch
 
 def test_result_refuses_a_stale_fetch_another_ref_and_an_r_without_the_stage(world, tmp_path, capsys, monkeypatch):
     # review C of item 491, blocker 1: refused, never run by HEAD instead
-    kw = {"repo": world.repo, "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path}
+    kw = {"repo": world.repo, "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path, "default_db": world.db}
     monkeypatch.setattr(f, "run_tree", lambda *a, **k: pytest.fail("no tree may run"))
     capsys.readouterr()
     assert f.launch("result", R, AT_RESULT, ref="main", **kw) == 1
@@ -1209,6 +1222,64 @@ def test_result_refuses_a_stale_fetch_another_ref_and_an_r_without_the_stage(wor
         out = capsys.readouterr().out
         assert f"the scanner of R {r[:12]} (main before the publication 2026-12-10T13:30:00+00:00) has no result stage" in out
         assert ") extracted to" not in out and not list(tmp_path.glob("pm_cpi_code_*")) and not (tmp_path / "s").exists()
+    finally:
+        _restore(world)
+
+
+def test_result_refuses_another_db_and_a_t3_record_not_of_the_journal(world, tmp_path, capsys, monkeypatch):
+    # review C of item 491, N1 (b): a result.json read from another database or another T-3 record would hold its one
+    # canonical place for good and not count (registration п. 7, result: only with db = the collector's and
+    # t3_file.sha256 = the sha256 on the journal line T−3), so such a run is refused before any tree runs
+    root, docs = tmp_path / "s", tmp_path / "d"
+    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": root, "docs": docs, "tmp": tmp_path}
+    ran: list = []
+
+    def run(tree, args, repo, env=None):
+        ran.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(f, "run_tree", run)
+    capsys.readouterr()
+    assert f.launch("result", R, AT_RESULT, **kw) == 1  # default_db: the collector's database
+    assert f"reads the collector's database {f.DEFAULT_DB} only (registration п. 7, result), not {world.db}" in capsys.readouterr().out
+    assert ran == [] and not list(tmp_path.glob("pm_cpi_code_*"))
+    kw["default_db"] = world.db
+    good = hashlib.sha256(world.raw).hexdigest()
+    t3_docs, t3_local = docs / R / "T-3.json", root / R / "T-3.json"
+    t3_docs.parent.mkdir(parents=True)
+    t3_local.parent.mkdir(parents=True)
+    # the journal of main (the world's card) has no T-3 line: a T-3 file does not count
+    t3_docs.write_bytes(world.raw)
+    assert f.launch("result", R, AT_RESULT, **kw) == 1
+    assert f"(docs T-3.json has sha256 {good}, the journal of origin/main has no T-3 line)" in capsys.readouterr().out
+    line = f"{R} T−3 · D {AT_T3.isoformat()} · джерело рядок 2026-12-07 · без сигналу · sha256 {good}\n"
+    try:
+        _main_with(world, "two", "2026-12-08T10:00:00Z", lambda repo: (repo / f.CARD).write_text(CARD_TEXT.format(lines=line * 2)))
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        assert f"(the journal of origin/main: 2 journal lines of {R} T-3)" in capsys.readouterr().out
+        r = _main_with(world, "journal", "2026-12-08T10:00:00Z", lambda repo: (repo / f.CARD).write_text(CARD_TEXT.format(lines=line)))
+        assert f.r_of(world.repo, "origin/main", R) == r
+        # scenario 3: the clone's copy changed (a merge conflict, a hand edit) while the local file is right
+        t3_local.write_bytes(world.raw)
+        edited = _edit(world.raw, skip="model")
+        t3_docs.write_bytes(edited)
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        out = capsys.readouterr().out
+        assert f"(docs T-3.json has sha256 {hashlib.sha256(edited).hexdigest()}, the journal of origin/main has {good})" in out
+        assert ran == []
+        # the clone's copy does not read: the local file is read (load_stage), and it is the journal's
+        t3_docs.write_bytes(b"not json")
+        assert f.launch("result", R, AT_RESULT, **kw) == 0 and ran[-1][ran[-1].index("--r") + 1] == r
+        # the clone's copy is the journal's: a local file that is not read does not count (it is listed under `also`)
+        t3_docs.write_bytes(world.raw)
+        t3_local.write_bytes(b"x")
+        assert f.launch("result", R, AT_RESULT, **kw) == 0 and len(ran) == 2
+        # no T-3 file while the journal has the line
+        t3_docs.unlink()
+        t3_local.unlink()
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        assert f"(no T-3.json in the clone or the state directory, the journal of origin/main has {good})" in capsys.readouterr().out
+        assert len(ran) == 2
     finally:
         _restore(world)
 

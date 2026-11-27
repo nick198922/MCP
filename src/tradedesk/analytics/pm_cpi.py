@@ -1001,3 +1001,181 @@ def sigma_archive(errors: Iterable[Mapping[str, Any]]) -> tuple[float | None, in
     without any."""
     e = [float(r["error"]) for r in errors if _finite(r.get("error"))]
     return (math.sqrt(sum(x * x for x in e) / len(e)), len(e)) if e else (None, 0)
+
+
+# ------------------------------------------------------------- the result (registration п. 7, 8; item 491)
+# Written in main before the release of 2026-12-10, so the CLV / Brier code was fixed without knowing any outcome.
+
+
+def fred_levels(csv_text: Any) -> dict[str, str]:
+    """A FRED graph CSV (a header line, then 'YYYY-MM-DD,value') -> {'YYYY-MM': the value as text}, for
+    :func:`yoy_published`; an empty or '.' value (October 2025: never published) and a line that does not read are
+    left out."""
+    out: dict[str, str] = {}
+    if not isinstance(csv_text, str):
+        return out
+    for line in csv_text.splitlines()[1:]:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[0]) and parts[1] not in ("", "."):
+            out[parts[0][:7]] = parts[1]
+    return out
+
+
+RESULT_CUTOFF_DAYS = 30  # registration п. 7, result (item 491, review C, blocker 2): from RESULT_FROM of release + 30 days
+# The only payouts of a resolved YES / NO market of Polymarket: YES won, NO won, or the 50 / 50 split (review C of item
+# 491, blocker 3: last trading prices such as 0.9995 / 0.0005 can stand in ``outcomePrices`` of a market that reads
+# 'resolved' and are not a payout).
+PAYOUTS = ((1.0, 0.0), (0.0, 1.0), (0.5, 0.5))
+
+
+def result_cutoff(release: str) -> datetime:
+    """The end of the wait of the result stage (registration п. 7, as amended 27.11 by item 491): ``RESULT_CUTOFF_DAYS``
+    days after the first moment of its window (15:00 UTC of the release day), from the release day alone. From then on
+    a market that has answered without a resolution is written under ``absent`` (its event gets no Brier, 'no payout')
+    and a CPI that FRED does not have makes the release invalid (п. 5)."""
+    return stage_window("result", release)[0] + timedelta(days=RESULT_CUTOFF_DAYS)
+
+
+def pm_resolution(market: Any) -> dict[str, Any]:
+    """Polymarket's resolution of one YES / NO market from its Gamma ``/markets/{id}`` answer (registration п. 7, 8:
+    the payout of Polymarket counts). -> {"state", "yes", "closed", "uma_status"}: 'resolved' when ``closed`` is True,
+    ``umaResolutionStatus`` is 'resolved', ``outcomes`` are ['Yes', 'No'] and ``outcomePrices`` one of ``PAYOUTS``
+    ([1, 0], [0, 1] or [0.5, 0.5]); then ``yes`` = the payout of a YES share in USD (1, 0 or 0.5). Else ``yes`` None
+    and the state 'open' (not closed), 'pending' (closed, the UMA status not 'resolved') or 'unreadable' (another
+    shape, including prices that are not a payout: not final, the stage waits)."""
+    if not isinstance(market, Mapping):
+        return {"state": "unreadable", "yes": None, "closed": None, "uma_status": None}
+    closed, status = market.get("closed"), market.get("umaResolutionStatus")
+    base = {"closed": closed if isinstance(closed, bool) else None, "uma_status": status if isinstance(status, str) else None}
+    if closed is not True:
+        return {"state": "open", "yes": None, **base}
+    if status != "resolved":
+        return {"state": "pending", "yes": None, **base}
+    outs, prices = json_list(market.get("outcomes")), json_list(market.get("outcomePrices"))
+    p = [_payout(x) for x in prices or []]
+    if [str(o).strip().lower() for o in outs or []] != ["yes", "no"] or tuple(p) not in PAYOUTS:
+        return {"state": "unreadable", "yes": None, **base}
+    return {"state": "resolved", "yes": p[0], **base}
+
+
+def _payout(v: Any) -> float | None:
+    """A payout price of ``outcomePrices`` ('0', '1', '0.5', or a number) as a finite float, else None."""
+    if isinstance(v, bool) or not isinstance(v, str | int | float):
+        return None
+    try:
+        x = float(v)
+    except (ValueError, OverflowError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _tenths(value: Any) -> int | None:
+    return round(float(value) * 10) if _finite(value) else None
+
+
+def contains(interval: Any, value: Any) -> bool:
+    """The bracket ``interval`` (:func:`parse_bracket`: tenths of a point, inclusive, None = open) holds the published
+    12-month change ``value`` (percent, one decimal)."""
+    v = _tenths(value)
+    if v is None or not isinstance(interval, list | tuple) or len(interval) != 2:
+        return False
+    lo, hi = interval
+    return (lo is None or lo <= v) and (hi is None or v <= hi)
+
+
+def resolution_check(brackets_: Iterable[Mapping[str, Any]], cpi: Any) -> list[dict[str, Any]]:
+    """Per event of ``brackets_`` ({"event_id", "market_id", "title", "yes"}: ``yes`` = Polymarket's YES payout) the
+    market ids Polymarket paid in full (``pm_yes``, payout 1) and the ids whose title holds the published value ``cpi``
+    (``cpi_yes``); ``agree`` when both are the same single market. Registration п. 7: when they differ, the payout of
+    Polymarket counts, and both values are written."""
+    by: dict[str, list[Mapping[str, Any]]] = {}
+    for b in brackets_:
+        by.setdefault(str(b.get("event_id")), []).append(b)
+    out = []
+    for eid in sorted(by):
+        bs = by[eid]
+        pm = [str(b.get("market_id")) for b in bs if _finite(b.get("yes")) and b["yes"] >= 1.0 - 1e-9]
+        bl = [str(b.get("market_id")) for b in bs if contains(parse_bracket(b.get("title")), cpi)]
+        out.append({"event_id": eid, "pm_yes": pm, "cpi_yes": bl, "agree": len(pm) == 1 and pm == bl})
+    return out
+
+
+def market_prob(bid: Any, ask: Any) -> float:
+    """The market's probability of one bracket for the Brier score (registration п. 8), before the normalisation: the
+    mid; ask / 2 without a bid, (bid + 1) / 2 without an ask; 0 without any quote."""
+    b = float(bid) if _finite(bid) else None
+    a = float(ask) if _finite(ask) else None
+    if b is not None and a is not None:
+        return (b + a) / 2
+    if a is not None:
+        return a / 2
+    if b is not None:
+        return (b + 1) / 2
+    return 0.0
+
+
+def brier_release(rows: Iterable[Mapping[str, Any]], payout: Mapping[str, Any]) -> dict[str, Any]:
+    """Brier at T-3 of the model and of the market (registration п. 8) over every event of the release with a model.
+    ``rows``: the ``rule_signals`` of the T-3 decision (``event``, ``market_id``, ``q``, ``bid``, ``ask``; a row with
+    ``q`` None has no model and is left out); ``payout``: {market_id: Polymarket's YES payout} (the outcome y). Per
+    event: the market vector p of :func:`market_prob` normalised to a sum of 1, Brier = sum (p_i - y_i)^2, the model
+    the same with q. An event without any quote (every p 0) is in neither score ('no quotes'), an event with a bracket
+    without a payout neither ('no payout'). The release: the mean over the events counted, ``delta`` = model - market
+    (ΔBrier < 0: the model is better); None without an event counted. ``market_raw`` (not normalised) is descriptive."""
+    by: dict[Any, list[Mapping[str, Any]]] = {}
+    for r in rows:
+        if isinstance(r, Mapping) and _finite(r.get("q")):
+            by.setdefault(r.get("event"), []).append(r)
+    events = []
+    for k in sorted(by, key=str):
+        rs = by[k]
+        p = [market_prob(r.get("bid"), r.get("ask")) for r in rs]
+        y = [payout.get(str(r.get("market_id"))) for r in rs]
+        e: dict[str, Any] = {"event": k, "n_brackets": len(rs), "model": None, "market": None, "market_raw": None, "why": None}
+        if not all(_finite(v) for v in y):
+            e["why"] = "no payout"
+        elif sum(p) <= 0:
+            e["why"] = "no quotes"
+        else:
+            s = sum(p)
+            e["model"] = sum((float(r["q"]) - float(v)) ** 2 for r, v in zip(rs, y, strict=True))
+            e["market"] = sum((pi / s - float(v)) ** 2 for pi, v in zip(p, y, strict=True))
+            e["market_raw"] = sum((pi - float(v)) ** 2 for pi, v in zip(p, y, strict=True))
+        events.append(e)
+    used = [e for e in events if e["why"] is None]
+    n = len(used)
+    model = sum(e["model"] for e in used) / n if n else None
+    market = sum(e["market"] for e in used) / n if n else None
+    raw = sum(e["market_raw"] for e in used) / n if n else None
+    return {"events": events, "n_events": n, "model": model, "market": market,
+            "delta": model - market if model is not None and market is not None else None, "market_raw": raw}  # fmt: skip
+
+
+def signal_figures(fill_: Mapping[str, Any], bid1: Any, ask1: Any, payout: Any, exit_fee: Any = None) -> dict[str, Any]:
+    """CLV and the paper result of one signal (registration п. 8) from its ``fill`` (``shares``, ``p_in``,
+    ``cost_usd`` with fee, ``fee_usd``, ``executable``), the T-1 quote of its token (:func:`close_quote`),
+    Polymarket's YES payout and ``exit_fee``, the taker fee per share of a sale at the T-1 bid (:func:`taker_fee` with
+    the bracket's fee fields). ``clv`` (:func:`clv`; USD per signal is the primary unit) only for an executable
+    signal; descriptive: ``usd_per_cost`` = CLV$ / cost, ``net_usd`` = CLV$ - the entry fee, ``exit_fee_usd`` = shares
+    x ``exit_fee``, ``exit_usd`` = shares x (bid T-1 - p_in) - the entry fee - the exit fee (п. 8 «виконуваний вихід
+    … − комісія»: both taker fees of the round trip), ``paper_usd`` = shares x payout - cost (net of the entry fee; no
+    fee at resolution). Any of them None when an input is missing (never filled in)."""
+    sh, p_in, cost, fee = (fill_.get(k) for k in ("shares", "p_in", "cost_usd", "fee_usd"))
+    c = clv(p_in, sh, bid1, ask1) if fill_.get("executable") is True else None
+    ok = c is not None and _finite(cost) and _finite(fee)
+    out_fee = sh * exit_fee if ok and _finite(exit_fee) else None
+    return {
+        "clv": c,
+        "usd_per_cost": c["usd"] / cost if ok and cost > 0 else None,
+        "net_usd": c["usd"] - fee if ok else None,
+        "exit_fee_usd": out_fee,
+        "exit_usd": sh * (bid1 - p_in) - fee - out_fee if out_fee is not None else None,
+        "paper_usd": sh * payout - cost if all(_finite(x) for x in (sh, payout, cost)) else None,
+    }
+
+
+def clv_release(figures: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """CLV_rel of a release (registration п. 8): the sum of CLV$ over its executable signals with a T-1 mid, and their
+    number; ``usd`` None when there is none (such a release does not enter the mean CLV)."""
+    v = [float(f["clv"]["usd"]) for f in figures if isinstance(f.get("clv"), Mapping) and _finite(f["clv"].get("usd"))]
+    return {"usd": sum(v) if v else None, "n": len(v)}

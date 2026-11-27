@@ -16,17 +16,18 @@ import shutil
 import subprocess
 import sys
 import zlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from tradedesk.analytics.pm_cpi import book_depth, bracket_prob, brackets, clv, row_digest, with_book
+from tradedesk.analytics.pm_cpi import book_depth, bracket_prob, brackets, brier_release, clv, row_digest, with_book
 from tradedesk.collector.pm_cpi_snapshot import SERIES
 from tradedesk.config import Settings
 from tradedesk.core.errors import ProviderError
+from tradedesk.core.http import Http
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.store import Store
@@ -518,6 +519,262 @@ def test_t1_without_a_row_has_no_clv_and_t7_is_a_record_without_decision(tmp_pat
     assert rec["source"]["why"] == "no row" and rec["quotes"] == {} and rec["clv"] is None and rec["t3_file"]["kind"] is None
 
 
+# ------------------------------------------------------------------------------------------- the result (item 491)
+# Synthetic outcomes only: the real samples (a resolved October 2026 market, the FRED tail of 2026-11-27) give the
+# response shapes; the CPI of 2026-11 and every payout below are made up (no December price is compared with anything).
+
+RESOLVED = json.loads((REPO_ROOT / "tests" / "fixtures" / "polymarket_cpi_resolved_market_2026-11-27.json").read_text())["market"]
+FRED_TAIL = json.loads((REPO_ROOT / "tests" / "fixtures" / "fred_cpiaucns_tail_2026-11-27.json").read_text())["csv"]
+CSV_NOV = FRED_TAIL + "2026-11-01,336.000\n"  # synthetic level: 336.000 / 324.122 - 1 = 3.6647 % -> 3.7
+AT_RESULT = datetime(2026, 12, 10, 15, 30, tzinfo=UTC)
+
+
+def resolved(yes="3.8%", eid="e1"):
+    """Resolved /markets/{id} answers (the real resolved sample's shape) of the YoY event: YES pays on ``yes``."""
+    return {f"{eid}m{i}": {**RESOLVED, "id": f"{eid}m{i}", "outcomePrices": '["1", "0"]' if t == yes else '["0", "1"]'}
+            for i, t in enumerate(TITLES)}  # fmt: skip
+
+
+def fred(csv=CSV_NOV, down=False, calls=None):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(req.url.path + "?" + req.url.query.decode())
+        return httpx.Response(500, text="down") if down else httpx.Response(200, content=csv.encode())
+
+    return lambda: Http("fred", f.FRED_URL, retries=0, backoff_base=0.0, transport=httpx.MockTransport(handler))
+
+
+def write_res(at, tmp_path, db, rt_factory, fred_factory, code_sha="HEAD", r="HEAD"):
+    """The result stage in this process (``r`` = ``code_sha``: as `launch` runs it, the tree of R; the selection of R
+    itself is tested with the git world below)."""
+    return f.write_stage("result", R, at, db=db, root=tmp_path / "state", docs=tmp_path / "docs", repo=REPO_ROOT,
+                         code_sha=code_sha, m0=None, tree=REPO_ROOT, rt_factory=rt_factory, fred_factory=fred_factory,
+                         r=r)  # fmt: skip
+
+
+def test_result_waits_until_every_input_is_final_then_writes_once(tmp_path, capsys):
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"), synth_row("2026-12-09", asks={"3.8%": 0.15, "3.7%": 0.09}))
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt()) == 0
+    assert write("T-1", AT_T1, tmp_path, db) == 0
+    t3 = rec_of(tmp_path, "T-3")
+    assert t3["decision"]["fills"]
+    calls: list = []
+    assert write_res(datetime(2026, 12, 10, 14, 59, 59, tzinfo=UTC), tmp_path, db, gamma_rt(resolved(), calls=calls), fred()) == 1
+    assert "outside its window (early)" in capsys.readouterr().out and calls == []
+    # not final: nothing written, every reason printed (the stage is run again later)
+    for rt, fr, want in ((gamma_rt(resolved()), fred(down=True), "not final: cpi: request failed"),
+                         (gamma_rt(resolved()), fred(FRED_TAIL), "not final: cpi: not published"),
+                         (gamma_rt(), fred(), "not final: polymarket e1m0: open"),
+                         (gamma_rt({**resolved(), "e1m3": {**RESOLVED, "id": "e1m3", "umaResolutionStatus": "proposed"}}), fred(),
+                          "not final: polymarket e1m3: pending"),
+                         (gamma_rt(down=True), fred(), "not final: polymarket e1m11: request failed")):  # fmt: skip
+        assert write_res(AT_RESULT, tmp_path, db, rt, fr) == 1
+        out = capsys.readouterr().out
+        assert want in out and "not written: result" in out, out
+        assert not (tmp_path / "state" / R / "result.json").exists() and not (tmp_path / "docs" / R / "result.json").exists()
+    fred_calls: list = []
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved(), calls=calls), fred(calls=fred_calls)) == 0
+    out = capsys.readouterr().out.splitlines()
+    raw = (tmp_path / "state" / R / "result.json").read_bytes()
+    assert (tmp_path / "docs" / R / "result.json").read_bytes() == raw
+    rec = json.loads(raw, parse_constant=lambda c: pytest.fail(f"non-strict JSON literal {c}"))
+    assert sorted(calls) == sorted(f"/markets/e1m{i}" for i in range(12))  # every market of the YoY event, nothing else
+    assert fred_calls == ["/graph/fredgraph.csv?id=CPIAUCNS"]
+    assert rec["stage"] == "result" and rec["D"] == AT_RESULT.isoformat() and "pending" not in rec
+    assert rec["cpi"]["value"] == 3.7 and (rec["cpi"]["level"], rec["cpi"]["level_12m_before"]) == ("336.000", "324.122")
+    assert rec["cpi"]["csv_sha256"] == hashlib.sha256(CSV_NOV.encode()).hexdigest()
+    # both values written: Polymarket paid 3.8 %, the published CPI is 3.7 %; the payout of Polymarket counts
+    assert rec["resolution_check"] == [{"event_id": "e1", "pm_yes": ["e1m5"], "cpi_yes": ["e1m4"], "agree": False}]
+    assert rec["resolution"]["e1m5"]["yes"] == 1.0 and rec["resolution"]["e1m4"]["yes"] == 0.0
+    pay = {f"e1m{i}": 1.0 if t == "3.8%" else 0.0 for i, t in enumerate(TITLES)}
+    assert f.same_record(rec["brier_t3"], json.loads(json.dumps(brier_release(t3["decision"]["rule_signals"], pay))))
+    by_cpi = {f"e1m{i}": 1.0 if t == "3.7%" else 0.0 for i, t in enumerate(TITLES)}
+    assert rec["brier_t3"]["model"] != pytest.approx(brier_release(t3["decision"]["rule_signals"], by_cpi)["model"])
+    assert rec["brier_t3"]["n_events"] == 1 and rec["brier_t3"]["delta"] is not None
+    # CLV$ from close_quote of the T-1 row (bid 0.14 / ask 0.15 for 3.8 %), the paper result from the payout
+    sig = {s["title"]: s for s in rec["signals"]}
+    fl = {x["title"]: x for x in t3["decision"]["fills"]}
+    s38 = sig["3.8%"]
+    assert (s38["bid_t1"], s38["ask_t1"], s38["payout"], s38["why"]) == (0.14, 0.15, 1.0, None)
+    assert s38["clv"]["usd"] == pytest.approx(fl["3.8%"]["shares"] * ((0.14 + 0.15) / 2 - fl["3.8%"]["p_in"]))
+    assert s38["paper_usd"] == pytest.approx(fl["3.8%"]["shares"] - fl["3.8%"]["cost_usd"])
+    assert sig["3.7%"]["paper_usd"] == pytest.approx(-fl["3.7%"]["cost_usd"])
+    ex = [s for s in rec["signals"] if s["executable"]]
+    assert rec["clv_rel"] == {"usd": pytest.approx(sum(s["clv"]["usd"] for s in ex)), "n": len(ex)}
+    assert rec["t1_check"] == {"row_digest_db": True, "quotes": True} and rec["t1_file"]["kind"] == "docs"
+    assert rec["t1_row_digest"] == row_digest(f.read_row(db, "2026-12-09"))
+    t3_raw = (tmp_path / "docs" / R / "T-3.json").read_bytes()
+    assert rec["t3_file"]["kind"] == "docs" and rec["t3_file"]["sha256"] == hashlib.sha256(t3_raw).hexdigest()
+    assert rec["absent"] == [] and rec["missing"] == [] and rec["markets_from"] == "T-3 record"
+    # the rule text at the resolution (the real sample's) is not the one Gamma gave at T-3 (RULES): shown
+    assert all(r["rules_changed_since_t3"] is True and r["phrases"]["one decimal"] for r in rec["resolution"].values())
+    assert rec["code_sha"] == rec["R"] == "HEAD" and "M0" not in rec and rec["CODE_PATHS"] == list(f.CODE_PATHS)
+    assert rec["db"] == str(db) and rec["cutoff"] == "2027-01-09T15:00:00+00:00" and rec["invalid"] is None  # R3, blocker 2
+    # R1: the exit figure takes off both taker fees (entry, and the exit at the T-1 bid by the bracket's fee schedule)
+    rs = {r["token"]: r for r in t3["decision"]["rule_signals"]}
+    out_fee = f.taker_fee(0.14, "economics_fees", rs[s38["token"]]["fee_schedule"], rs[s38["token"]]["fees_enabled"])
+    assert s38["exit_fee_usd"] == pytest.approx(s38["shares"] * out_fee) and s38["exit_fee_usd"] > 0
+    assert s38["exit_usd"] == pytest.approx(s38["shares"] * (0.14 - s38["p_in"]) - s38["fee_usd"] - s38["exit_fee_usd"])
+    line = out[out.index(f.JOURNAL_NOTE) + 1]
+    assert line.startswith(f"{R} result · D {AT_RESULT.isoformat()} · R HEAD · CPI 2026-11 3.7 % (FRED CPIAUCNS)")
+    assert f.journal_sha(CARD_TEXT.format(lines=line + "\n"), R, "result") == (hashlib.sha256(raw).hexdigest(), None)
+    # written once
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 1 and "exists" in capsys.readouterr().out
+    assert (tmp_path / "state" / R / "result.json").read_bytes() == raw
+
+
+def test_result_without_a_t3_record_or_a_t1_row_writes_what_can_never_come_as_absent(tmp_path):
+    # no T-3 record: the markets of the YoY events of the database row of day T-3 (set B, п. 8 (в), needs their outcome)
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"))
+    calls: list = []
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved(), calls=calls), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    assert sorted(calls) == sorted(f"/markets/e1m{i}" for i in range(12)) and rec["markets_from"] == "database row of day T-3"
+    assert rec["absent"] == ["t3: no T-3 record (markets from the database row of day T-3)"] and rec["t3_file"]["kind"] is None
+    assert rec["brier_t3"] is None and rec["signals"] == [] and rec["clv_rel"] == {"usd": None, "n": 0}
+    assert rec["t1_source"] == {"day": "2026-12-09", "why": "no row"} and rec["t1_check"] is None
+    assert rec["resolution_check"][0]["pm_yes"] == ["e1m5"]
+    # no row at all: no market to ask, the CPI is enough
+    empty = tmp_path / "e"
+    empty.mkdir()
+    db2 = make_db(empty / "db.sqlite")
+    assert write_res(AT_RESULT, empty, db2, gamma_rt(down=True), fred()) == 0
+    rec = rec_of(empty, "result")
+    assert rec["resolution"] == {} and rec["cpi"]["value"] == 3.7 and rec["markets_from"] is None
+    assert rec["absent"] == ["t3: no T-3 record (markets from the database row of day T-3)", "no YoY event (no market asked)"]
+
+
+def test_result_reads_only_the_rebuilt_fields_and_the_gamma_part(tmp_path):
+    rec = {**dict.fromkeys(f.T3_KEYS, None), "note": "an extra key"}
+    assert set(f.t3_part(rec)) == {*f.REBUILT, "gamma", "gamma_events"} and f.t3_part(None) is None
+    # an event left out only by the rule phrases (set B «rules») is still a YoY event of the release for the result
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"))
+    answers = {f"e1m{i}": gamma_answer(f"e1m{i}", desc="12-month change, one decimal") for i in range(12)}
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(answers)) == 0
+    t3 = rec_of(tmp_path, "T-3")
+    assert t3["skip"] == "no YoY event" and f.b_why(t3) == "rules"
+    assert [b["market_id"] for b in f.yoy_brackets(f.t3_part(t3))] == [f"e1m{i}" for i in range(12)]
+
+
+CUTOFF = datetime(2027, 1, 9, 15, 0, tzinfo=UTC)  # 15:00 UTC of 10.12 + 30 days (registration п. 7, result)
+
+
+def _staged(tmp_path):
+    """T-3 (with two signals, 3.8 % = e1m5 and 3.7 % = e1m4) and T-1 written; the database."""
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"), synth_row("2026-12-09", asks={"3.8%": 0.15, "3.7%": 0.09}))
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt()) == 0 and write("T-1", AT_T1, tmp_path, db) == 0
+    assert {x["title"] for x in rec_of(tmp_path, "T-3")["decision"]["fills"]} == {"3.8%", "3.7%"}
+    return db
+
+
+def test_result_refuses_a_run_not_by_the_code_of_r(tmp_path, capsys):
+    # review C of item 491, blocker 1: written only by the tree `launch` extracts for R (code_sha = R), never by HEAD
+    db = _staged(tmp_path)
+    capsys.readouterr()
+    for code_sha, r in (("HEAD", None), ("HEAD", ""), ("abc", "def")):
+        assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred(), code_sha=code_sha, r=r) == 1
+        assert "runs only by the code of R" in capsys.readouterr().out
+    assert not (tmp_path / "state" / R / "result.json").exists()
+
+
+def test_result_from_the_cutoff_writes_what_did_not_come_under_absent(tmp_path, capsys):
+    # review C of item 491, blocker 2: a market that never resolves cannot hold the file back past the cutoff
+    db = _staged(tmp_path)
+    t3 = rec_of(tmp_path, "T-3")
+    stuck = {**resolved(), "e1m4": {**RESOLVED, "id": "e1m4", "umaResolutionStatus": "proposed"},  # 3.7 %, a signal
+             "e1m7": {**RESOLVED, "id": "e1m8"},  # R5: an answer of another market
+             "e1m9": None}  # HTTP 404: an answer, the market is not there  # fmt: skip
+    for at in (AT_RESULT, CUTOFF - timedelta(seconds=1)):
+        assert write_res(at, tmp_path, db, gamma_rt(stuck), fred()) == 1
+        out = capsys.readouterr().out
+        for want in ("not final: polymarket e1m4: pending", "not final: polymarket e1m7: not this market",
+                     "not final: polymarket e1m9: not found", "from the cutoff 2027-01-09T15:00:00+00:00"):  # fmt: skip
+            assert want in out, out
+    # a failed request is no answer: it waits after the cutoff too
+    assert write_res(CUTOFF, tmp_path, db, gamma_rt(down=True), fred()) == 1
+    assert "not final: polymarket e1m0: request failed" in capsys.readouterr().out
+    assert not (tmp_path / "state" / R / "result.json").exists()
+    assert write_res(CUTOFF, tmp_path, db, gamma_rt(stuck), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    by = "by 2027-01-09T15:00:00+00:00"
+    assert rec["absent"] == [f"polymarket e1m4: not resolved {by} (pending; its event has no Brier, no payout)",
+                             f"polymarket e1m7: not resolved {by} (not this market; its event has no Brier, no payout)",
+                             f"polymarket e1m9: not resolved {by} (not found; its event has no Brier, no payout)"]  # fmt: skip
+    assert rec["invalid"] is None and rec["cpi"]["value"] == 3.7
+    # the event of those markets has no Brier ('no payout', registration п. 7 (ґ), R8); the payout is never filled in
+    assert rec["brier_t3"]["events"][0]["why"] == "no payout" and rec["brier_t3"]["n_events"] == 0
+    assert rec["brier_t3"]["model"] is None and rec["brier_t3"]["delta"] is None
+    sig = {s["title"]: s for s in rec["signals"]}
+    assert sig["3.7%"]["payout"] is None and sig["3.7%"]["paper_usd"] is None and sig["3.7%"]["clv"] is not None
+    assert sig["3.8%"]["payout"] == 1.0 and rec["clv_rel"]["n"] == sum(1 for x in t3["decision"]["fills"] if x["executable"])
+    assert rec["resolution"]["e1m7"] == {"ok": False, "why": "not this market", "event_id": "e1", "title": "4.0%",
+                                         "token": rec["resolution"]["e1m7"]["token"], "rules_changed_since_t3": None}  # fmt: skip
+
+
+def test_result_cpi_not_published_by_the_cutoff_makes_the_release_invalid(tmp_path, capsys):
+    # review C of item 491, blocker 2, scenario 3 (as 10.2025): FRED answers without the target month
+    db = _staged(tmp_path)
+    capsys.readouterr()
+    for fr, want in ((fred(FRED_TAIL), "not final: cpi: not published"), (fred(down=True), "not final: cpi: request failed"),
+                     (fred("<html>maintenance</html>"), "not final: cpi: unreadable")):  # fmt: skip
+        assert write_res(CUTOFF - timedelta(seconds=1), tmp_path, db, gamma_rt(resolved()), fr) == 1
+        assert want in capsys.readouterr().out
+    for fr in (fred(down=True), fred("<html>maintenance</html>")):  # no answer: it waits after the cutoff too
+        assert write_res(CUTOFF, tmp_path, db, gamma_rt(resolved()), fr) == 1
+    assert write_res(CUTOFF, tmp_path, db, gamma_rt(resolved()), fred(FRED_TAIL)) == 0
+    rec = rec_of(tmp_path, "result")
+    assert rec["invalid"] == "CPI not published (registration п. 5)" and rec["cpi"]["value"] is None
+    assert rec["absent"] == ["cpi: not published by 2027-01-09T15:00:00+00:00 (the release is invalid, registration п. 5)"]
+    assert rec["resolution_check"][0]["cpi_yes"] == [] and rec["brier_t3"]["n_events"] == 1  # Polymarket's payout counts
+    line = capsys.readouterr().out.splitlines()
+    assert "реліз недійсний: CPI not published (registration п. 5)" in line[line.index(f.JOURNAL_NOTE) + 1]
+
+
+def test_result_clv_comes_from_the_database_row_not_from_t1_json(tmp_path):
+    # review C of item 491, R5 (registration п. 8): T-1.json with other quotes changes nothing; t1_check says so
+    db = _staged(tmp_path)
+    p = tmp_path / "docs" / R / "T-1.json"
+    t1 = json.loads(p.read_bytes())
+    t1["quotes"] = {k: {**q, "bid": 0.01, "ask": 0.02} for k, q in t1["quotes"].items()}
+    p.write_bytes(f.dump(t1))
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    assert rec["t1_check"] == {"row_digest_db": True, "quotes": False} and rec["t1_file"]["kind"] == "docs"
+    s38 = next(s for s in rec["signals"] if s["title"] == "3.8%")
+    assert (s38["bid_t1"], s38["ask_t1"]) == (0.14, 0.15)  # the T-1 row of the database
+    assert s38["clv"]["usd"] == pytest.approx(s38["shares"] * ((0.14 + 0.15) / 2 - s38["p_in"]))
+
+
+@pytest.mark.parametrize(("stage", "raw", "err"), [("T-1", b"not json", "JSONDecodeError"), ("T-1", b"[1, 2]", "not an object"),
+                                                   ("T-3", b"not json", "JSONDecodeError"), ("T-3", b"[1, 2]", "not an object")])  # fmt: skip
+def test_result_with_an_unreadable_stage_file_is_written_and_says_so(tmp_path, stage, raw, err):
+    # review C of item 491, R4: neither unwritable nor taken for a missing file; N1 (b): a clone's copy that does not
+    # read falls back to the local file, and both are recorded
+    db = _staged(tmp_path)
+    key = {"T-1": "t1_file", "T-3": "t3_file"}[stage]
+    p, local = tmp_path / "docs" / R / f"{stage}.json", tmp_path / "state" / R / f"{stage}.json"
+    good = local.read_bytes()
+    p.write_bytes(raw)
+    bad = {"kind": "docs", "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": err}
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    assert rec[key] == {"kind": "local", "path": str(local), "sha256": hashlib.sha256(good).hexdigest(), "error": None, "also": [bad]}
+    assert rec["absent"] == [] and rec["markets_from"] == "T-3 record" and rec["clv_rel"]["n"] > 0
+    assert rec["t1_check"] == {"row_digest_db": True, "quotes": True}
+    # no copy reads: the error of the clone's copy, the other listed; the file is written all the same
+    for out in (tmp_path / "state" / R / "result.json", tmp_path / "docs" / R / "result.json"):
+        out.unlink()
+    local.write_bytes(raw)
+    assert write_res(AT_RESULT, tmp_path, db, gamma_rt(resolved()), fred()) == 0
+    rec = rec_of(tmp_path, "result")
+    assert rec[key] == {**bad, "also": [{**bad, "kind": "local", "path": str(local)}]}
+    if stage == "T-1":
+        assert rec["t1_check"] == {"unreadable": f"unreadable ({err})"} and rec["clv_rel"]["n"] > 0  # CLV from the row
+    else:
+        assert rec["absent"] == [f"t3: T-3.json unreadable ({err}; markets from the database row of day T-3)"]
+        assert rec["markets_from"] == "database row of day T-3" and rec["signals"] == [] and rec["brier_t3"] is None
+
+
 # ------------------------------------------------------------------------------------------------------ subprocesses
 
 
@@ -541,6 +798,17 @@ def test_code_paths_are_every_module_the_scanner_imports(tmp_path):
     assert found["T-3"] == set(f.CODE_PATHS), f"regenerate the constant in scripts/pm_cpi_forward.py:\n{want}"
     assert found["T-1"] <= set(f.CODE_PATHS) and foreign == []
     assert list(f.CODE_PATHS) == sorted(f.CODE_PATHS, key=_order)
+    # item 491: the result stage (FRED and Gamma unreachable, so it writes nothing) imports nothing outside CODE_PATHS
+    snippet = ("import json, pathlib, sys; t = sys.argv[1]; sys.path[:0] = [t + '/src', t + '/scripts']; import pm_cpi_forward as m; "
+               "rc = m.inner(sys.argv[2:]); print(json.dumps([rc, m.loaded_modules(pathlib.Path(t))]))")  # fmt: skip
+    args = ["--stage", "result", "--release", R, "--at", "2026-12-10T15:30:00+00:00", "--code-sha", "HEAD", "--r", "HEAD",
+            "--tree", str(REPO_ROOT), "--repo", str(REPO_ROOT), "--db", str(db), "--root", str(tmp_path / "state"),
+            "--docs", str(tmp_path / "docs"), "--http-retries", "0"]  # fmt: skip
+    res = subprocess.run([sys.executable, "-I", "-B", "-c", snippet, str(REPO_ROOT), *args], cwd=REPO_ROOT, capture_output=True,
+                         text=True, env=offline_env())  # fmt: skip
+    rc, (inside, outside) = json.loads(res.stdout.splitlines()[-1])
+    assert rc == 1 and "not final: cpi: request failed" in res.stdout, res.stdout + res.stderr
+    assert "not final: polymarket" in res.stdout and set(inside) <= set(f.CODE_PATHS) and outside == []
 
 
 def _order(p):
@@ -685,6 +953,7 @@ def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
     assert any("row_digest = БД так" in x for x in out)
     assert any("перерахунок = записаному так · перебудова з рядка БД = записаному так · Gamma ok · ключі = M0 так" in x
                for x in out), out  # fmt: skip
+    assert "  set B: not rules (descriptive)" in out  # review C 484 / 490, finding 4: descriptive, the verdict stays
     assert any("T-1: no file" in x for x in out)
     # T-1 checked against the database (finding 3): the verdict stays, the line says which applies
     assert f.write_stage("T-1", R, AT_T1, db=world.db, root=tmp_path / "s", docs=tmp_path / "d", repo=world.repo,
@@ -804,6 +1073,21 @@ def test_key_check_does_not_apply_to_an_m0_before_item_490(world, tmp_path, caps
     out = capsys.readouterr().out.rstrip().splitlines()
     assert out[-1] == want, out
     assert any(line in x for x in out), out
+    # review C of item 491, R6: an M0 before item 490 does not know «rules» (п. 9); the line says so, the verdict stays
+    sb = "  set B: not applicable, M0 before item 490 (descriptive)" if name == "oldm0" else "  set B: not rules (descriptive)"
+    assert sb in out, out
+
+
+def test_proof_names_a_rules_release_of_set_b(world, tmp_path, capsys):
+    # review C of item 490, finding 4: the descriptive line `set B: rules`; this record was edited (the rebuild from
+    # the row gives the event back), so the verdict is the rebuild's, not the line's
+    ev = lambda r: [{**e, "taken": False, "why": "rules: no 'one decimal'"} if e["event_id"] == "e1" else e for e in r["events"]]  # noqa: E731
+    ref = _case(world, "setb", _edit(world.raw, events=ev, skip="no YoY event"))
+    capsys.readouterr()
+    assert prove(world, ref, db=world.db, root=tmp_path, tmp=tmp_path) is False
+    out = capsys.readouterr().out.rstrip().splitlines()
+    assert "  set B: rules (rebuilt by п. 8 (в) for set B; descriptive)" in out
+    assert out[-1] == "proof fail: mismatch (rebuild: events, skip)", out[-1]
 
 
 def test_fallback_of_set_b_runs_in_the_tree_of_m0(world, tmp_path):
@@ -851,6 +1135,153 @@ def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsy
     assert "T-3 takes M0 from origin/main only" in capsys.readouterr().out
     assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
     assert "cannot be extracted (CalledProcessError" in capsys.readouterr().out and not (tmp_path / "s").exists()
+
+
+def _main_with(w, name, when, edit):
+    """A commit on top of main of the world at ``when`` (``edit(repo)`` changes the files), made origin/main and HEAD."""
+    w.g("checkout", "-q", "-B", f"res-{name}", w.after)
+    edit(w.repo)
+    w.g("commit", "-q", "-am", name, when=when)
+    sha = w.g("rev-parse", "HEAD")
+    w.g("update-ref", "refs/remotes/origin/main", sha)
+    return sha
+
+
+def _restore(w):
+    w.g("checkout", "-q", "--detach", w.after)
+    w.g("update-ref", "refs/remotes/origin/main", w.after)
+
+
+def test_result_runs_the_code_of_r_not_head(world, tmp_path, capsys, monkeypatch):
+    # review C of item 491, blocker 1: R = main before the publication (13:30 UTC on 10.12); a merge after it, here HEAD
+    # and origin/main, changes the Brier code and is not run
+    assert f.publication_utc(R) == datetime(2026, 12, 10, 13, 30, tzinfo=UTC)
+    assert f.publication_utc("2027-07-15") == datetime(2027, 7, 15, 12, 30, tzinfo=UTC)  # daylight saving: 08:30 EDT
+    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path,
+          "default_db": world.db}  # fmt: skip
+
+    def later(repo):
+        p = repo / "src/tradedesk/analytics/pm_cpi.py"
+        p.write_text(p.read_text() + "\n# Brier changed after the outcome\n")
+
+    try:
+        head = _main_with(world, "later", "2026-12-10T14:00:00Z", later)
+        assert f.r_of(world.repo, "origin/main", R) == world.after != head == f.git(world.repo, "rev-parse", "HEAD").stdout.strip()
+        # the real subprocess of the tree of R (offline: FRED and Gamma fail, nothing is written)
+        capsys.readouterr()
+        assert f.launch("result", R, AT_RESULT, http_retries=0, env=offline_env(), **kw) == 1
+        out = capsys.readouterr().out
+        assert f"code of {world.after} (R) extracted" in out and "not final: cpi: request failed" in out, out
+        tree = tmp_path / f"pm_cpi_code_{world.after[:12]}"
+        assert "after the outcome" not in (tree / "src/tradedesk/analytics/pm_cpi.py").read_text()
+        # the same run with the answers in this process: the file names R as its code
+        seen: list = []
+
+        def run_here(tree_, args, repo, env=None):
+            a = dict(zip(args[::2], args[1::2], strict=True))
+            seen.append(a)
+            rc = f.write_stage("result", a["--release"], datetime.fromisoformat(a["--at"]), db=Path(a["--db"]), root=Path(a["--root"]),
+                               docs=Path(a["--docs"]), repo=Path(a["--repo"]), code_sha=a["--code-sha"], m0=a["--m0"] or None,
+                               tree=Path(a["--tree"]), rt_factory=gamma_rt(resolved()), fred_factory=fred(), r=a["--r"])  # fmt: skip
+            return SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        monkeypatch.setattr(f, "run_tree", run_here)
+        assert f.launch("result", R, AT_RESULT, http_retries=0, **kw) == 0
+        assert seen[0]["--code-sha"] == seen[0]["--r"] == world.after and Path(seen[0]["--tree"]) == tree
+        rec = json.loads((tmp_path / "s" / R / "result.json").read_bytes())
+        assert rec["code_sha"] == rec["R"] == world.after != head and rec["CODE_PATHS"] == list(f.code_paths_at(world.repo, world.after))
+    finally:
+        _restore(world)
+
+
+def test_result_refuses_a_stale_fetch_another_ref_and_an_r_without_the_stage(world, tmp_path, capsys, monkeypatch):
+    # review C of item 491, blocker 1: refused, never run by HEAD instead
+    kw = {"repo": world.repo, "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path, "default_db": world.db}
+    monkeypatch.setattr(f, "run_tree", lambda *a, **k: pytest.fail("no tree may run"))
+    capsys.readouterr()
+    assert f.launch("result", R, AT_RESULT, ref="main", **kw) == 1
+    assert "the result takes R from origin/main only" in capsys.readouterr().out
+    fetched(world.repo, "2026-12-10T13:29:59+00:00")
+    try:
+        assert f.launch("result", R, AT_RESULT, ref="origin/main", **kw) == 1
+    finally:
+        fetched(world.repo, "2026-12-10T15:30:00+00:00")
+    assert "may be stale (last fetch 2026-12-10T13:29:59+00:00 is before 2026-12-10T13:30:00+00:00)" in capsys.readouterr().out
+
+    # item 491 merged after the publication: the scanner of R has no result stage
+    def old(repo):
+        p = repo / "scripts/pm_cpi_forward.py"
+        text = p.read_text()
+        assert 'RESULT = "result"' in text
+        p.write_text(text.replace('RESULT = "result"', 'NOT_YET = "result"'))
+
+    try:
+        r = _main_with(world, "old", "2026-12-08T10:00:00Z", old)
+        assert f.has_result_stage(world.repo, r) is False and f.has_result_stage(world.repo, world.after) is True
+        assert f.launch("result", R, AT_RESULT, ref="origin/main", **kw) == 1
+        out = capsys.readouterr().out
+        assert f"the scanner of R {r[:12]} (main before the publication 2026-12-10T13:30:00+00:00) has no result stage" in out
+        assert ") extracted to" not in out and not list(tmp_path.glob("pm_cpi_code_*")) and not (tmp_path / "s").exists()
+    finally:
+        _restore(world)
+
+
+def test_result_refuses_another_db_and_a_t3_record_not_of_the_journal(world, tmp_path, capsys, monkeypatch):
+    # review C of item 491, N1 (b): a result.json read from another database or another T-3 record would hold its one
+    # canonical place for good and not count (registration п. 7, result: only with db = the collector's and
+    # t3_file.sha256 = the sha256 on the journal line T−3), so such a run is refused before any tree runs
+    root, docs = tmp_path / "s", tmp_path / "d"
+    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": root, "docs": docs, "tmp": tmp_path}
+    ran: list = []
+
+    def run(tree, args, repo, env=None):
+        ran.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(f, "run_tree", run)
+    capsys.readouterr()
+    assert f.launch("result", R, AT_RESULT, **kw) == 1  # default_db: the collector's database
+    assert f"reads the collector's database {f.DEFAULT_DB} only (registration п. 7, result), not {world.db}" in capsys.readouterr().out
+    assert ran == [] and not list(tmp_path.glob("pm_cpi_code_*"))
+    kw["default_db"] = world.db
+    good = hashlib.sha256(world.raw).hexdigest()
+    t3_docs, t3_local = docs / R / "T-3.json", root / R / "T-3.json"
+    t3_docs.parent.mkdir(parents=True)
+    t3_local.parent.mkdir(parents=True)
+    # the journal of main (the world's card) has no T-3 line: a T-3 file does not count
+    t3_docs.write_bytes(world.raw)
+    assert f.launch("result", R, AT_RESULT, **kw) == 1
+    assert f"(docs T-3.json has sha256 {good}, the journal of origin/main has no T-3 line)" in capsys.readouterr().out
+    line = f"{R} T−3 · D {AT_T3.isoformat()} · джерело рядок 2026-12-07 · без сигналу · sha256 {good}\n"
+    try:
+        _main_with(world, "two", "2026-12-08T10:00:00Z", lambda repo: (repo / f.CARD).write_text(CARD_TEXT.format(lines=line * 2)))
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        assert f"(the journal of origin/main: 2 journal lines of {R} T-3)" in capsys.readouterr().out
+        r = _main_with(world, "journal", "2026-12-08T10:00:00Z", lambda repo: (repo / f.CARD).write_text(CARD_TEXT.format(lines=line)))
+        assert f.r_of(world.repo, "origin/main", R) == r
+        # scenario 3: the clone's copy changed (a merge conflict, a hand edit) while the local file is right
+        t3_local.write_bytes(world.raw)
+        edited = _edit(world.raw, skip="model")
+        t3_docs.write_bytes(edited)
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        out = capsys.readouterr().out
+        assert f"(docs T-3.json has sha256 {hashlib.sha256(edited).hexdigest()}, the journal of origin/main has {good})" in out
+        assert ran == []
+        # the clone's copy does not read: the local file is read (load_stage), and it is the journal's
+        t3_docs.write_bytes(b"not json")
+        assert f.launch("result", R, AT_RESULT, **kw) == 0 and ran[-1][ran[-1].index("--r") + 1] == r
+        # the clone's copy is the journal's: a local file that is not read does not count (it is listed under `also`)
+        t3_docs.write_bytes(world.raw)
+        t3_local.write_bytes(b"x")
+        assert f.launch("result", R, AT_RESULT, **kw) == 0 and len(ran) == 2
+        # no T-3 file while the journal has the line
+        t3_docs.unlink()
+        t3_local.unlink()
+        assert f.launch("result", R, AT_RESULT, **kw) == 1
+        assert f"(no T-3.json in the clone or the state directory, the journal of origin/main has {good})" in capsys.readouterr().out
+        assert len(ran) == 2
+    finally:
+        _restore(world)
 
 
 def test_code_dirty_lists_changed_missing_and_foreign_files(world, tmp_path):

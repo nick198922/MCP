@@ -128,6 +128,9 @@ def magnitude(metric: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             "shares_sum_minmax": [min(sums), max(sums)],
             "ratio_consistent_share": consistent / len(rows),
         }
+    if metric == "liq_usd":  # daily liquidations (schema 45): no OHLC, long + short in USD
+        totals = [r["liq_long_usd"] + r["liq_short_usd"] for r in rows]
+        return {"total_usd_median": statistics.median(totals), "total_usd_max": max(totals), "zero_days": sum(1 for t in totals if t == 0)}
     closes = [r["close"] for r in rows]
     return {"close_median": statistics.median(closes), "close_min": min(closes), "close_max": max(closes)}
 

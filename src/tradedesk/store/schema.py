@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -1142,5 +1142,14 @@ MIGRATIONS: dict[int, list[str]] = {
             missing TEXT                           -- JSON [{field, provider, reason, detail}] of the latest attempt
         )
         """,
+    ],
+    45: [
+        # Daily liquidations in coinalyze_history (collector/coinalyze_history.py; card IDEA-20261017-doubletop-to-ours,
+        # item 4c): metric 'liq_usd', one row per (symbol, day), both columns set; NULL on the other metrics' rows (and
+        # the other metrics' columns are NULL on 'liq_usd' rows). USD = Coinalyze's coins x the day's close (shifted on
+        # crash days), exchange-reported (under-reports forced closes), one venue per symbol: never a market-wide total.
+        # A day the API omitted has no row (unknown, not zero).
+        "ALTER TABLE coinalyze_history ADD COLUMN liq_long_usd REAL",  # liquidated longs (forced sells), USD per day
+        "ALTER TABLE coinalyze_history ADD COLUMN liq_short_usd REAL",  # liquidated shorts (forced buys), USD per day
     ],
 }

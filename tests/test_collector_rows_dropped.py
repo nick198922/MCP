@@ -216,12 +216,12 @@ async def test_hl_oi_cap_counts_nulled_fields(tmp_path, monkeypatch):
 async def test_coinalyze_history_counts_malformed_and_damaged_bars(tmp_path):
     with count_bad_rows() as c:
         n, _ = await tbr._cz_rows(tmp_path, "bad", "value", "abc")
-    assert n == 21 and c.n == 3  # one bad BTC bar in each of oi_usd, funding, long_short
+    assert n == 28 and c.n == 4  # one bad BTC bar in each of oi_usd, funding, long_short, liq_usd
     oi = [dict(h, c=0.0) if i == 1 else h for i, h in enumerate(czh.OI_USD)]
     rt, _ = czh.make_rt(tmp_path, czh.sample_handler(oi=oi), collect_coinalyze_history_backfill_days=10)
     try:
         with count_bad_rows() as c:
-            assert await CoinalyzeHistoryJob()(rt) == 22
+            assert await CoinalyzeHistoryJob()(rt) == 30
     finally:
         await rt.aclose()
     assert c.n == 2  # one damaged OI bar (close below MIN_OI_USD) per symbol

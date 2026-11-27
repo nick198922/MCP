@@ -1,4 +1,9 @@
-"""Assistant paper-journal job: once a day (after 09:00 UTC) record the recommendation method's pick as a paper trade.
+"""Assistant paper-journal job: once a day (after 09:00 UTC) record the recommendation method's pick as a paper trade,
+and on every run settle the paper trades whose expiry has passed.
+
+Settlement (any source, 'method' and 'manual') runs first on every period, before the 09:00 UTC gate and the "already
+decided today" check, through the same code as the tool `assistant_paper_status` (`tools.assistant_paper.settle_due`).
+Nothing due: no request. A delivery price not yet published leaves the trade open, silently, for the next period.
 
 Docs: docs/ideas/IDEA-20261018-assistant.md ("Рекомендації", "Частота"). Local bookkeeping only: no orders, nothing sent
 anywhere. The trade goes through the same code as the tool `assistant_paper_open` (`tools.assistant_paper.book_paper`),
@@ -35,6 +40,7 @@ from ..analytics.option_replay import STRUCTURES, build_legs
 from ..analytics.rec_method import decide, method_pick
 from ..core.envelope import Builder
 from .assistant_snapshot import write_atomic
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -132,17 +138,68 @@ def _summary_view(s: dict[str, Any] | None) -> dict[str, Any] | None:
     return {k: s.get(k) for k in keys}
 
 
-async def collect_assistant_paper(rt: "Runtime") -> int:
-    """Collector job. Returns 1 when a new paper trade was booked, else 0. Raises (the scheduler records it) when data failed.
+async def settle_expired(rt: "Runtime", now: datetime) -> tuple[int, str | None]:
+    """Settle the due paper trades through the tool's code. Never raises: returns (rows settled, error or None).
 
-    Does nothing before 09:00 UTC or when today's decision is already in the state file; a failed run writes nothing, so the
-    next period retries the same day.
+    The error is set when the delivery prices could not be fetched (the trades stay open and the next period retries) or
+    when the settlement itself raised (store, a row another writer left unreadable); the job raises it after the day's
+    decision, so collector health shows a persistent failure. Not errors: a price not yet published (silent), delivery
+    rows dropped as malformed (counted in the run's ``rows_dropped`` and logged), a trade with malformed stored legs
+    (logged every run; it never settles and stays visible as "expired, not settled" in the checkpoint report).
+    """
+    from ..tools.assistant_paper import settle_due  # noqa: PLC0415
+
+    assert rt.store is not None
+    b = Builder()  # its own: "not yet published" entries must not reach the decision's state file
+    try:
+        res = await settle_due(rt, b, int(now.timestamp()))
+    except Exception as e:  # noqa: BLE001 - a settlement failure must not block the day's decision
+        log.warning("assistant paper: settlement failed: %s: %s", type(e).__name__, e)
+        return 0, f"settlement failed: {type(e).__name__}: {e}"
+    if res["bad_rows"]:
+        note_bad_rows(res["bad_rows"])
+        log.warning("assistant paper: %d malformed Deribit delivery row(s) dropped", res["bad_rows"])
+    if res["bad_legs"]:
+        log.warning("assistant paper: rec_paper %s due but not settled: stored legs are malformed", res["bad_legs"])
+    if res["settled"]:
+        log.info("assistant paper: settled %d expired paper trade(s)", res["settled"])
+    if res["failed"]:
+        fields = {f"delivery_prices:{c}" for c in res["failed"]}
+        detail = "; ".join(f"{m.field}: {m.detail}" for m in b.missing if m.field in fields)
+        return res["settled"], f"settlement: no delivery prices, will retry: {detail}"
+    return res["settled"], None
+
+
+async def collect_assistant_paper(rt: "Runtime") -> int:
+    """Collector job. Returns the rows written: paper trades settled plus 1 when a new one was booked.
+
+    First settles the due paper trades (every run). Then the day's decision: nothing before 09:00 UTC or when today's
+    decision is already in the state file; a failed decision writes nothing, so the next period retries the same day.
+    Raises (the scheduler records it in collector health) when the decision's data failed or, after the decision has
+    run, when the settlement failed; trades settled before a failed decision stay settled.
     """
     s = rt.settings
     path = state_path(s.db_path)
     if path is None or rt.store is None:
         raise RuntimeError("assistant paper: needs a SQLite store (set TRADEDESK_DB_PATH)")
     now = rt.now()
+    await rt.store.init()
+    settled, settle_error = await settle_expired(rt, now)
+    try:
+        booked = await _decide_and_book(rt, now, path)
+    except Exception as e:
+        if settle_error:
+            raise RuntimeError(f"{e}; {settle_error}") from e
+        raise
+    if settle_error:
+        raise RuntimeError(f"assistant paper: {settle_error}")
+    return settled + booked
+
+
+async def _decide_and_book(rt: "Runtime", now: datetime, path: Path) -> int:
+    """The day's decision; 1 when a new paper trade was booked, else 0. Raises when its data failed."""
+    assert rt.store is not None
+    s = rt.settings
     if now.hour < DECISION_HOUR_UTC:
         return 0
     today = now.date().isoformat()
@@ -153,7 +210,6 @@ async def collect_assistant_paper(rt: "Runtime") -> int:
     from ..tools.assistant_paper import DEFAULT_LOT, book_paper, prepare_chain  # noqa: PLC0415
 
     b = Builder()
-    await rt.store.init()
     ctx40 = await prepare_chain(rt, b, "BTC", None)
     ctx14 = await prepare_chain(rt, b, "BTC", None, target=SHORT_TARGET_DTE, band=SHORT_DTE_BAND) if ctx40 is not None else None
     closes = await fetch_closes(rt, b, now) if ctx40 is not None and ctx14 is not None else None

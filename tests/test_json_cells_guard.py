@@ -116,9 +116,9 @@ TOOL_CALLS = {
     "trade_plan.py::plan_link::plan_get#2": PLAN_VIEW,
     "assistant_paper.py::book_paper::rec_paper_list#1": "not in the reply: ids of duplicates",
     "assistant_paper.py::book_paper::rec_paper_get#1": GOOD_LEGS,
-    "assistant_paper.py::assistant_paper_status::rec_paper_list#1": "due trades: settled only when every leg is well formed",
-    "assistant_paper.py::assistant_paper_status::rec_paper_list#2": GOOD_LEGS,
-    "assistant_paper.py::assistant_paper_status::rec_paper_list#3": GOOD_LEGS + "; summary numbers",
+    "assistant_paper.py::settle_due::rec_paper_list#1": "due trades: settled only when every leg is well formed; not in the reply",
+    "assistant_paper.py::assistant_paper_status::rec_paper_list#1": GOOD_LEGS,
+    "assistant_paper.py::assistant_paper_status::rec_paper_list#2": GOOD_LEGS + "; summary numbers",
     # paper_carry_status(strategy="manual"), the former carry_paper_status tool
     "carry_paper.py::manual_book_status::carry_paper_get#1": PAIR_TAGS,
     "carry_paper.py::manual_book_status::carry_paper_list#1": PAIR_TAGS,

@@ -46,6 +46,8 @@ Claude (Desktop / Code / claude.ai)
 
 Класи причин (`core/errors.py`): `config`, `auth`, `network`, `rate_limited`, `provider_tier`, `data_unavailable`, `backend_error`, `unknown`.
 
+Невідомі назви аргументів (SDK їх мовчки відкидає): `DeskServer.call_tool` (`server.py`, `unknown_args.py`) звіряє ключі з `inputSchema.properties`; інструмент читання працює як раніше і отримує перше попередження у `warnings` (які ключі проігноровано, які параметри є), інструмент, що пише в сховище (`STORE_WRITE_TOOLS`), відмовляє конвертом `ok=false` (`missing: arguments`, `invalid_input`) і нічого не пише.
+
 ## Конвенції одиниць (не змінювати без міграції)
 
 | Величина | Одиниця |

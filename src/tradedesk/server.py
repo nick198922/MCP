@@ -10,10 +10,13 @@ import ipaddress
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, InputRequiredResult
 
 from . import __version__, features
 from .http_auth import BearerAuthMiddleware, parse_tokens
@@ -21,6 +24,9 @@ from .logfmt import JsonFormatter
 from .runtime import Runtime
 from .tools import register_all
 from .tools._util import STORE_ERRORS
+from .unknown_args import STORE_WRITE_TOOLS, refused_envelope, schema_params, unknown_keys, unknown_warning
+
+log = logging.getLogger("tradedesk.server")
 
 INSTRUCTIONS = """\
 Personal trading desk for crypto derivatives, options and quant tooling. Read-only market data.
@@ -32,6 +38,47 @@ Probabilities derived from options are risk-neutral, not forecasts. If results l
 Typical flow: deribit_vol_surface -> deribit_option_chain / prob_from_options; perps_funding_compare -> perps_open_interest;
 deribit_futures_curve for basis.
 """
+
+
+class DeskServer(MCPServer):
+    """MCPServer that does not drop an unknown argument name silently (see unknown_args.py).
+
+    The SDK's protocol handler (``_handle_call_tool``: every Client, stdio, streamable-http, in-memory) and a direct
+    ``server.call_tool(...)`` both come through ``call_tool``. A read tool runs as before and gets a warning first in
+    ``warnings``; a STORE_WRITE_TOOLS tool is refused (ok=false envelope, nothing runs). A call with known keys only goes
+    straight to the SDK, unchanged. The lookup uses the SDK's ``_tool_manager`` and ``Tool.fn_metadata.convert_result``;
+    tests/test_unknown_args.py fails if either stops working."""
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None
+    ) -> CallToolResult | InputRequiredResult:
+        tool, params, unknown = None, [], []
+        try:
+            tool = self._tool_manager.get_tool(name)
+            if tool is not None and isinstance(arguments, Mapping):
+                params = schema_params(tool.parameters)
+                unknown = unknown_keys(arguments, params)
+        except Exception:  # noqa: BLE001 - the check must never cost a call its answer
+            log.exception("unknown-argument check failed for tool %r; the call runs unchecked", name)
+            unknown = []
+        if not unknown or tool is None:
+            return await super().call_tool(name, arguments, context)
+        if name in STORE_WRITE_TOOLS:
+            env = refused_envelope(name, unknown, params)
+            try:
+                return tool.fn_metadata.convert_result(env)
+            except Exception as e:  # noqa: BLE001 - still refused, as an error result instead of an envelope
+                raise ToolError(f"Error executing tool {name}: {env['warnings'][0]}") from e
+        res = await super().call_tool(name, arguments, context)
+        sc = res.structured_content if isinstance(res, CallToolResult) and not res.is_error else None
+        if not (isinstance(sc, dict) and isinstance(sc.get("warnings"), list)):
+            log.warning("tool %r ran with unknown argument names but its result has no envelope warnings", name)
+            return res
+        try:
+            return tool.fn_metadata.convert_result({**sc, "warnings": [unknown_warning(name, unknown, params), *sc["warnings"]]})
+        except Exception:  # noqa: BLE001 - the tool's own answer is still returned
+            log.exception("could not add the unknown-argument warning to %r", name)
+            return res
 
 
 def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
@@ -62,7 +109,7 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
                 await rt.scheduler.stop()
             await rt.aclose()
 
-    server = MCPServer("tradedesk", instructions=INSTRUCTIONS, version=__version__, lifespan=lifespan)
+    server = DeskServer("tradedesk", instructions=INSTRUCTIONS, version=__version__, lifespan=lifespan)
     register_all(server, rt)
     return server, rt
 

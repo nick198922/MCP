@@ -1692,6 +1692,37 @@ def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsy
     assert "cannot be extracted (CalledProcessError" in capsys.readouterr().out and not (tmp_path / "s").exists()
 
 
+@pytest.mark.parametrize(("stage", "day"), [("T-7", 3), ("T-3", 7), ("T-1", 9)])
+def test_launch_refuses_a_write_stage_before_2200_utc_of_its_day(world, tmp_path, capsys, monkeypatch, stage, day):
+    # item 495 (review C of item 494, note 1): 21:05-22:00 is inside stage_window, yet a collector tick started before
+    # 21:00 may still be writing the day's row; `launch` alone refuses, nothing is extracted, run or written
+    ran: list = []
+
+    def run(tree, args, repo, env=None):
+        ran.append(dict(zip(args[::2], args[1::2], strict=True)))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(f, "run_tree", run)
+    x, s, d = tmp_path / "x", tmp_path / "s", tmp_path / "d"
+    kw = {"repo": world.repo, "ref": "origin/main", "db": world.db, "root": s, "docs": d, "tmp": x}
+    limit = f"2026-12-{day:02d}T22:00:00+00:00"
+    capsys.readouterr()
+    for early in (datetime(2026, 12, day, 21, 59, tzinfo=UTC), datetime(2026, 12, day, 21, 4, tzinfo=UTC)):
+        assert f.launch(stage, R, early, **kw) == 1
+        out = capsys.readouterr().out
+        assert f"not written: {stage} {R} at {early.isoformat()} is before {limit}" in out, out
+        assert f"nothing written, run again at or after {limit}" in out
+        assert ("and no later than 2026-12-09T12:00:00+00:00" in out) is (stage == "T-3")
+        assert ran == [] and not x.exists() and not s.exists() and not d.exists()
+    # 21:59 is a valid D for the record (the window and the proof are unchanged): only `launch` refuses
+    assert f.stage_why(stage, R, datetime(2026, 12, day, 21, 59, tzinfo=UTC)) is None
+    at = datetime.fromisoformat(limit)
+    assert f.launch(stage, R, at, **kw) == 0
+    assert "is before" not in capsys.readouterr().out
+    assert len(ran) == 1 and ran[0]["--stage"] == stage and ran[0]["--at"] == at.isoformat()
+    assert ran[0]["--m0"] == (world.m0 if stage == "T-3" else "")
+
+
 def _main_with(w, name, when, edit):
     """A commit on top of main of the world at ``when`` (``edit(repo)`` changes the files), made origin/main and HEAD."""
     w.g("checkout", "-q", "-B", f"res-{name}", w.after)

@@ -37,7 +37,9 @@ clone's last fetch, the mtime of ``FETCH_HEAD``, is before 21:00 UTC of day T-3)
 from HEAD. Every path of that commit's ``CODE_PATHS`` is written by ``git show <sha>:<path>`` into
 ``~/.cache/tradedesk-agents/tmp/pm_cpi_code_<sha[:12]>/`` and the stage runs in a subprocess with that tree first in
 ``sys.path``. ``code_dirty`` (empty = clean) lists tree files whose blob differs from the commit's and every imported
-``tradedesk.*`` / scanner module that is not one of ``CODE_PATHS`` or not in the tree.
+``tradedesk.*`` / scanner module that is not one of ``CODE_PATHS`` or not in the tree. From the command line T-7 / T-3 /
+T-1 start no earlier than 22:00 UTC of day T-d (``LAUNCH_HOUR_UTC``, item 495; earlier: refused, nothing written), while
+the window of a valid record stays ``stage_window`` (from 21:05).
 
 Files: ``~/.local/state/tradedesk-agents/pm_cpi/forward/<release>/<stage>.json`` and the same bytes in the clone's
 ``docs/forward/pm-cpi/<release>/<stage>.json`` (both created with ``open(..., "x")``; an existing file is never
@@ -119,6 +121,11 @@ DEFAULT_TMP = Path("~/.cache/tradedesk-agents/tmp").expanduser()
 DEFAULT_DB = Path("/var/lib/tradedesk-mcp/tradedesk.sqlite")  # as verify_pm_cpi_step0.DEFAULT_DB
 DEFAULT_REF = "origin/main"
 WRITE_STAGES = ("T-7", "T-3", "T-1")
+# registration п. 5, sixth part of the amendment of 27.11 (item 494) and item 495: `launch` starts a write stage no
+# earlier than this on day T-d. A collector tick started before 21:00 decides its phase first and upserts the day's row
+# at its end, so a stage run at 21:05 could read a row still being written. Only `launch` checks it: `stage_window`
+# (21:05) still defines a valid record, and the proof never calls `launch`, so no written file is rejected by it.
+LAUNCH_HOUR_UTC = 22
 RESULT = "result"  # item 491: written from 15:00 UTC of the release day, only once every input is final
 FRED_URL = "https://fred.stlouisfed.org"
 CPI_SERIES = "CPIAUCNS"  # BLS CPI-U, NSA: the published 12-month change (registration п. 4, A_m; п. 7, 8, result)
@@ -1437,8 +1444,18 @@ def launch(
     CODE_PATHS and run that tree's scanner in a subprocess with ``now`` as D. The result reads only ``default_db``
     (the collector's database; tests supply their own) and only a T-3 record that agrees with the journal of main
     (:func:`t3_journal_why`; review C of item 491, N1 (b)): a written file with other inputs would not count, and it is
-    written once."""
+    written once. T-7 / T-3 / T-1 are refused before 22:00 UTC of their day (``LAUNCH_HOUR_UTC``, item 495), nothing
+    written; the window of a valid record (:func:`stage_why`) is not changed by this."""
     why = stage_why(stage, release, now)
+    if stage in WRITE_STAGES and why in (None, "early"):  # a known stage and an aware time: stage_why said so
+        start = datetime.combine(date.fromisoformat(stage_day(stage, release)), time(LAUNCH_HOUR_UTC), UTC)
+        if now < start:
+            end = stage_window(stage, release)[1]
+            say(f"not written: {stage} {release} at {now.isoformat()} is before {start.isoformat()} (22:00 UTC of day "
+                f"{stage}, registration п. 5, sixth part of the amendment of 27.11: a collector tick started before 21:00 "
+                f"may still be writing the day's row); nothing written, run again at or after {start.isoformat()}"
+                + (f" and no later than {end.isoformat()}" if end is not None else ""))  # fmt: skip
+            return 1
     if why is not None:
         say(f"not written: {stage} {release} at {now.isoformat()} is outside its window ({why}): {stage_window(stage, release)}")
         return 1

@@ -17,9 +17,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import bisect
+import hashlib
 import json
 import math
+import os
 import random
+import re
 import sqlite3
 import statistics
 import sys
@@ -64,10 +67,13 @@ OUT: dict[str, Any] = {"fh": None}
 
 
 def emit(line: str = "") -> None:
-    print(line, flush=True)
+    # Amendment 2026-11-27 (review, blocker 2): the report file first, then the screen, so no line is ever seen that
+    # the file (which counts the attempt) does not hold.
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
+        os.fsync(OUT["fh"].fileno())
+    print(line, flush=True)
 
 
 def f4(x: Any, pct: bool = False) -> str:
@@ -1100,7 +1106,7 @@ def full(prep: Prep, cache: Path, seed: int, no_fetch: bool, prior: dict[str, An
     # reads it); None = a --no-fetch replay. A Gamma batch that never came is otherwise not told apart from no_market.
     fetch_failed = None if no_fetch else asyncio.run(fetch(prep, cache, plan))
     emit("")
-    emit(f"## Зріз: метрики на {datetime.fromtimestamp(prep.as_of_s, UTC):%Y-%m-%d %H:%M} UTC")
+    emit(f"{SLICE_HEAD}метрики на {datetime.fromtimestamp(prep.as_of_s, UTC):%Y-%m-%d %H:%M} UTC")  # before any outcome
     emit(look_line(look, prior))
     emit("")
     return {
@@ -1167,6 +1173,81 @@ def decisive_attempt(out: Path, as_of_s: int) -> Path | None:
     return None
 
 
+# Card rule «порядок спроб», amendment 2026-11-27 (slice-2 prep review round 2, R2-1; before any slice-2 data): at most
+# this many full attempts per decisive as-of. Not part of registration(): the fingerprint is unchanged.
+MAX_ATTEMPTS = 3
+# The full stage prints this line after the fetch and before ``### H1`` (the first outcome); a report that holds it is
+# an attempt (review 2026-11-27, blocker 2: a crash before it shows nothing and uses up no attempt).
+SLICE_HEAD = "## Зріз: "
+_HEAD_RE = re.compile(r"# smart-money slice 1, stage full, as-of (\S+), ")
+# Card rule, amendment 2026-11-27 (review blocker 1): after series 1 closes without a decisive attempt, one Gamma fix
+# through the critic opens exactly one more series in the same cache dir, ``<cache>/full-s2.md`` (``full-s2.<k>.md``).
+SERIES_STEM = {1: "full", 2: "full-s2"}
+# Files whose bytes make up the runner's code, hashed into the report (``code:`` line): attempts of one series must
+# show the same hash (no code change inside a series).
+CODE_FILES = (
+    ROOT / "scripts" / "verify_smart_money_slice1.py",
+    ROOT / "scripts" / "common_helpers.py",
+    ROOT / "src" / "tradedesk" / "analytics" / "smart_money_forward.py",
+    ROOT / "src" / "tradedesk" / "analytics" / "smart_money.py",
+    ROOT / "src" / "tradedesk" / "analytics" / "funding_crowding.py",
+)
+
+
+def code_fingerprint(files: tuple[Path, ...] = CODE_FILES) -> str:
+    h = hashlib.sha256()
+    for p in files:
+        h.update(p.name.encode() + b"\0" + p.read_bytes() + b"\0")
+    return h.hexdigest()[:16]
+
+
+def series_attempts(out: Path, as_of_s: int) -> list[Path]:
+    """Every counted full-stage attempt of ``as_of_s`` in the series of ``out`` (``<stem>.md``, ``<stem>.<k>.md``), in
+    series order. A report is counted once it holds the :data:`SLICE_HEAD` line (printed after the fetch, before any
+    outcome; :func:`emit` writes the file before the screen), so a crash before it uses up no attempt, and a crash or
+    an abort after it does. Its first line must name the full stage and an as-of whose whole second is ``as_of_s``
+    (parsed, not a string prefix). An empty report or one without the line is not counted; an unreadable one is
+    (conservative)."""
+    found: list[tuple[int, Path]] = []
+    for p in out.parent.glob(f"{out.stem}*.md"):
+        mid = p.name[len(out.stem) : -len(".md")]
+        if mid == "":
+            found.append((1, p))
+        elif mid[:1] == "." and mid[1:].isdigit():
+            found.append((int(mid[1:]), p))
+    counted = []
+    for _, p in sorted(found):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            counted.append(p)
+            continue
+        m = _HEAD_RE.match(text.partition("\n")[0])
+        try:
+            same = m is not None and int(datetime.fromisoformat(m.group(1)).timestamp()) == as_of_s
+        except ValueError:
+            same = False
+        if same and any(line.startswith(SLICE_HEAD) for line in text.splitlines()):
+            counted.append(p)
+    return counted
+
+
+def check_attempt(base: Path, as_of_s: int) -> None:
+    """The refusals of «порядок спроб» for a new attempt in the series of ``base`` (raises SystemExit)."""
+    done = decisive_attempt(base, as_of_s)
+    if done is not None:
+        raise SystemExit(
+            f"the decisive attempt of this as-of is already written: {done}; a new attempt is not allowed (replay: --no-fetch --out <tmp>/x.md)"
+        )
+    started = series_attempts(base, as_of_s)
+    if len(started) >= MAX_ATTEMPTS:  # amendment 2026-11-27 (R2-1): the series is closed
+        raise SystemExit(
+            f"attempt cap reached: {len(started)} of {MAX_ATTEMPTS} attempts of this as-of already counted "
+            f"({', '.join(p.name for p in started)}) and none is decisive; by the card rule the slice takes the "
+            "last attempt that wrote a JSON and its H3 is stopped; a new attempt in this series is not allowed"
+        )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=("coverage", "full"), required=True)
@@ -1187,28 +1268,44 @@ def main() -> None:
         help="full-stage JSON of the previous decisive slice (required at looks 2 and 3, refused otherwise): H3 "
         "replication window and status, whether H2 was already decided (slice 1: none)",
     )
+    ap.add_argument(
+        "--series",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="attempt series at a decisive as-of (card rule «порядок спроб», amendment 2026-11-27): 2 only after "
+        "series 1 closed without a decisive attempt and the one Gamma fix passed the critic; writes <cache>/full-s2.md",
+    )
     a = ap.parse_args()
-    cache = Path(a.cache_dir).expanduser()
-    cache.mkdir(parents=True, exist_ok=True)
-    base = Path(a.out).expanduser() if a.out else cache / f"{a.stage}.md"
     as_of = datetime.fromisoformat(a.as_of.replace("Z", "+00:00")).astimezone(UTC)
+    if as_of.microsecond:  # review 2026-11-27, blocker 5: a fractional second would slip past the attempt count
+        raise SystemExit(f"--as-of must be a whole second (no fraction): {a.as_of}")
+    as_of_s = int(as_of.timestamp())
+    cache = Path(a.cache_dir).expanduser()
+    decisive_full = a.stage == "full" and smf.decisive_look(as_of_s) is not None
+    if a.series == 2 and (not decisive_full or a.no_fetch or a.out):
+        raise SystemExit("--series 2 is an attempt series: only --stage full at a decisive as-of, without --no-fetch and --out")
+    cache.mkdir(parents=True, exist_ok=True)
+    base = Path(a.out).expanduser() if a.out else cache / (f"{SERIES_STEM[a.series]}.md" if a.stage == "full" else f"{a.stage}.md")
     try:  # R1: refuse a wrong prior before any data is read
         out = free_out(base)
-        prior = accepted_prior(load_prior(a.h3_prior_json), int(as_of.timestamp()))
+        prior = accepted_prior(load_prior(a.h3_prior_json), as_of_s)
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    if a.stage == "full" and smf.decisive_look(int(as_of.timestamp())) is not None:  # card rule «порядок спроб»
+    if decisive_full:  # card rule «порядок спроб»
         if a.no_fetch and not a.out:
             raise SystemExit("--no-fetch at a decisive as-of is a replay, not an attempt: write it with --out outside the slice's series")
-        done = None if a.no_fetch else decisive_attempt(base, int(as_of.timestamp()))
-        if done is not None:
-            raise SystemExit(
-                f"the decisive attempt of this as-of is already written: {done}; a new attempt is not allowed (replay: --no-fetch --out <tmp>/x.md)"
-            )
+        if a.series == 2:  # series 1 must be closed without a decisive attempt (its refusals must both apply)
+            s1 = cache / f"{SERIES_STEM[1]}.md"
+            if decisive_attempt(s1, as_of_s) is not None or len(series_attempts(s1, as_of_s)) < MAX_ATTEMPTS:
+                raise SystemExit("--series 2 is allowed only after series 1 counted 3 attempts and none is decisive")
+        if not a.no_fetch:
+            check_attempt(base, as_of_s)
     with open(out, "x") as fh:  # never overwrite an earlier attempt's output
         OUT["fh"] = fh
         emit(f"# smart-money slice 1, stage {a.stage}, as-of {as_of.isoformat()}, seed {a.seed}")
         emit(f"out: {out}")
+        emit(f"code: {code_fingerprint()} (sha256 of {', '.join(p.name for p in CODE_FILES)})")
         conn = open_store(a.db, cache)
         prep = Prep(conn, as_of, Path(a.stage0_cache).expanduser())
         res = coverage(prep) if a.stage == "coverage" else full(prep, cache, a.seed, a.no_fetch, prior)

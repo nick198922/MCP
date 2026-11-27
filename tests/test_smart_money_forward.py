@@ -883,6 +883,274 @@ def test_decisive_attempt_is_the_first_json_whose_h3_is_not_stopped(tmp_path):
     assert runner.decisive_attempt(out, a) == tmp_path / "full.json"
 
 
+def _head(as_of_s: int, stage: str = "full", iso: str | None = None) -> str:
+    iso = iso or datetime.fromtimestamp(as_of_s, UTC).isoformat()
+    return f"# smart-money slice 1, stage {stage}, as-of {iso}, seed 1\nout: x\n"
+
+
+def _seen(as_of_s: int, tail: str = "") -> str:
+    """A report that reached the line before the first outcome (an attempt by the amendment 2026-11-27)."""
+    return _head(as_of_s) + "fetch done: failed {}\n\n## Зріз: метрики на 2026-12-16 00:00 UTC\n" + tail
+
+
+def test_series_attempts_counts_reports_that_reached_the_outcomes(tmp_path):
+    """Amendment 2026-11-27 (review blocker 2): a report counts once it holds the ``## Зріз:`` line, printed after the
+    fetch and before ``### H1`` (the first outcome); a crash before it uses up no attempt."""
+    runner = _load_runner()
+    out, a = tmp_path / "full.md", LOOK[2]
+    assert runner.series_attempts(out, a) == []
+    (tmp_path / "full.md").write_text(_seen(a, "### H1 / H1w: aborted\n"))  # aborted after outcomes, no JSON: counted
+    (tmp_path / "full.2.md").write_text("")  # empty: crash before the first line, not counted
+    (tmp_path / "full.3.md").write_text(_head(a) + "план запитів: …\n  gamma: 10/90 batches\n")  # crash in the fetch
+    (tmp_path / "full.4.md").write_bytes(b"\xff\xfe broken")  # unreadable: counted (conservative)
+    (tmp_path / "full.5.md").write_text(_seen(LOOK[1]))  # another as-of
+    (tmp_path / "full.6.md").write_text(_seen(a).replace("stage full", "stage coverage"))  # another stage
+    (tmp_path / "full.x.md").write_text(_seen(a))  # not in the series
+    (tmp_path / "full-s2.md").write_text(_seen(a))  # series 2 is not series 1
+    (tmp_path / "full.10.md").write_text(_seen(a))
+    # a fractional header of the same whole second (written before the 27.11 refusal) is counted, not skipped
+    (tmp_path / "full.11.md").write_text(_seen(a).replace("00:00:00+00:00", "00:00:00.500000+00:00", 1))
+    want = ["full.md", "full.4.md", "full.10.md", "full.11.md"]
+    assert runner.series_attempts(out, a) == [tmp_path / n for n in want]
+    assert runner.series_attempts(tmp_path / "full-s2.md", a) == [tmp_path / "full-s2.md"]
+    assert runner.MAX_ATTEMPTS == 3
+    assert runner.SLICE_HEAD == "## Зріз: "
+
+
+def test_full_stage_prints_the_attempt_line_before_any_outcome():
+    """Blocker 2: ``full()`` emits ``## Зріз:`` before it calls the first outcome block (``h1_block``)."""
+    runner = _load_runner()
+    import inspect  # noqa: PLC0415
+
+    src = inspect.getsource(runner.full)
+    assert src.index("SLICE_HEAD") < src.index("h1_block(") < src.index("h2_block(") < src.index("h3_block(")
+    assert src.index("fetch(prep") < src.index("SLICE_HEAD")
+
+
+def test_emit_writes_the_report_before_the_screen(tmp_path, monkeypatch, capsys):
+    """Blocker 2: no line reaches the screen before the report file (which counts the attempt) holds it."""
+    runner = _load_runner()
+    path = tmp_path / "full.md"
+    seen: list[str] = []
+    real_print = print
+
+    def spy(*args, **kw):
+        seen.append(path.read_text(encoding="utf-8"))
+        real_print(*args, **kw)
+
+    monkeypatch.setattr(runner, "print", spy, raising=False)
+    with open(path, "x", encoding="utf-8") as fh:
+        monkeypatch.setitem(runner.OUT, "fh", fh)
+        runner.emit("## Зріз: метрики")
+    assert seen == ["## Зріз: метрики\n"]
+    assert capsys.readouterr().out == "## Зріз: метрики\n"
+
+
+def test_registration_fingerprint_is_the_one_slice_1_was_run_with():
+    """Review 2026-11-27, remark 2: sha256 of the sorted registration equals that of the ``registration`` stored in
+    slice 1's ``full.json`` (sha256 564a9eef…c0bd), so any drift that would break slice 1 as a prior breaks CI."""
+    import hashlib  # noqa: PLC0415
+
+    runner = _load_runner()
+    got = hashlib.sha256(json.dumps(runner.registration(), sort_keys=True).encode()).hexdigest()
+    assert got == "50025b124d73248969691560b4995ad409be812ee221796c0c4415a1101fd843"
+
+
+class _StoreReached(Exception):
+    pass
+
+
+def _main(runner, monkeypatch, *args: str) -> None:
+    """Run the runner's ``main()`` with ``args``; the store is never opened (no live database, no network)."""
+
+    def no_store(db, cache):
+        raise _StoreReached
+
+    monkeypatch.setattr(runner, "open_store", no_store)
+    monkeypatch.setattr("sys.argv", ["verify_smart_money_slice1.py", *args])
+    runner.main()
+
+
+def test_main_refuses_attempts_the_card_rule_does_not_allow(tmp_path, monkeypatch):
+    """R2-2: the refusals of «порядок спроб» inside ``main()`` happen before any file is written or data is read."""
+    runner = _load_runner()
+    a = LOOK[2]
+    iso = datetime.fromtimestamp(a, UTC).isoformat()
+    full = ("--stage", "full", "--as-of", iso, "--cache-dir", str(tmp_path))
+    stopped = {"as_of_s": a, "fetch_failed": {"gamma": 9}, "h3": {"stopped": True}}
+
+    # --no-fetch at a decisive as-of without --out: a replay, not an attempt
+    with pytest.raises(SystemExit, match="--no-fetch at a decisive as-of"):
+        _main(runner, monkeypatch, *full, "--no-fetch")
+    assert list(tmp_path.glob("full*")) == []
+
+    # attempt 1 aborted after the outcomes (no JSON), attempt 2 stopped by the Gamma check: attempt 3 is allowed
+    (tmp_path / "full.md").write_text(_seen(a, "### H1 / H1w: …\n"))
+    (tmp_path / "full.2.md").write_text(_seen(a))
+    (tmp_path / "full.2.json").write_text(json.dumps(stopped))
+    with pytest.raises(_StoreReached):
+        _main(runner, monkeypatch, *full)
+    third = (tmp_path / "full.3.md").read_text()
+    assert third.startswith(_head(a).partition(" seed")[0]) and "\ncode: " in third
+    assert not (tmp_path / "full.3.json").exists()
+    # the third reached the store and crashed there, before any outcome: no attempt used, the next one is allowed
+    assert runner.series_attempts(tmp_path / "full.md", a) == [tmp_path / "full.md", tmp_path / "full.2.md"]
+    (tmp_path / "full.3.md").write_text(_seen(a))  # now as if it had crashed after the outcomes
+    with pytest.raises(SystemExit, match="attempt cap reached: 3 of 3"):
+        _main(runner, monkeypatch, *full)
+    assert not (tmp_path / "full.4.md").exists()
+
+    # a --no-fetch replay outside the series is still allowed after the cap
+    (tmp_path / "tmp").mkdir()
+    with pytest.raises(_StoreReached):
+        _main(runner, monkeypatch, *full, "--no-fetch", "--out", str(tmp_path / "tmp" / "replay.md"))
+
+    # a decisive attempt already written: a new attempt is refused (before the cap check)
+    dec = tmp_path / "dec"
+    dec.mkdir()
+    (dec / "full.md").write_text(_seen(a))
+    (dec / "full.json").write_text(json.dumps({**stopped, "h3": {"overall": {"status": "not_confirmed"}}}))
+    with pytest.raises(SystemExit, match="decisive attempt of this as-of is already written"):
+        _main(runner, monkeypatch, "--stage", "full", "--as-of", iso, "--cache-dir", str(dec))
+    assert sorted(p.name for p in dec.iterdir()) == ["full.json", "full.md"]
+    # ... and series 2 is refused there too (series 1 has a decisive attempt)
+    with pytest.raises(SystemExit, match="--series 2 is allowed only after"):
+        _main(runner, monkeypatch, "--stage", "full", "--as-of", iso, "--cache-dir", str(dec), "--series", "2")
+
+    # a non-decisive as-of is descriptive: neither rule applies (closed series of the decisive as-of in tmp_path)
+    with pytest.raises(_StoreReached):
+        _main(runner, monkeypatch, *full[:3], datetime.fromtimestamp(a + 60, UTC).isoformat(), *full[4:])
+
+    # review remark 3: the registered coverage -> full flow, a clean first full next to coverage.md / coverage.json
+    cov = tmp_path / "cov"
+    cov.mkdir()
+    (cov / "coverage.md").write_text(_seen(a).replace("stage full", "stage coverage"))
+    (cov / "coverage.json").write_text("{}")
+    with pytest.raises(_StoreReached):
+        _main(runner, monkeypatch, "--stage", "full", "--as-of", iso, "--cache-dir", str(cov))
+    assert (cov / "full.md").exists()
+
+
+@pytest.mark.parametrize("as_of", ["2026-12-16T00:00:00.5Z", "2026-12-16T00:00:00.000001+00:00", "2026-12-16T02:00:00.25+02:00"])
+def test_main_refuses_a_fractional_as_of_before_any_write(tmp_path, monkeypatch, as_of):
+    """Review 2026-11-27, blocker 5: ``…00.5Z`` is decisive by its whole second but its header was not counted."""
+    runner = _load_runner()
+    cache = tmp_path / "c"
+    for stage in ("full", "coverage"):
+        with pytest.raises(SystemExit, match="whole second"):
+            _main(runner, monkeypatch, "--stage", stage, "--as-of", as_of, "--cache-dir", str(cache))
+    assert not cache.exists()
+
+
+def _attempts(runner, monkeypatch, cache: Path, as_of_s: int, modes: list[str], *extra: str) -> list[str]:
+    """Run ``main()`` once per mode with a fake store and a fake ``full()`` that prints what the real one prints, in
+    the same order: the fetch lines, then ``## Зріз:``, then ``### H1`` (the first outcome); ``crash_fetch`` dies in
+    the fetch, ``crash_after`` after ``### H1``, ``stopped`` / ``clean`` return a JSON body. Returns each outcome."""
+
+    def fake_full(prep, cache_, seed, no_fetch, prior=None):
+        mode = modes_left.pop(0)
+        runner.emit("план запитів: portfolio 1, candles 1, candles1h 1, gamma 1")
+        if mode == "crash_fetch":
+            raise RuntimeError("OOM in the fetch")
+        runner.emit("fetch done: failed {}")
+        runner.emit(f"{runner.SLICE_HEAD}метрики на … UTC")
+        runner.emit("### H1 / H1w: …")
+        if mode == "crash_after":
+            raise RuntimeError("killed after H1")
+        h3 = {"stopped": True} if mode == "stopped" else {"overall": {"status": "not_confirmed"}}
+        return {"as_of_s": as_of_s, "fetch_failed": {"gamma": 0}, "h3": h3}
+
+    modes_left = list(modes)
+    monkeypatch.setattr(runner, "open_store", lambda db, c: None)
+    monkeypatch.setattr(runner, "Prep", lambda conn, as_of, stage0: None)
+    monkeypatch.setattr(runner, "full", fake_full)
+    iso = datetime.fromtimestamp(as_of_s, UTC).isoformat()
+    got = []
+    for _ in modes:
+        monkeypatch.setattr("sys.argv", ["v.py", "--stage", "full", "--as-of", iso, "--cache-dir", str(cache), *extra])
+        try:
+            runner.main()
+            got.append("ok")
+        except RuntimeError:
+            got.append("crash")
+        except SystemExit as exc:
+            got.append(f"refused: {str(exc)[:40]}")
+            modes_left.pop(0)
+    return got
+
+
+def test_stopped_crashed_and_clean_attempts_behave_as_the_card_says(tmp_path, monkeypatch):
+    """Amendment 2026-11-27 after review (blockers 1, 2): crashes before ``## Зріз:`` use up no attempt; crashes after
+    it and stopped attempts do; 3 counted attempts close series 1; then exactly one series 2 (``full-s2*``) with the
+    same cap; a clean attempt is decisive and ends its series."""
+    runner = _load_runner()
+    a, cache = LOOK[2], tmp_path / "slice2"
+    got = _attempts(runner, monkeypatch, cache, a, ["crash_fetch", "crash_fetch", "stopped", "crash_after", "stopped", "x"])
+    assert got[:5] == ["crash", "crash", "ok", "crash", "ok"] and got[5].startswith("refused: attempt cap reached: 3 of 3")
+    s1 = cache / "full.md"
+    assert [p.name for p in runner.series_attempts(s1, a)] == ["full.3.md", "full.4.md", "full.5.md"]
+    assert sorted(p.name for p in cache.glob("full*.json")) == ["full.3.json", "full.5.json"]  # п. 9: data from full.5
+    assert runner.decisive_attempt(s1, a) is None
+    assert not (cache / "full.6.md").exists()
+    for f in ("full.md", "full.2.md"):  # crashed in the fetch: the file holds no outcome line
+        assert runner.SLICE_HEAD not in (cache / f).read_text()
+
+    # series 2 (after the one Gamma fix): a pre-outcome crash is free, a stopped one counts, a clean one is decisive
+    got = _attempts(runner, monkeypatch, cache, a, ["crash_fetch", "stopped", "clean", "x"], "--series", "2")
+    assert got[:3] == ["crash", "ok", "ok"] and got[3].startswith("refused: the decisive attempt of this as-of")
+    s2 = cache / "full-s2.md"
+    assert runner.decisive_attempt(s2, a) == cache / "full-s2.3.json"
+    assert [p.name for p in runner.series_attempts(s2, a)] == ["full-s2.2.md", "full-s2.3.md"]
+    # series 1 stays closed, and a third series does not exist
+    assert _attempts(runner, monkeypatch, cache, a, ["x"])[0].startswith("refused: attempt cap reached")
+    with pytest.raises(SystemExit):
+        _main(
+            runner,
+            monkeypatch,
+            "--stage",
+            "full",
+            "--as-of",
+            datetime.fromtimestamp(a, UTC).isoformat(),
+            "--cache-dir",
+            str(cache),
+            "--series",
+            "3",
+        )
+    # within a series every attempt prints the same code hash
+    codes = {
+        next(line for line in (cache / f).read_text().splitlines() if line.startswith("code: "))
+        for f in ("full.3.md", "full.5.md", "full-s2.3.md")
+    }
+    assert len(codes) == 1
+
+
+def test_series_2_only_after_series_1_closed_and_only_as_attempts(tmp_path, monkeypatch):
+    runner = _load_runner()
+    a = LOOK[2]
+    iso = datetime.fromtimestamp(a, UTC).isoformat()
+    cache = tmp_path / "c"
+    s2 = ("--stage", "full", "--as-of", iso, "--cache-dir", str(cache), "--series", "2")
+    with pytest.raises(SystemExit, match="--series 2 is allowed only after series 1 counted 3"):
+        _main(runner, monkeypatch, *s2)  # series 1 not started
+    cache.mkdir(exist_ok=True)
+    for f in ("full.md", "full.2.md"):
+        (cache / f).write_text(_seen(a))
+    with pytest.raises(SystemExit, match="--series 2 is allowed only after series 1 counted 3"):
+        _main(runner, monkeypatch, *s2)  # series 1 still open (2 of 3)
+    for bad in (("--no-fetch",), ("--out", str(tmp_path / "x.md"))):
+        with pytest.raises(SystemExit, match="--series 2 is an attempt series"):
+            _main(runner, monkeypatch, *s2, *bad)
+    with pytest.raises(SystemExit, match="--series 2 is an attempt series"):
+        _main(runner, monkeypatch, "--stage", "coverage", *s2[2:])
+    with pytest.raises(SystemExit, match="--series 2 is an attempt series"):  # not a decisive as-of
+        _main(runner, monkeypatch, "--stage", "full", "--as-of", datetime.fromtimestamp(a + 60, UTC).isoformat(), *s2[4:])
+    (cache / "full.3.md").write_text(_seen(a))
+    with pytest.raises(_StoreReached):
+        _main(runner, monkeypatch, *s2)
+    assert (cache / "full-s2.md").exists()
+    assert sorted(p.name for p in cache.iterdir()) == ["full-s2.md", "full.2.md", "full.3.md", "full.md"]
+
+
 def _h2_case(runner, cache: Path, as_of_s: int):
     """Synthetic H2 with a perfect daily IC (coin j's flow and its excess return both grow with j): gate passed and
     the registered criterion met, so only the look / prior logic decides the verdict."""

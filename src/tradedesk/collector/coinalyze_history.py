@@ -7,9 +7,13 @@ also ``BTCUSDT.6`` and ``ETHUSDT.6`` (Bybit USDT perps). The suffix is the excha
 all-exchange aggregate (``.A`` = Binance, docs/reviews/2026-10-18-doubletop-parity-1b.md; ``.6`` = Bybit,
 docs/reviews/2026-10-25-doubletop-parity-2.md, both by matching OI with the live venue). Only codes of that verified
 whitelist (``EXCHANGE_CODES``) are asked; other venue names in the setting are ignored with a warning. Each venue is
-stored under its own symbol, so the rows never mix: summing venues is left to the reader. For Bybit only OI was checked
-against the venue; its funding and long/short rows are stored as Coinalyze sends them (same parsers and units as
-Binance), not yet compared with Bybit's own history. Network only through ``rt.coinalyze`` (the shared ``Http``: rate
+stored under its own symbol, so the rows never mix: summing venues is left to the reader. The three Bybit series of
+BTC and ETH (daily bars) were reconciled with Bybit's own history on 2026-11-27
+(docs/verification/2026-11-27-coinalyze-bybit-check.md): funding OHLC = first / max / min / last settlement of the
+UTC day on all 1489 days (2022-10-30..2026-11-26); long/short = the venue's 00:00 UTC account snapshot of the bar's
+day on the last 499 days only (from 2025-07-16; the venue returns 500 snapshots); OI USD close = the venue's OI
+stamped at the next 00:00 UTC x the day's Bybit close on the last 401 days only (from 2025-10-22). Older long/short
+and OI days were not checked against the venue. Network only through ``rt.coinalyze`` (the shared ``Http``: rate
 limit, retries, health); the API key lives in the request header only and is never logged or stored.
 
 Only closed UTC days are stored, and a day is first asked :data:`SETTLE_SECONDS` after its close (02:00 UTC of the
@@ -27,10 +31,13 @@ restart. An empty window that reaches the last settled day does NOT move the cur
 recent days are a fault (wrong symbol, changed response shape), not the edge of history, so it is retried every run
 and keeps warning.
 
-Caveats for readers of the table: funding ``open``/``low`` of a day may carry the previous day's last rate (use
-``close`` = the day's last settlement, ``high`` = its largest); the long/short row is the account snapshot at ``ts``
-(inferred, not independently verified); OI in USD is Coinalyze's conversion. ``convert_to_usd`` has not yet been
-checked with a live call of our key: an OI series whose MEDIAN close looks like coins (below :data:`MIN_OI_USD`) is
+Caveats for readers of the table: funding ``open``/``high``/``low`` of a Binance day may carry the previous day's
+last rate (BTC/ETH, 2022-10-30..2026-11-26: 6-7 % of days for open, 1-2 % for high and low, nearly all in 2026; not
+seen on Bybit), so use ``close`` = the day's last settlement; the long/short row is the account snapshot at ``ts`` =
+00:00 UTC, the START of the bar's day (checked on Bybit BTC/ETH over the last 499 days; Binance only 29 days, too few
+to call), while the OI ``close`` is the end of the day: the two are 24 h apart; OI in USD is
+Coinalyze's conversion. ``convert_to_usd`` is confirmed by the live table (2026-11-27: median closes 1.6e9-5.7e9
+USD per series), and the guard stays: an OI series whose MEDIAN close looks like coins (below :data:`MIN_OI_USD`) is
 refused and lands in ``missing`` rather than being stored as USD; single bars below it in a USD series (a zero or a
 gap filled by the aggregator) are dropped with a warning and the rest is stored.
 

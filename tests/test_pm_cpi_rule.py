@@ -3,7 +3,9 @@ analytics/pm_cpi.parse_bracket / is_partition / bracket_prob / taker_fee / rule_
 book_why, close_quote, fill, clv, sha256_json, row_digest, same_record) and the archive SD (yoy_published, archive_errors,
 sigma_archive)."""
 
+import json
 import math
+from pathlib import Path
 from statistics import NormalDist
 
 import pytest
@@ -17,14 +19,22 @@ from tradedesk.analytics.pm_cpi import (
     archive_errors,
     book_why,
     bracket_prob,
+    brier_release,
     close_quote,
     clv,
+    clv_release,
+    contains,
     digest_preimage,
     fill,
+    fred_levels,
     is_partition,
+    market_prob,
     merge_proof_why,
     model_ok,
     parse_bracket,
+    pm_resolution,
+    resolution_check,
+    result_cutoff,
     row_digest,
     row_why,
     rule_signals,
@@ -32,6 +42,7 @@ from tradedesk.analytics.pm_cpi import (
     same_target,
     sha256_json,
     sigma_archive,
+    signal_figures,
     stage_why,
     stage_window,
     taker_fee,
@@ -511,3 +522,106 @@ def test_archive_sd_does_not_change_with_data_after_the_cut():
     assert sigma_archive(archive_errors(_archive(late_value=7.7, extra=[later]), pub, "2024-12-01", "2024-1")) == base
     # a release on or after `before` is left out entirely
     assert all(r["target"] != "2024-2" for r in archive_errors(_archive(), pub, "2024-03-12", "2024-1"))
+
+
+# ----------------------------------------------------------------------------- the result stage (item 491)
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_fred_levels_give_the_published_12_month_change():
+    # the real tail of CPIAUCNS (FRED, 2026-11-27): 2025-10 empty (never published), so 2026-10 has no 12-month change
+    csv = json.loads((FIXTURES / "fred_cpiaucns_tail_2026-11-27.json").read_text())["csv"]
+    lv = fred_levels(csv)
+    assert "2025-10" not in lv and lv["2026-10"] == "337.511" and lv["2025-11"] == "324.122"
+    pub = yoy_published(lv)
+    assert pub["2026-9"] == 3.7  # by hand: 336.940 / 324.800 - 1 = 3.7377 % -> 3.7
+    assert "2026-10" not in pub and "2026-11" not in pub  # the target of 10.12 is not published in the fixture
+    # a synthetic level of 2026-11 (not a published value): 336.000 / 324.122 - 1 = 3.6647 % -> 3.7
+    assert yoy_published(fred_levels(csv + "2026-11-01,336.000\n"))["2026-11"] == 3.7
+    assert fred_levels(None) == {} and fred_levels("h\n2026-12-01,.\nbad,1\n") == {}
+
+
+def test_pm_resolution_reads_the_payout_only_when_resolved():
+    real = json.loads((FIXTURES / "polymarket_cpi_resolved_market_2026-11-27.json").read_text())["market"]
+    assert pm_resolution(real) == {"state": "resolved", "yes": 0.0, "closed": True, "uma_status": "resolved"}
+    open_ = json.loads((FIXTURES / "polymarket_cpi_event_market_2026-11-27.json").read_text())["market"]
+    assert pm_resolution(open_)["state"] == "open" and pm_resolution(open_)["yes"] is None
+    assert pm_resolution({**real, "umaResolutionStatus": "proposed"})["state"] == "pending"
+    assert pm_resolution({**real, "outcomePrices": '["1", "0"]'})["yes"] == 1.0
+    assert pm_resolution({**real, "outcomePrices": '["0.5", "0.5"]'})["yes"] == 0.5  # a split pays 0.5
+    assert pm_resolution({**real, "outcomePrices": ["1.0", "0.0"]})["yes"] == 1.0
+    # review C of item 491, blocker 3: 'resolved' with last trading prices (summing to 1) is not a payout, it waits
+    for bad in ({"outcomes": '["No", "Yes"]'}, {"outcomePrices": '["1", "1"]'}, {"outcomePrices": "x"},
+                {"outcomePrices": '["nan", "1"]'}, {"outcomePrices": '[true, false]'}, {"outcomePrices": '["0.9995", "0.0005"]'},
+                {"outcomePrices": '["0.0005", "0.9995"]'}, {"outcomePrices": '["0.3", "0.7"]'}):  # fmt: skip
+        assert pm_resolution({**real, **bad}) == {"state": "unreadable", "yes": None, "closed": True, "uma_status": "resolved"}
+    assert pm_resolution(None)["state"] == "unreadable"
+
+
+def test_result_cutoff_is_30_days_after_the_window_opens():
+    from datetime import UTC, datetime, timedelta
+
+    # registration п. 7, result (review C of item 491, blocker 2): from the release day alone
+    assert result_cutoff("2026-12-10") == datetime(2027, 1, 9, 15, 0, tzinfo=UTC)
+    assert result_cutoff("2027-03-11") == stage_window("result", "2027-03-11")[0] + timedelta(days=30)
+
+
+def test_resolution_check_writes_both_values():
+    brs = [{"event_id": "e1", "market_id": "a", "title": "≤3.6%", "yes": 0.0},
+           {"event_id": "e1", "market_id": "b", "title": "3.7%", "yes": 1.0},
+           {"event_id": "e1", "market_id": "c", "title": "≥3.8%", "yes": 0.0},
+           {"event_id": "e2", "market_id": "d", "title": "3.7%", "yes": 0.0},
+           {"event_id": "e2", "market_id": "e", "title": "3.8%+", "yes": 1.0}]  # fmt: skip
+    got = resolution_check(brs, 3.7)
+    assert got == [{"event_id": "e1", "pm_yes": ["b"], "cpi_yes": ["b"], "agree": True},
+                   {"event_id": "e2", "pm_yes": ["e"], "cpi_yes": ["d"], "agree": False}]  # fmt: skip
+    assert resolution_check(brs[:3], None)[0]["cpi_yes"] == [] and not resolution_check(brs[:3], None)[0]["agree"]
+    assert contains((None, 33), 3.3) and not contains((None, 33), 3.4) and contains((44, None), 4.4) and not contains(None, 3.3)
+
+
+def test_brier_of_the_model_and_the_market_by_hand():
+    rows = [
+        # event 0: mid 0.2; ask / 2 = 0.3 (no bid); (bid + 1) / 2 = 0.7 (no ask) -> sum 1.2, normalised 1/6, 1/4, 7/12
+        {"event": 0, "market_id": "a", "q": 0.2, "bid": 0.1, "ask": 0.3},
+        {"event": 0, "market_id": "b", "q": 0.5, "bid": None, "ask": 0.6},
+        {"event": 0, "market_id": "c", "q": 0.3, "bid": 0.4, "ask": None},
+        {"event": 1, "market_id": "d", "q": 0.6, "bid": None, "ask": None},  # no quote at all: in neither score
+        {"event": 1, "market_id": "e", "q": 0.4, "bid": None, "ask": None},
+        {"event": 2, "market_id": "f", "q": 1.0, "bid": 0.5, "ask": 0.6},  # no payout: in neither score
+        {"event": 3, "market_id": "g", "q": 0.9, "bid": 0.7, "ask": 0.9},  # p 0.8, 0 -> normalised 1, 0
+        {"event": 3, "market_id": "h", "q": 0.1, "bid": None, "ask": None},
+        {"event": 4, "market_id": "i", "q": None, "bid": 0.1, "ask": 0.2},  # no model: not an event of the score
+    ]
+    pay = {"a": 0.0, "b": 1.0, "c": 0.0, "d": 1.0, "e": 0.0, "g": 1.0, "h": 0.0, "i": 1.0}
+    got = brier_release(rows, pay)
+    ev = {e["event"]: e for e in got["events"]}
+    assert set(ev) == {0, 1, 2, 3} and ev[1]["why"] == "no quotes" and ev[2]["why"] == "no payout"
+    assert ev[0]["model"] == pytest.approx(0.04 + 0.25 + 0.09)  # 0.38
+    assert ev[0]["market"] == pytest.approx(1 / 36 + 9 / 16 + 49 / 144)  # 134/144
+    assert ev[0]["market_raw"] == pytest.approx(0.04 + 0.49 + 0.49)
+    assert ev[3]["model"] == pytest.approx(0.02) and ev[3]["market"] == pytest.approx(0.0)
+    assert got["n_events"] == 2 and got["model"] == pytest.approx(0.20) and got["market"] == pytest.approx(67 / 144)
+    assert got["delta"] == pytest.approx(0.20 - 67 / 144) and got["market_raw"] == pytest.approx(0.53)
+    assert brier_release(rows[3:5], pay) == {"events": [{**ev[1]}], "n_events": 0, "model": None, "market": None,
+                                             "delta": None, "market_raw": None}  # fmt: skip
+    assert market_prob(None, None) == 0.0 and market_prob(float("nan"), 0.4) == 0.2
+
+
+def test_signal_figures_and_clv_of_the_release_by_hand():
+    f = {"shares": 400.0, "p_in": 0.105, "cost_usd": 42.5, "fee_usd": 0.5, "executable": True}
+    out_fee = taker_fee(0.14, "economics_fees")  # 0.01 * 0.14 * 0.86 = 0.001204 per share
+    got = signal_figures(f, 0.14, 0.16, 1.0, out_fee)
+    assert got["clv"]["mid"] == pytest.approx(0.15) and got["clv"]["usd"] == pytest.approx(400 * 0.045)  # 18.0
+    assert got["usd_per_cost"] == pytest.approx(18.0 / 42.5) and got["net_usd"] == pytest.approx(17.5)
+    # review C of item 491, R1 (п. 8 «виконуваний вихід … − комісія»): both taker fees of the round trip
+    assert got["exit_fee_usd"] == pytest.approx(0.4816)
+    assert got["exit_usd"] == pytest.approx(400 * (0.14 - 0.105) - 0.5 - 0.4816)  # 13.0184
+    assert signal_figures(f, 0.14, 0.16, 1.0)["exit_usd"] is None  # no exit fee known: no exit figure
+    assert got["paper_usd"] == pytest.approx(400 - 42.5) and signal_figures(f, 0.14, 0.16, 0.0)["paper_usd"] == pytest.approx(-42.5)
+    no = signal_figures({**f, "executable": False}, 0.14, 0.16, 1.0, out_fee)  # not executable: no CLV, the paper result stays
+    assert no["clv"] is None and no["net_usd"] is None and no["exit_usd"] is None and no["paper_usd"] == pytest.approx(357.5)
+    side = signal_figures(f, None, 0.16, None, out_fee)  # one side of the T-1 book missing, no payout: nothing filled in
+    assert side == {"clv": None, "usd_per_cost": None, "net_usd": None, "exit_fee_usd": None, "exit_usd": None, "paper_usd": None}
+    assert clv_release([got, no, {"clv": {"usd": -3.0}}]) == {"usd": pytest.approx(15.0), "n": 2}
+    assert clv_release([no]) == {"usd": None, "n": 0}

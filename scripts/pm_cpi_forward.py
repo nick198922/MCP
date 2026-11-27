@@ -7,6 +7,19 @@ Stages (C = ~/.cache/tradedesk-agents/pm_cpi; every stage file is written once, 
     uv run python scripts/pm_cpi_forward.py --stage T-3 --release 2026-12-10 --out C/out_fwd_T-3.txt   # decision (item 486)
     uv run python scripts/pm_cpi_forward.py --stage T-1 --release 2026-12-10 --out C/out_fwd_T-1.txt   # close, CLV (item 487)
     uv run python scripts/pm_cpi_forward.py --stage proof --release 2026-12-10 --out C/out_fwd_proof.txt  # proof (item 487)
+    uv run python scripts/pm_cpi_forward.py --stage result --release 2026-12-10 --out C/out_fwd_result.txt  # (items 487, 493)
+
+Result (item 491, registration п. 7, 8, as amended 27.11): from 15:00 UTC of the release day. It runs the code of R,
+the last first-parent state of ``origin/main`` before the publication (08:30 New York time of the release day, 13:30
+UTC on 2026-12-10), so its CLV / Brier code knew no outcome; refused when the clone's last fetch is before that moment
+or when the scanner of R has no result stage (never HEAD instead). It reads of ``T-3.json`` (main copy, else local)
+only the ``REBUILT`` fields and the Gamma part, the job's T-1 row (``close_quote``, the database row applies) and asks
+FRED for CPIAUCNS (the published 12-month change, ``yoy_published``) and Gamma ``/markets/{id}`` for the resolution of
+every market of the YoY events. It writes ``result.json`` only when every input is final: the CPI published and every
+market resolved; otherwise nothing is written, every reason is printed, and the stage is run again later (item 493).
+From the cutoff (``result_cutoff``: 15:00 UTC of the release day + 30 days) a market that answered without a
+resolution and a CPI that FRED does not have are written under ``absent`` instead (a failed request still waits).
+What can never come (no T-3 record, no decision, no T-1 row) is written under ``absent``, never filled in.
 
 Source (п. 5): only the collector's ``pm_cpi_snapshot`` row of day T-d, read from the database with ``mode=ro``
 (``verify_pm_cpi_step0.read_rows``); no snapshot directory and no other day is ever read. T-3 adds, from Gamma
@@ -19,7 +32,8 @@ decision input kept whole in the file.
 
 Code (п. 7, amended 27.11 by item 484): a write stage runs its code from a tree extracted from git, never from the
 working copy: T-3 from M0 (``git log origin/main --first-parent --until=<T-3 day>T21:00:00Z -1``; refused when the
-clone's last fetch, the mtime of ``FETCH_HEAD``, is before 21:00 UTC of day T-3), the other stages from HEAD. Every path of that commit's ``CODE_PATHS`` is written by ``git show <sha>:<path>`` into
+clone's last fetch, the mtime of ``FETCH_HEAD``, is before 21:00 UTC of day T-3), the result from R (above), T-7 and T-1
+from HEAD. Every path of that commit's ``CODE_PATHS`` is written by ``git show <sha>:<path>`` into
 ``~/.cache/tradedesk-agents/tmp/pm_cpi_code_<sha[:12]>/`` and the stage runs in a subprocess with that tree first in
 ``sys.path``. ``code_dirty`` (empty = clean) lists tree files whose blob differs from the commit's and every imported
 ``tradedesk.*`` / scanner module that is not one of ``CODE_PATHS`` or not in the tree.
@@ -46,9 +60,10 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from tradedesk.analytics.option_xvenue import num
 from tradedesk.analytics.pm_cpi import (
@@ -57,21 +72,31 @@ from tradedesk.analytics.pm_cpi import (
     STAGE_DAYS,
     book_why,
     books_of,
+    brier_release,
     close_quote,
     clv,
+    clv_release,
     digest_preimage,
     fill,
+    fred_levels,
     merge_proof_why,
     model_ok,
     nowcast_ts,
     pct,
+    pm_resolution,
+    resolution_check,
+    result_cutoff,
     row_digest,
     row_why,
     rule_signals,
     same_record,
     same_target,
+    signal_figures,
     stage_why,
     stage_window,
+    taker_fee,
+    target_key,
+    yoy_published,
 )
 
 IDEA = "pm-cpi-brackets-vs-nowcast-forward"
@@ -83,6 +108,9 @@ DEFAULT_TMP = Path("~/.cache/tradedesk-agents/tmp").expanduser()
 DEFAULT_DB = Path("/var/lib/tradedesk-mcp/tradedesk.sqlite")  # as verify_pm_cpi_step0.DEFAULT_DB
 DEFAULT_REF = "origin/main"
 WRITE_STAGES = ("T-7", "T-3", "T-1")
+RESULT = "result"  # item 491: written from 15:00 UTC of the release day, only once every input is final
+FRED_URL = "https://fred.stlouisfed.org"
+CPI_SERIES = "CPIAUCNS"  # BLS CPI-U, NSA: the published 12-month change (registration п. 4, A_m; п. 7, 8, result)
 FIRST_RELEASE = "2026-12-10"  # registration п. 4: this release is counted with sigma = 0.164 in any case
 JOB_SERIES = ("5", "10007", "10008", "11905", "12054")  # collector/pm_cpi_snapshot.SERIES (a test keeps them equal)
 RULE_PHRASES = ("12-month", "before seasonal adjustment", "one decimal")  # registration п. 2
@@ -664,6 +692,164 @@ def fallback_record(row: Mapping[str, Any] | None, release: str, card_m0: str) -
     return {k: out.get(k) for k in REBUILT}
 
 
+# ------------------------------------------------------------------------------------------- pure: the result (491)
+
+
+def t3_part(rec: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """What the result stage reads of a T-3 record: the fields the proof rebuilds (``REBUILT``) and its Gamma part;
+    nothing else of the file (an extra key cannot reach the result)."""
+    if not isinstance(rec, Mapping):
+        return None
+    return {k: rec.get(k) for k in (*REBUILT, "gamma", "gamma_events")}
+
+
+def yoy_brackets(t3: Mapping[str, Any] | None, t3_row: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The brackets (main set of the T-3 row) of every headline YoY event of the release as the slug selection took it:
+    its ``why`` None, or 'rules: …' (left out by the rule phrases only, set B «rules», п. 8). The result asks Polymarket
+    for the resolution of each of them. Without a T-3 record: the same selection (:func:`select_events`) on the job's
+    row of day T-3 ``t3_row`` (set B, п. 8 (в), rebuilds such a release from that row and needs its outcomes)."""
+    if t3 is None:
+        row = t3_row
+        events = select_events(main_brackets(row), (row or {}).get("target"))
+    else:
+        row = t3.get("row")
+        events = [e for e in t3.get("events") or [] if isinstance(e, Mapping)]
+    yoy = {str(e.get("event_id")) for e in events if e.get("why") is None or str(e.get("why")).startswith("rules: ")}
+    return [b for b in main_brackets(row) if str(b.get("event_id")) in yoy]
+
+
+def result_fields(market: Any, market_id: Any) -> dict[str, Any]:
+    """What ``result.json`` keeps of a Gamma ``/markets/{id}`` answer after the release: the resolution
+    (:func:`pm_resolution`) and the rule text then, with its sha256 and the phrases found (registration п. 2: a change of
+    the rules shows in the record after the resolution). Untrusted text, stored as is."""
+    if not isinstance(market, Mapping) or str(market.get("id")) != str(market_id):
+        return {"ok": False, "why": "not this market"}
+    desc = market.get("description") if isinstance(market.get("description"), str) else None
+    return strict({"ok": True, **pm_resolution(market), "description": desc,
+                   "description_sha256": hashlib.sha256(desc.encode()).hexdigest() if desc is not None else None,
+                   "phrases": phrases_of(desc)})  # fmt: skip
+
+
+def cpi_part(raw: bytes | None, release: str) -> dict[str, Any]:
+    """The published CPI of the release's target month from the FRED CSV of CPIAUCNS (BLS CPI-U, NSA): the 12-month
+    change from the index levels, rounded half-up to 0.1 as BLS prints it (:func:`yoy_published`, as A_m of п. 4).
+    ``value`` None with a ``why``: the request failed, the answer has no index level at all ('unreadable', e.g. an
+    HTML page: not an answer, like a failed request), or the CSV has levels but not this 12-month change yet ('not
+    published'; from :func:`result_cutoff` on, the release is invalid, п. 5)."""
+    target = target_of_release(release)
+    y, m = target_key(target)
+    out: dict[str, Any] = {"target": target, "series": CPI_SERIES, "source": f"{FRED_URL}/graph/fredgraph.csv?id={CPI_SERIES}",
+                           "csv_sha256": None, "level": None, "level_12m_before": None, "last_month": None, "value": None,
+                           "why": "request failed"}  # fmt: skip
+    if raw is None:
+        return out
+    levels = fred_levels(raw.decode("utf-8", "replace"))
+    value = yoy_published(levels).get(target)
+    out.update(csv_sha256=hashlib.sha256(raw).hexdigest(), level=levels.get(f"{y:04d}-{m:02d}"),
+               level_12m_before=levels.get(f"{y - 1:04d}-{m:02d}"), last_month=max(levels) if levels else None,
+               value=value, why=None if value is not None else "not published" if levels else "unreadable")  # fmt: skip
+    return out
+
+
+def result_signals(t3: Mapping[str, Any] | None, row: Mapping[str, Any] | None, payout: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every signal (fill) of the T-3 decision with its T-1 quote, only from ``close_quote`` of the job's T-1 row
+    (registration п. 5, 8: on a mismatch of T-1.json with the database row the row applies, so the row is read), its
+    CLV and paper result (:func:`signal_figures`; the exit fee at the T-1 bid by the bracket's fee fields in
+    ``rule_signals``, as the entry fee, п. 6)."""
+    out = []
+    dec = (t3 or {}).get("decision") or {}
+    fees = {str(r.get("token")): r for r in dec.get("rule_signals") or [] if isinstance(r, Mapping)}
+    for f in dec.get("fills") or []:
+        q = clean_quote(close_quote(row, f.get("token")))
+        y = payout.get(str(f.get("market_id")))
+        r = fees.get(str(f.get("token"))) or {}
+        out_fee = taker_fee(q["bid"], r.get("fee_type"), r.get("fee_schedule"), r.get("fees_enabled")) if q["bid"] is not None else None
+        fig = signal_figures(f, q["bid"], q["ask"], y, out_fee)
+        why = "not executable" if f.get("executable") is not True else q["why"] or (None if fig["clv"] else "no side")
+        out.append({"market_id": f.get("market_id"), "token": f.get("token"), "title": f.get("title"),
+                    "executable": f.get("executable"), "shares": f.get("shares"), "p_in": f.get("p_in"),
+                    "cost_usd": f.get("cost_usd"), "fee_usd": f.get("fee_usd"), "bid_t1": q["bid"], "ask_t1": q["ask"],
+                    "payout": y, "why": why, **fig})  # fmt: skip
+    return out
+
+
+def result_payload(
+    release: str,
+    at: datetime,
+    t3: Mapping[str, Any] | None,
+    t3_src: Mapping[str, Any],
+    t3_row: Mapping[str, Any] | None,
+    t1_row: Mapping[str, Any] | None,
+    t1_src: Mapping[str, Any],
+    t1_ok: tuple[bool, bool] | str | None,
+    cpi: Mapping[str, Any],
+    markets: Mapping[str, Any],
+    missing: list[Any],
+) -> dict[str, Any]:
+    """The content of ``result.json`` (registration п. 7, 8) at D = ``at`` from the T-3 record (:func:`t3_part`), the
+    job's T-1 row, the published CPI (:func:`cpi_part`) and Polymarket's answers per market of :func:`yoy_brackets`
+    (of the record, or of the database row of day T-3 ``t3_row`` when there is no readable record). ``t1_ok``: the
+    :func:`t1_check` pair, 'unreadable …' for a T-1.json that does not read, None without one. ``pending`` lists what
+    is not final yet (a request failed, the CPI not published, a market not resolved): the stage writes nothing while
+    it is not empty, and it is not part of the file. From :func:`result_cutoff` on, an answer that is not final goes
+    to ``absent`` instead (a market not resolved: its event gets no Brier, 'no payout', and its signal no paper
+    result; the CPI not published: ``invalid``, п. 5); a failed request (or an unreadable FRED answer) is no answer
+    and still waits. ``absent`` also lists what will never come (no T-3 record, no decision, no YoY event, no T-1 row):
+    written as is, never filled in."""
+    cutoff = result_cutoff(release)
+    late = at >= cutoff
+    brs = yoy_brackets(t3, t3_row)
+    payout = {k: g.get("yes") for k, g in markets.items() if isinstance(g, Mapping) and g.get("state") == "resolved"}
+    rows = [{"event_id": str(b.get("event_id")), "market_id": str(b.get("market_id")), "title": b.get("title"),
+             "yes": payout.get(str(b.get("market_id")))} for b in brs]  # fmt: skip
+    t3_gamma = (t3 or {}).get("gamma") or {}
+    res = {}
+    for b in brs:
+        mid = str(b.get("market_id"))
+        g = markets.get(mid) or {"ok": False, "why": "not asked"}
+        was = (t3_gamma.get(mid) or {}).get("description_sha256") if isinstance(t3_gamma.get(mid), Mapping) else None
+        res[mid] = {**g, "event_id": str(b.get("event_id")), "title": b.get("title"), "token": str(b.get("token")),
+                    "rules_changed_since_t3": None if was is None or not g.get("ok") else g.get("description_sha256") != was}  # fmt: skip
+    decision = (t3 or {}).get("decision")
+    signals = result_signals(t3, t1_row, payout) if decision else []
+    brier = brier_release(decision.get("rule_signals") or [], payout) if decision else None
+    t3_err = t3_src.get("error") if t3 is None else None
+    no_t3 = (f"t3: T-3.json unreadable ({t3_err}; markets from the database row of day T-3)" if t3_err
+             else "t3: no T-3 record (markets from the database row of day T-3)")  # fmt: skip
+    absent = [x for x, bad in ((no_t3, t3 is None),
+                               (f"t3: no decision (skip {(t3 or {}).get('skip')})", t3 is not None and not decision),
+                               ("no YoY event (no market asked)", not brs),
+                               ("t1: no row of day T-1 (no CLV)", t1_row is None and bool(signals))) if bad]  # fmt: skip
+    pending: list[str] = []
+    invalid = None
+    by = f"by {cutoff.isoformat()}"
+    if cpi.get("value") is None:
+        if late and cpi.get("why") == "not published":
+            absent.append(f"cpi: not published {by} (the release is invalid, registration п. 5)")
+            invalid = "CPI not published (registration п. 5)"
+        else:
+            pending.append(f"cpi: {cpi.get('why')}")
+    for m, g in res.items():
+        why = g.get("why") if not g.get("ok") else g.get("state")
+        if g.get("ok") and g.get("state") == "resolved":
+            continue
+        if late and why != "request failed":
+            absent.append(f"polymarket {m}: not resolved {by} ({why}; its event has no Brier, no payout)")
+        else:
+            pending.append(f"polymarket {m}: {why}")
+    t1c = None if t1_ok is None else {"unreadable": t1_ok} if isinstance(t1_ok, str) else {"row_digest_db": t1_ok[0], "quotes": t1_ok[1]}
+    return {
+        "cutoff": cutoff.isoformat(), "invalid": invalid,
+        "t3_file": dict(t3_src), "t3_skip": (t3 or {}).get("skip"), "t3_row_digest": (t3 or {}).get("row_digest"),
+        "markets_from": "T-3 record" if t3 is not None else "database row of day T-3" if t3_row is not None else None,
+        "t1_file": dict(t1_src), "t1_check": t1c,
+        "t1_source": row_payload("T-1", release, t1_row)["source"], "t1_row_digest": row_digest(t1_row) if t1_row else None,
+        "cpi": dict(cpi), "resolution": res, "resolution_check": resolution_check(rows, cpi.get("value")),
+        "signals": signals, "clv_rel": clv_release(signals), "brier_t3": brier, "missing": list(missing), "absent": absent,
+        "pending": pending,
+    }  # fmt: skip
+
+
 # ------------------------------------------------------------------------------------------------------- git, code
 
 
@@ -675,6 +861,31 @@ def m0_of(repo: Path, ref: str, release: str) -> str | None:
     """M0 of a release: the last first-parent state of ``ref`` before 21:00 UTC of day T-3 (registration п. 7)."""
     out = git(repo, "log", ref, "--first-parent", f"--until={stage_day('T-3', release)}T21:00:00Z", "-1", "--format=%H").stdout
     return out.strip() or None
+
+
+def publication_utc(release: str) -> datetime:
+    """The moment of the BLS publication of a release in UTC: 08:30 New York time of the release day (13:30 UTC in
+    winter, so on 2026-12-10; 12:30 UTC under daylight saving time), from the release day alone."""
+    return datetime.combine(date.fromisoformat(release), time(8, 30), ZoneInfo("America/New_York")).astimezone(UTC)
+
+
+def r_of(repo: Path, ref: str, release: str) -> str | None:
+    """R of a release: the last first-parent state of ``ref`` before the publication (:func:`publication_utc`); the
+    result stage runs its code, so its CLV / Brier code was fixed before any outcome (registration п. 7, as amended
+    27.11 by item 491 after review C, blocker 1)."""
+    until = publication_utc(release).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = git(repo, "log", ref, "--first-parent", f"--until={until}", "-1", "--format=%H").stdout
+    return out.strip() or None
+
+
+def has_result_stage(repo: Path, sha: str) -> bool:
+    """Whether the scanner at commit ``sha`` has the result stage (a top-level ``RESULT = "result"``), read with
+    ``ast`` (nothing of it runs): when R is older than item 491, the stage is refused, never run by another commit."""
+    src = git(repo, "show", f"{sha}:scripts/pm_cpi_forward.py").stdout
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "RESULT" for t in node.targets):
+            return isinstance(node.value, ast.Constant) and node.value.value == RESULT
+    return False
 
 
 def safe_path(p: Any) -> bool:
@@ -816,6 +1027,96 @@ def gamma_answers(rt_factory: Callable[[], Any]) -> Callable[[list[str], list[st
     return lambda mids, eids: asyncio.run(fetch_gamma(mids, eids, rt_factory)) if mids or eids else ({}, {}, [])
 
 
+def default_fred(retries: int) -> Any:
+    """The FRED client of the result stage (``core.http.Http``, the public graph endpoint, no key)."""
+    from verify_pm_cpi_step0 import UA
+
+    from tradedesk.core.http import Http
+
+    return Http("fred", FRED_URL, rate=0.5, timeout=30.0, retries=retries, headers=UA)
+
+
+async def fetch_result(
+    mids: list[str], rt_factory: Callable[[], Any], fred_factory: Callable[[], Any]
+) -> tuple[bytes | None, dict[str, Any], list[Any]]:
+    """(the FRED CSV of CPIAUCNS or None, {market id: :func:`result_fields`}, missing): every failure recorded, never
+    raised; the result stage then writes nothing and may be run again."""
+    from tradedesk.core.envelope import Builder
+
+    b: Any = Builder()
+    csv: bytes | None = None
+    fred = fred_factory()
+    try:
+        data = await b.guard(
+            "cpi", f"fred:{CPI_SERIES}", fred.get_bytes("/graph/fredgraph.csv", params={"id": CPI_SERIES}, tool="fredgraph")
+        )
+        csv = bytes(data) if data is not None else None
+    except Exception as e:  # noqa: BLE001 - recorded; the stage writes nothing without the CPI
+        b.miss("cpi", f"fred:{CPI_SERIES}", "backend_error", f"raised {type(e).__name__}")
+    finally:
+        await fred.aclose()
+    markets: dict[str, Any] = {}
+    if mids:
+        rt = rt_factory()
+        try:
+            for i in mids:
+                try:
+                    m = await b.guard(f"market:{i}", "polymarket:gamma", rt.polymarket.market(i))
+                except Exception as e:  # noqa: BLE001 - recorded; the stage writes nothing without every resolution
+                    b.miss(f"market:{i}", "polymarket:gamma", "backend_error", f"raised {type(e).__name__}")
+                    m = None
+                # an HTTP 404 (`data_unavailable`) is an answer, the market is not there: after the cutoff it goes to
+                # `absent`; any other failure is no answer and the stage waits (registration п. 7, result (в))
+                gone = m is None and b.missing and b.missing[-1].field == f"market:{i}" and b.missing[-1].reason == "data_unavailable"
+                markets[i] = result_fields(m, i) if m is not None else {"ok": False, "why": "not found" if gone else "request failed"}
+        finally:
+            await rt.aclose()
+    return csv, markets, [x.model_dump(mode="json") for x in b.missing]
+
+
+def load_stage(stage: str, release: str, root: Path, docs: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """A stage record: the clone's copy (merged into main) when there is one, else the local file (as :func:`load_t3`).
+    A file that is there but is not a JSON object gives None with its ``error`` named (review C of item 491, R4: never
+    taken for a missing file, never raised)."""
+    for kind, p in (("docs", docs / release / f"{stage}.json"), ("local", root / release / f"{stage}.json")):
+        if p.is_file():
+            raw = p.read_bytes()
+            src = {"kind": kind, "path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "error": None}
+            try:
+                rec = json.loads(raw)
+            except (ValueError, RecursionError) as e:
+                return None, {**src, "error": type(e).__name__}
+            return (rec, src) if isinstance(rec, dict) else (None, {**src, "error": "not an object"})
+    return None, {"kind": None, "path": None, "sha256": None, "error": None}
+
+
+def t1_compare(rec1: Mapping[str, Any] | None, src: Mapping[str, Any], row: Mapping[str, Any] | None) -> tuple[bool, bool] | str | None:
+    """:func:`t1_check` of the T-1 record against the database row; 'unreadable (…)' when the file does not read or
+    its content breaks the check (it is only compared, so the result is written all the same; R4); None without one."""
+    if rec1 is None:
+        return f"unreadable ({src['error']})" if src.get("error") else None
+    try:
+        return t1_check(rec1, row)
+    except Exception as e:  # noqa: BLE001 - descriptive: CLV comes from the database row in any case (п. 8)
+        return f"unreadable ({type(e).__name__})"
+
+
+def result_record(release: str, at: datetime, *, db: Path, root: Path, docs: Path, rt_factory: Callable[[], Any],
+                  fred_factory: Callable[[], Any]) -> dict[str, Any]:  # fmt: skip
+    """The result payload of the release at D = ``at`` (:func:`result_payload`) from the stage files, the database
+    (read-only) and the live answers of FRED and Gamma."""
+    t3_rec, t3_src = load_stage("T-3", release, root, docs)
+    t3 = t3_part(t3_rec)
+    t3_row = read_row(db, stage_day("T-3", release)) if t3 is None else None
+    t1_row = read_row(db, stage_day("T-1", release))
+    t1_rec, t1_src = load_stage("T-1", release, root, docs)
+    mids = list(dict.fromkeys(str(b.get("market_id")) for b in yoy_brackets(t3, t3_row)))
+    csv, markets, missing = asyncio.run(fetch_result(mids, rt_factory, fred_factory))
+    t1_ok = t1_compare(t1_rec, t1_src, t1_row)
+    cpi = cpi_part(csv, release)
+    return result_payload(release, at, t3, t3_src, t3_row, t1_row, t1_src, t1_ok, cpi, markets, missing)
+
+
 def out_paths(stage: str, release: str, root: Path, docs: Path) -> tuple[Path, Path]:
     return root / release / f"{stage}.json", docs / release / f"{stage}.json"
 
@@ -846,11 +1147,14 @@ def write_stage(
     m0: str | None,
     tree: Path,
     rt_factory: Callable[[], Any],
+    fred_factory: Callable[[], Any] | None = None,
+    r: str | None = None,
 ) -> int:
     """Write the file of a stage once (registration п. 5, 7): 0 = written; 1 = nothing written (outside the window, a
-    file already there, the database unreadable)."""
+    file already there, the database unreadable; for the result also an input not final yet, item 491, or a run not
+    by the code of R: ``r`` empty or not ``code_sha``)."""
     why = stage_why(stage, release, at)
-    if stage not in WRITE_STAGES or why is not None:
+    if stage not in (*WRITE_STAGES, RESULT) or why is not None:
         start, end = stage_window(stage, release) if stage in STAGE_DAYS else (None, None)
         say(f"not written: {stage} {release} at {at.isoformat()} is outside its window ({why or 'stage'}): {start} .. {end}")
         return 1
@@ -859,6 +1163,26 @@ def write_stage(
         if p.exists():
             say(f"not written: {p} exists (a stage file is written once)")
             return 1
+    if stage == RESULT:
+        if not r or code_sha != r:
+            say(f"not written: {RESULT} {release} runs only by the code of R (code_sha {code_sha or '-'}, R {r or '-'}); "
+                "start it with `--stage result`, which extracts the tree of R (registration п. 7, result)")  # fmt: skip
+            return 1
+        res = result_record(release, at, db=db, root=root, docs=docs, rt_factory=rt_factory,
+                            fred_factory=fred_factory or (lambda: default_fred(2)))  # fmt: skip
+        pending = res.pop("pending")
+        for m in res["missing"]:
+            say(f"  missing {m.get('field')}: {m.get('reason')} {m.get('detail') or ''}".rstrip())
+        for reason in pending:
+            say(f"  not final: {reason}")
+        if pending:
+            say(f"not written: {RESULT} {release} is not final yet ({len(pending)} inputs above); run the stage again later "
+                f"(item 493): the file is written once, when the CPI is published and every market resolved, or from the "
+                f"cutoff {res['cutoff']} with what did not come under `absent`")  # fmt: skip
+            return 1
+        out = {"schema": 1, "idea": IDEA, "release": release, "stage": stage, "D": at.isoformat(),
+               "window": [str(x) if x else None for x in stage_window(stage, release)], "db": str(db), **res}  # fmt: skip
+        return write_result(out, local, copy, repo=repo, code_sha=code_sha, r=r, tree=tree)
     row = read_row(db, stage_day(stage, release))
     rec: dict[str, Any] = {"schema": 1, "idea": IDEA, "release": release, "stage": stage, "D": at.isoformat(),
                            "window": [str(x) if x else None for x in stage_window(stage, release)],
@@ -887,6 +1211,47 @@ def write_stage(
     report(rec, sha)
     say(f"written {local} and {copy}: sha256 {sha}")
     return 0
+
+
+def write_result(rec: dict[str, Any], local: Path, copy: Path, *, repo: Path, code_sha: str, r: str, tree: Path) -> int:
+    """Write ``result.json`` once, the same bytes to the state directory and the clone's copy (``open(..., "xb")``),
+    with the code fields of the stages (registration п. 7; ``R`` in place of ``M0``, ``code_sha`` = R); then the
+    owner's summary and the journal line."""
+    paths = list(CODE_PATHS)
+    loaded = loaded_modules(tree)
+    rec.update(code_sha=code_sha, R=r, CODE_PATHS=paths, modules=loaded[0],
+               code_dirty=code_dirty(repo, code_sha, tree, paths, loaded))  # fmt: skip
+    data = dump(strict(rec))
+    for p in (local, copy):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "xb") as fh:
+            fh.write(data)
+    sha = hashlib.sha256(data).hexdigest()
+    report_result(rec, sha)
+    say(f"written {local} and {copy}: sha256 {sha}")
+    return 0
+
+
+def _r(x: Any, nd: int = 4) -> Any:
+    return round(x, nd) if isinstance(x, float) else x
+
+
+def report_result(rec: Mapping[str, Any], sha: str) -> None:
+    """The owner's lines of a result record and its line for the card's «Форвард-журнал»."""
+    cpi, br, cr = rec.get("cpi") or {}, rec.get("brier_t3") or {}, rec.get("clv_rel") or {}
+    pm = "; ".join(f"{e['event_id']} PM {','.join(e['pm_yes']) or '-'} / CPI {','.join(e['cpi_yes']) or '-'}"
+                   f"{'' if e['agree'] else ' (differ: the payout of Polymarket counts)'}" for e in rec.get("resolution_check") or [])  # fmt: skip
+    for s in rec.get("signals") or []:
+        say(f"  signal {s['market_id']} {s['title']}: payout {s['payout']}, paper {_r(s['paper_usd'], 2)} USD, "
+            f"CLV {_r((s['clv'] or {}).get('usd'), 2)} USD ({s['why'] or 'ok'})")  # fmt: skip
+    for a in rec.get("absent") or []:
+        say(f"  absent: {a}")
+    inv = f"реліз недійсний: {rec['invalid']} · " if rec.get("invalid") else ""
+    journal_line(f"{rec['release']} result · D {rec['D']} · R {str(rec.get('R'))[:12]} · {inv}CPI {cpi.get('target')} {cpi.get('value')} % "
+                 f"(FRED {cpi.get('series')}) · {pm or 'no YoY event'} · CLV_rel {_r(cr.get('usd'), 2)} USD (n {cr.get('n')}) · "
+                 f"Brier T−3 модель {_r(br.get('model'))} ринок {_r(br.get('market'))} Δ {_r(br.get('delta'))} "
+                 f"(подій {br.get('n_events')}) · absent {len(rec.get('absent') or [])} · "
+                 f"T−3 {(rec.get('t3_file') or {}).get('sha256') or 'немає'} · sha256 {sha}")  # fmt: skip
 
 
 def report(rec: Mapping[str, Any], sha: str) -> None:
@@ -970,8 +1335,8 @@ def launch(
     http_retries: int = 2,
     env: Mapping[str, str] | None = None,
 ) -> int:
-    """A write stage from the command line: refuse early, pick the commit (T-3: M0; else HEAD), extract its CODE_PATHS
-    and run that tree's scanner in a subprocess with ``now`` as D."""
+    """A write stage from the command line: refuse early, pick the commit (T-3: M0; result: R; else HEAD), extract its
+    CODE_PATHS and run that tree's scanner in a subprocess with ``now`` as D."""
     why = stage_why(stage, release, now)
     if why is not None:
         say(f"not written: {stage} {release} at {now.isoformat()} is outside its window ({why}): {stage_window(stage, release)}")
@@ -992,17 +1357,43 @@ def launch(
         if not sha:
             say(f"not written: no M0 on {ref} before {stage_day('T-3', release)} 21:00 UTC")
             return 1
+        r = None
+    elif stage == RESULT:
+        # registration п. 7, result (review C of item 491, blocker 1): the code of R, never HEAD
+        pub = publication_utc(release)
+        if ref != DEFAULT_REF:
+            say(f"not written: the result takes R from {DEFAULT_REF} only (registration п. 7), not from {ref}")
+            return 1
+        stale = fetch_why(repo, release, pub)
+        if stale is not None:
+            say(f"not written: {DEFAULT_REF} may be stale ({stale}); run `git fetch origin main` first (registration п. 7)")
+            return 1
+        sha = r = r_of(repo, ref, release)
+        if not sha:
+            say(f"not written: no R on {ref} before the publication {pub.isoformat()}")
+            return 1
+        try:
+            has = has_result_stage(repo, sha)
+        except (subprocess.CalledProcessError, ValueError, SyntaxError) as e:
+            say(f"not written: the scanner of R {sha[:12]} cannot be read ({type(e).__name__})")
+            return 1
+        if not has:
+            say(f"not written: the scanner of R {sha[:12]} (main before the publication {pub.isoformat()}) has no result "
+                "stage: item 491 reached main after it. Nothing is run, not HEAD either: the code of the result must be "
+                "older than the outcome (registration п. 7, result)")  # fmt: skip
+            return 1
+        m0 = None
     else:
-        sha, m0 = git(repo, "rev-parse", "HEAD").stdout.strip(), None
+        sha, m0, r = git(repo, "rev-parse", "HEAD").stdout.strip(), None, None
     try:
         tree = extract(repo, sha, code_paths_at(repo, sha), tmp)
     except (subprocess.CalledProcessError, ValueError, OSError, SyntaxError) as e:
         say(f"not written: the scanner's code of {sha[:12]} cannot be extracted ({type(e).__name__}: {str(e)[:200]})")
         return 1
-    say(f"code of {sha} ({'M0' if m0 else 'HEAD'}) extracted to {tree}")
+    say(f"code of {sha} ({'M0' if m0 else 'R' if r else 'HEAD'}) extracted to {tree}")
     args = ["--stage", stage, "--release", release, "--at", now.isoformat(), "--code-sha", sha, "--m0", m0 or "",
             "--tree", str(tree), "--repo", str(repo), "--db", str(db), "--root", str(root), "--docs", str(docs),
-            "--http-retries", str(http_retries)]  # fmt: skip
+            "--http-retries", str(http_retries)] + (["--r", r] if r else [])  # fmt: skip
     res = run_tree(tree, args, repo, env)
     for line in res.stdout.splitlines():
         say(line)
@@ -1146,6 +1537,15 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
     say(f"  перерахунок = записаному {'так' if rc_ok else 'ні'} · перебудова з рядка БД = записаному "
         f"{'так' if not bad else 'ні: ' + ', '.join(bad)} · Gamma {'ok' if not gw else '; '.join(gw)[:300]} · "
         f"ключі = M0 {'не застосовно, M0 до пункту 490' if k_na else 'так' if kw is None else 'ні: ' + kw[:200]}")  # fmt: skip
+    # review C of item 484 / 490, finding 4: descriptive, the verdict does not change (the evaluation report rebuilds a
+    # «rules» release for set B by п. 8 (в) with --fallback of the tree of M0). An M0 before item 490 (no key list in
+    # its rebuild) does not know «rules» (п. 9), so the line says so instead of the reading of this code (review C 491, R6)
+    try:
+        sb = ("not applicable, M0 before item 490 (descriptive)" if k_na
+              else "rules (rebuilt by п. 8 (в) for set B; descriptive)" if b_why(rec) == "rules" else "not rules (descriptive)")  # fmt: skip
+    except Exception as e:  # noqa: BLE001 - a descriptive line never changes the verdict
+        sb = f"unknown ({type(e).__name__}; descriptive)"
+    say(f"  set B: {sb}")
     if kw is not None:
         fails.append("mismatch (keys)")
     if not rc_ok:
@@ -1185,6 +1585,7 @@ def inner(argv: list[str]) -> int:
     ap.add_argument("--at")
     ap.add_argument("--code-sha")
     ap.add_argument("--m0", default="")
+    ap.add_argument("--r", default="")
     ap.add_argument("--tree", type=Path)
     ap.add_argument("--repo", type=Path)
     ap.add_argument("--db", type=Path)
@@ -1208,7 +1609,8 @@ def inner(argv: list[str]) -> int:
     try:
         return write_stage(a.stage, a.release, datetime.fromisoformat(a.at), db=a.db, root=a.root, docs=a.docs, repo=a.repo,
                            code_sha=a.code_sha, m0=a.m0 or None, tree=a.tree,
-                           rt_factory=lambda: default_runtime(a.http_retries))  # fmt: skip
+                           rt_factory=lambda: default_runtime(a.http_retries),
+                           fred_factory=lambda: default_fred(a.http_retries), r=a.r or None)  # fmt: skip
     except Exception as e:  # noqa: BLE001 - nothing written; the stage may be run again inside its window
         say(f"not written: raised {type(e).__name__}: {str(e)[:300]}")
         return 1
@@ -1217,7 +1619,7 @@ def inner(argv: list[str]) -> int:
 def main() -> None:
     global _OUT
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--stage", required=True, choices=[*WRITE_STAGES, "proof"])
+    ap.add_argument("--stage", required=True, choices=[*WRITE_STAGES, RESULT, "proof"])
     ap.add_argument("--release", required=True, help="ISO day of the BLS release, e.g. 2026-12-10")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="collector database (opened read-only)")
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="stage files: <root>/<release>/<stage>.json")

@@ -60,6 +60,15 @@ DYNAMIC: dict[tuple[str, str], str] = {
         "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM trader_positions WHERE "
         "(venue = '{}' OR (venue = 'hyperliquid' AND account IN ({}))) AND ts >= ? AND ts <= ?",
     ): "test_checkpoint_loaders",
+    (
+        "checkpoint_report",
+        "SELECT COUNT(*) FILTER (WHERE {}), MIN(created_ts) FILTER (WHERE {}), MAX(updated_ts) FILTER (WHERE {}), "
+        "COUNT(*), COUNT(*) FILTER (WHERE {} AND status = 'stale' AND {}), "
+        "COUNT(*) FILTER (WHERE {} AND status = 'stale' AND NOT {}), COUNT(*) FILTER (WHERE {} AND NOT COALESCE(({}), 0)), "
+        "COUNT(*) FILTER (WHERE NOT COALESCE(({}), 0)), COUNT(*) FILTER (WHERE late = 1), "
+        "MAX(0, julianday({}) - julianday(MIN(day)) + 1 - COUNT(*) FILTER (WHERE day <= {})) "
+        "FROM (SELECT ? AS t0, ? AS t1) AS w, pm_cpi_snapshot WHERE created_ts >= w.t0 AND updated_ts <= w.t1",
+    ): "test_checkpoint_loaders",
 }
 
 
@@ -322,12 +331,16 @@ def test_condor_loaders(db):
     assert cfc.detect_t0(db, NOW) is None
 
 
-def test_checkpoint_loaders(db):
+def test_checkpoint_loaders(db, con):
     """``load_inputs`` turns a failed query into an ``errors`` line: none on the real schema, every part read."""
     inp = cr.load_inputs(str(db), int(NOW.timestamp() * 1000))
     assert not [e for e in inp["errors"] if "запит" in e or "БД" in e], inp["errors"]
     assert inp["demo_trades"] == [] and inp["rec_paper"] == [] and inp["pm_rows"] == [] and inp["plans"] == []
     assert set(inp["carry"]) == {"A", "B"} and inp["condor_t0"] is None
     # item 312: every card journal's table exists and its counter query runs (an error would hide the card's collection)
+    # a query's further columns (carry, CPI) are counters named by ``cols``: 0 on an empty table
     empty = {"n": 0, "first": None, "last": None}
-    assert inp["journals"] == {slug: empty | ({"all": 0} if j.table == "cp_cycle" else {}) for slug, j in cr.CARD_JOURNALS.items()}
+    extra = {slug: len(con.execute(j.sql, (j.since, 0)).description) - 3 for slug, j in cr.CARD_JOURNALS.items()}
+    assert all(extra[slug] in (0, len(j.cols)) for slug, j in cr.CARD_JOURNALS.items()), extra
+    want = {slug: empty | dict.fromkeys(j.cols[: extra[slug]], 0) for slug, j in cr.CARD_JOURNALS.items()}
+    assert inp["journals"] == want and want["pm-cpi-brackets-vs-nowcast-forward"].keys() > {"all", "missing"}

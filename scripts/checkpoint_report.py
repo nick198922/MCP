@@ -18,6 +18,11 @@ with neither a fresh journal nor an ``idea:`` plan are listed as «форвар�
 from the card's registration says so (touch ladder: 5–10 min earlier, top of book only), and the HLP journal is labelled
 «частково» until a run in which every HLP vault answered (``trader_polls``, venue ``hyperliquid_hlp``) is fresh and the
 OI / funding table is fresh too, the days before its first complete run staying partial and missed hours named (item 472).
+The CPI card's daily ``pm_cpi_snapshot`` counts only its 'complete' / 'stale' days with paired books whose last YoY
+nowcast point ``analytics.pm_cpi.row_why`` would admit (``STALE_DAYS``); 'stale' days are named apart by weekend and
+weekday (a US holiday or a Cleveland file not updated), rows rejected for their nowcast date and 'partial' ones are
+counted aside and set no freshness, UTC days without a row are counted, and the journal is fresh for 30 h only; from
+status, flags and dates only, no nowcast value, book or price (item 499).
 Demo trades still ``open`` more than a day past their hold get a closing note with their count
 (``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples. So are the trades the
 demo trader set aside as ``orphaned`` (filled, no position and no close found on the venue): a note names them (item 326).
@@ -68,6 +73,7 @@ from tradedesk.analytics.checkpoint import (  # noqa: E402
     render,
 )
 from tradedesk.analytics.condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, cost_fridays  # noqa: E402
+from tradedesk.analytics.pm_cpi import LATE_END, STALE_DAYS, WINDOW_END  # noqa: E402
 from tradedesk.analytics.pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g  # noqa: E402
 from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
 
@@ -102,7 +108,9 @@ class Journal:
     """A forward card's own journal, as the card names it. ``sql`` returns one row (observations, first, last unix s)
     for ``since <= ts <= now`` (two ``?``, unix s); ``{+N}`` in ``verdict`` is the date of the first observation + N days.
     An optional fourth column counts every row of the window when the first three count only the good ones (carry:
-    ``status = 'done'``), so a journal of failed / skipped cycles is neither fresh nor hidden.
+    ``status = 'done'``), so a journal of failed / skipped cycles is neither fresh nor hidden; ``counted`` names the good
+    ones in «останній запис …». ``cols``: the names of the fourth and further columns (counters), ``detail`` the
+    (column, label) pairs printed after the counters. ``stale_s``: the journal's own staleness threshold (0 = ``STALE_S``).
 
     ``note``: a deviation of the collected data from the card's registration, printed with the counters. ``also``:
     further tables the card needs, counted alike. ``full``: the complete record the registration names (HLP: runs in
@@ -121,6 +129,10 @@ class Journal:
     also: tuple[Part, ...] = ()
     full: Part | None = None
     partial: str = ""
+    cols: tuple[str, ...] = ("all",)
+    counted: str = ""
+    detail: tuple[tuple[str, str], ...] = ()
+    stale_s: int = 0
 
 
 def _utc(ts: int, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -142,6 +154,21 @@ HLP_VAULTS = (
     "0xb0a55f13d22f66e6d495ac98113841b2326e9540",
 )  # fmt: skip
 _HLP_IN = ", ".join(f"'{a}'" for a in HLP_VAULTS)
+# CPI (card pm-cpi-brackets-vs-nowcast-forward), one pm_cpi_snapshot row per UTC day (schema 44). A full row: 'complete' /
+# 'stale' with books_paired = 1 (both nowcast files readable, every live bracket's book read after them). 'stale' only
+# says the files are not this day's: a weekend, a US holiday, or Cleveland / a cache not updating on a working day. A
+# counted day is a full row whose nowcast analytics.pm_cpi.row_why would admit: a YoY value present and its last point
+# 0..STALE_DAYS calendar days before the row's day (else 'nowcast stale' / 'no yoy nowcast'). Dates and presence only:
+# no nowcast value, book or price column is selected.
+_CPI_FULL = "status IN ('complete', 'stale') AND books_paired = 1"
+_CPI_OK = (
+    f"{_CPI_FULL} AND yoy_headline_pct IS NOT NULL "
+    f"AND julianday(day) - julianday(substr(cf_last_day_year, 1, 10)) BETWEEN 0 AND {STALE_DAYS}"
+)
+# the last UTC day whose job has closed (LATE_END: the collector writes nothing after it, analytics.pm_cpi.plan)
+_CPI_CLOSED = f"date(w.t1 - {LATE_END.hour * 3600 + LATE_END.minute * 60}, 'unixepoch')"
+_CPI_WEEKEND = "strftime('%w', day) IN ('0', '6')"
+CPI_STALE_S = 30 * 3_600  # daily journal: a day without a counted row (last one ~15:30-21:00) is stale within ~30 h
 # The cards whose own forward journal is a collector table (docs/ideas/IDEA-*-<slug>.md, «Форвард» / «Прогрес» / «Реєстрація»).
 # Every other forward card names only ``idea:`` plans (or a journal not built yet): its journal is the plan row above.
 CARD_JOURNALS: dict[str, Journal] = {
@@ -234,10 +261,52 @@ CARD_JOURNALS: dict[str, Journal] = {
         "MAX(cycle_ts) FILTER (WHERE status = 'done') / 1000, COUNT(*) "
         "FROM cp_cycle WHERE cycle_ts >= ? * 1000 AND cycle_ts <= ? * 1000",
         "циклів A і B зі статусом done", "критерії CHECKPOINT (рядки «Папір carry» вище)", "чекпоінт 2026-11-30",
+        counted="зі статусом done",
+    ),
+    "pm-cpi-brackets-vs-nowcast-forward": Journal(
+        "pm_cpi_snapshot",
+        # counted days (_CPI_OK above) set n / first / last and the freshness (CPI_STALE_S); then all rows, counted
+        # 'stale' on a weekend / a weekday, full rows rejected for their nowcast date, the rest ('partial', unpaired:
+        # analytics.pm_cpi may admit a partial row bracket by bracket if its YoY nowcast passes row_why, here it sets no
+        # freshness), late rows, and UTC days
+        # without any row from the first one to the last day whose job has closed. A row counts as of its latest write
+        # (updated_ts <= the report moment). The two parameters as w.t0 (since) and w.t1 (the report moment).
+        f"SELECT COUNT(*) FILTER (WHERE {_CPI_OK}), MIN(created_ts) FILTER (WHERE {_CPI_OK}), "
+        f"MAX(updated_ts) FILTER (WHERE {_CPI_OK}), COUNT(*), "
+        f"COUNT(*) FILTER (WHERE {_CPI_OK} AND status = 'stale' AND {_CPI_WEEKEND}), "
+        f"COUNT(*) FILTER (WHERE {_CPI_OK} AND status = 'stale' AND NOT {_CPI_WEEKEND}), "
+        f"COUNT(*) FILTER (WHERE {_CPI_FULL} AND NOT COALESCE(({_CPI_OK}), 0)), "
+        f"COUNT(*) FILTER (WHERE NOT COALESCE(({_CPI_FULL}), 0)), COUNT(*) FILTER (WHERE late = 1), "
+        f"MAX(0, julianday({_CPI_CLOSED}) - julianday(MIN(day)) + 1 - COUNT(*) FILTER (WHERE day <= {_CPI_CLOSED})) "
+        "FROM (SELECT ? AS t0, ? AS t1) AS w, pm_cpi_snapshot WHERE created_ts >= w.t0 AND updated_ts <= w.t1",
+        f"днів complete / stale з книгами в парі (books_paired = 1) і nowcast YoY не старшим за {STALE_DAYS} дні",
+        "n = 12 дійсних релізів CPI (дійсність визначає запис T-3, реєстрація картки; пропуски в 12 не рахуються)",
+        "після 12 дійсних релізів (≈ листопад 2027, пропуски відсувають); ранній kill — перші 6 дійсних релізів з "
+        "розривом q − mid < ask − bid у кожному діапазоні з моделлю",
+        note=(
+            f"свіжий, поки останній зарахований день не старший за {CPI_STALE_S // 3_600} год (щоденний журнал); "
+            "придатність дня для етапу (target, події, книги) визначає analytics.pm_cpi"
+        ),
+        cols=("all", "stale_we", "stale_wd", "old", "partial", "late", "missing"), counted="зарахованого дня",
+        detail=(
+            ("stale_we", "з них stale у суботу / неділю (Cleveland у вихідні файлів не оновлює)"),
+            ("stale_wd", "з них stale у будній день (свято США, Cleveland не оновив файл або наш повторний запит не вдався)"),
+            ("old", f"не зараховано: complete / stale, але остання точка YoY nowcast старша за {STALE_DAYS} дні від дня "
+                    "рядка, пізніша за нього чи значення нема (row_why: nowcast stale / no yoy nowcast)"),
+            ("partial", "не зараховано (partial чи books_paired ≠ 1: файлу nowcast нема чи він не читається, не всі серії "
+                        "Gamma перелічено — збій чи основна серія без відкритих діапазонів, жодного живого діапазону, або "
+                        "книгу діапазону не прочитано чи прочитано до завантаження nowcast; analytics.pm_cpi може взяти "
+                        "partial-день по діапазонах лише за наявного й не застарілого YoY nowcast (row_why); тут він "
+                        "свіжості не дає)"),
+            ("late", f"late (файл чи книгу дочитано після {WINDOW_END:%H:%M} UTC), усіх днів"),
+            ("missing", f"днів UTC без жодного рядка від першого запису до останнього дня, чия джоба закрилася "
+                        f"({LATE_END:%H:%M} UTC)"),
+        ),
+        stale_s=CPI_STALE_S,
     ),
 }  # fmt: skip
 JOURNALS_NAME = "Картки forward: власні журнали"
-STALE_S = 2 * 86_400  # every journal above writes at least every 8 h: two silent days = not collecting
+STALE_S = 2 * 86_400  # every journal above writes at least every 8 h: two silent days = not collecting (CPI, daily: stale_s)
 GAP_S = 5_400  # hourly complete record (HLP): more than 90 min between complete runs = a missed hour
 
 
@@ -322,7 +391,7 @@ def load_journals(con: sqlite3.Connection, now_ms: int) -> dict[str, dict[str, A
     ``"full"`` (same shape, its further columns by ``Part.cols``). Counters only."""
     names, out, now_s = _tables(con), {}, now_ms // 1000
     for slug, j in CARD_JOURNALS.items():
-        out[slug] = _count(con, names, j.table, j.sql, j.since, now_s, ("all",))
+        out[slug] = _count(con, names, j.table, j.sql, j.since, now_s, j.cols)
         if not out[slug].get("n"):  # the parts are shown only next to a journal with observations
             continue
         if j.also:
@@ -389,6 +458,11 @@ def _full_text(j: Journal, full: Mapping[str, Any], also: Sequence[Mapping[str, 
     return f"повний запис з {_utc(f0)} UTC{holes} — ", f"{text}; повний запис {got}; {before}"
 
 
+def _detail(j: Journal, got: Mapping[str, Any]) -> str:
+    """The further counters of a journal (``j.detail``), each one only when its query returned it."""
+    return "".join(f"; {label} {got[c]}" for c, label in j.detail if c in got)
+
+
 def journal_row(
     cards: Sequence[Mapping[str, Any]], journals: Mapping[str, Mapping[str, Any]] | None, plans: Sequence[Mapping[str, Any]], now_ms: int
 ) -> dict[str, Any]:
@@ -413,7 +487,7 @@ def journal_row(
             why = f"журналу {j.table} у БД нема"
         elif not got["n"]:
             other = f" (усіх записів {got['all']}, жодного зарахованого)" if got.get("all") else ""
-            counters[slug] = f"журнал {j.table}: {j.unit} 0{other}; мінімум: {j.minimum}"
+            counters[slug] = f"журнал {j.table}: {j.unit} 0{other}{_detail(j, got) if other else ''}; мінімум: {j.minimum}"
             why = f"у журналі {j.table} {j.unit} 0 з {got['all']} записів" if other else f"журнал {j.table} порожній"
         else:
             first, last = int(got["first"]), int(got["last"])
@@ -427,7 +501,7 @@ def journal_row(
                 else:
                     verdict = "дату не визначено, доки нема повного запису"
             other = f" (усіх записів {got['all']})" if "all" in got else ""
-            text = f"журнал {j.table}: {j.unit} {got['n']}{other}, з {_utc(first)} до {_utc(last)} UTC"
+            text = f"журнал {j.table}: {j.unit} {got['n']}{other}, з {_utc(first)} до {_utc(last)} UTC{_detail(j, got)}"
             also = got.get("also") or [{}] * len(j.also)
             head, text = _full_text(j, full, also, now_s, text) if j.full is not None else ("", text)
             for p, g in zip(j.also, also, strict=True):
@@ -436,8 +510,8 @@ def journal_row(
                 text += f"; {j.note}"
             counters[slug] = f"{head}{text}; мінімум: {j.minimum}; вердикт: {verdict}"
             # a fresh complete record counts too: unchanged vault positions under $2.5M write no trader_positions row
-            fresh = now_s - max(last, int(full["last"]) if full.get("n") else 0) <= STALE_S
-            done = " зі статусом done" if "all" in got else ""
+            fresh = now_s - max(last, int(full["last"]) if full.get("n") else 0) <= (j.stale_s or STALE_S)
+            done = f" {j.counted}" if "all" in got and j.counted else ""
             why = None if fresh else f"останній запис {j.table}{done} {_utc(last)} UTC"
             partial += int(fresh and head.startswith("частково"))
         if fresh or _plan_count(card, plans, now_s):  # idea: plans are a journal too (the row above)
@@ -457,7 +531,8 @@ def journal_row(
     row["notes"].append(
         "журнал — таблиця колектора, яку називає сама картка; лише кількість спостережень і їхні дати, без цін, подій і "
         "результатів (події з журналу визначає крок аналітика картки). n — карток, що збирають дані: свіжий журнал "
-        f"(останній запис не старший за {STALE_S // 86_400} доби) або хоч один план idea: (рядок вище)"
+        f"(останній запис не старший за {STALE_S // 86_400} доби, якщо в лічильниках картки не названо власний поріг) або хоч "
+        "один план idea: (рядок вище)"
     )
     return row
 

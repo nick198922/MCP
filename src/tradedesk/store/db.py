@@ -723,11 +723,11 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, base, venue, market", args)
         return [dict(r) for r in await cur.fetchall()]
 
-    COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share".split()
+    COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share liq_long_usd liq_short_usd".split()
 
     async def insert_coinalyze_history(self, symbol: str, metric: str, rows: list[dict[str, Any]], fetched_ts: int) -> int:
         """Daily Coinalyze bars of one series; idempotent per (symbol, metric, ts): a repeated bar replaces the old one."""
-        if metric not in ("oi_usd", "funding", "long_short"):
+        if metric not in ("oi_usd", "funding", "long_short", "liq_usd"):
             raise ValueError(f"unknown coinalyze metric {metric!r}")
         cols = self.COINALYZE_HISTORY_COLUMNS
         payload = [(symbol, metric, int(r["ts"]), *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("ts") is not None]

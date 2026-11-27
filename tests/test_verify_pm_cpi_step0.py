@@ -266,3 +266,22 @@ def test_fred_mom_and_prev_months():
     assert "2024-03" not in mom and "2024-04" not in mom
     assert "2024-01" not in mom
     assert m._prev_months("2025-02", 3) == ["2025-01", "2024-12", "2024-11"]
+
+
+def test_stage_sigma_reads_the_cached_cpi_and_the_given_nowcast_file(tmp_path, capsys):
+    # the archive SD of the registration (card п. 4); no network when the CSV vintage is cached
+    import json
+
+    fred = tmp_path / "cleveland" / "fred"
+    fred.mkdir(parents=True)
+    csv = "observation_date,CPIAUCNS\n2023-01-01,100.0\n2024-01-01,103.05\n2023-02-01,100\n2024-02-01,.\n"
+    (fred / "CPIAUCNS_20241201.csv").write_text(csv)
+    cats = [{"label": "02/05"}, {"label": "02/10"}, {"vline": "true", "label": "CPI Jan"}]
+    chart = {"chart": {"subcaption": "2024-1"}, "categories": [{"category": cats}],
+             "dataset": [{"seriesname": "CPI Inflation", "data": [{"value": 3.0}, {"value": 3.2}]}]}  # fmt: skip
+    nc = tmp_path / "nowcast_year.json"
+    nc.write_text(json.dumps([chart]))
+    m.stage_sigma(tmp_path, nc, "2024-12-01", vintage="20241201")
+    out = capsys.readouterr().out
+    # release 2024-02-10 -> point on or before 02-07 is 02/05 (3.0); A = 3.05 rounded half-up = 3.1
+    assert "n 1 (2024-1..2024-1)" in out and "sigma_A 0.1" in out

@@ -22,10 +22,14 @@ kept in the row's early set (``books_early``), never dropped.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from statistics import NormalDist
 from typing import Any
 
 from .option_xvenue import ms, num
@@ -494,3 +498,349 @@ def merge_brackets(
 def quoted(brackets_: Iterable[Mapping[str, Any]]) -> int:
     """Brackets with both a best bid and a best ask."""
     return sum(1 for b in brackets_ if b.get("bid") is not None and b.get("ask") is not None)
+
+
+# ------------------------------------------------------------------------------ the forward rule (step 1 registration)
+# Registered in the card's «Попередня реєстрація» (item 481): headline CPI YoY brackets only. Do not change a constant
+# here without a new registration in the card; a change after seeing results is exploratory and labelled so.
+
+SD_KZ = 0.164  # pp: RMSE of the Cleveland headline CPI YoY nowcast, last day of the target month (Knotek-Zaman, EC 2023-06, Table 1)
+EDGE_MIN = 0.08  # model probability - ask - taker fee per share, decimal (8 pp)
+STAKE_MAX_USD = 50.0  # per bracket (cost incl. fee)
+MAX_PICKS = 2  # brackets per release
+HALF_TICK = 0.05  # pp: BLS publishes the 12-month change to one decimal
+SD_ALT_FACTOR = 1.5  # descriptive q at sd / 1.5 (``q_narrow``) and sd * 1.5 (``q_wide``); never part of the decision
+STALE_DAYS = 4  # the row's last YoY nowcast point may be at most this many calendar days before the row's day
+# The decision of a stage T-d is taken on the day's row as it stands after LATE_END (the job writes nothing then:
+# :func:`plan` returns (False, False)); a fallback snapshot counts only when taken on day T-d at or after WINDOW_END.
+FALLBACK_FROM = WINDOW_END
+# Columns of a pm_cpi_snapshot row that the decision reads: their digest (:func:`row_digest`) goes into the record.
+ROW_DIGEST_COLUMNS = (
+    "day", "updated_ts", "status", "late", "target", "cf_year_ts", "cf_month_ts", "cf_year_sha", "cf_month_sha",
+    "cf_last_day_year", "cf_fresh", "yoy_headline_pct", "cf_points", "books_paired", "books", "books_early",
+    "books_depth_z",
+)  # fmt: skip
+# Taker fee per share = rate * (p (1 - p)) ** exponent (formula checked against Polymarket's docs on 2026-10-16,
+# analytics/negrisk.py); (rate, exponent) of each feeType as Gamma showed it on the CPI markets 2026-11-26 (``feeSchedule``).
+FEE_SCHEDULES: dict[str, tuple[float, float]] = {"economics_fees": (0.01, 1.0), "sports_fees_v2": (0.03, 1.0)}
+
+_BRACKET = re.compile(r"^\s*(≤|≥)?\s*(-?\d+(?:\.\d)?)\s*%\s*(\+)?\s*$")
+
+
+def parse_bracket(title: Any) -> tuple[int | None, int | None] | None:
+    """A bracket title -> the published values it wins on, in tenths of a percentage point, inclusive: '3.7%' -> (37, 37),
+    '≤3.3%' -> (None, 33), '≥4.4%' and '4.4%+' -> (44, None); None for any other wording ('More than 3.0%', ...)."""
+    m = _BRACKET.match(str(title or "").replace("−", "-"))
+    if m is None or (m.group(1) == "≥" and m.group(3)) or (m.group(1) == "≤" and m.group(3)):
+        return None
+    v = round(float(m.group(2)) * 10)
+    if m.group(1) == "≤":
+        return None, v
+    if m.group(1) == "≥" or m.group(3):
+        return v, None
+    return v, v
+
+
+def is_partition(intervals: Iterable[tuple[int | None, int | None]]) -> bool:
+    """The brackets of one event cover every published value exactly once: an open lower tail, consecutive tenths, an
+    open upper tail."""
+    iv = sorted(intervals, key=lambda x: -(10**9) if x[0] is None else x[0])
+    if len(iv) < 2 or iv[0][0] is not None or iv[-1][1] is not None:
+        return False
+    for (_, hi), (lo, _) in zip(iv, iv[1:], strict=False):
+        if hi is None or lo is None or lo != hi + 1:
+            return False
+    return True
+
+
+def bracket_prob(interval: tuple[int | None, int | None], mu: float, sd: float) -> float:
+    """P(BLS publishes a value in ``interval``) when the unrounded 12-month change is Normal(``mu``, ``sd``) (percent):
+    the published value is the change rounded to 0.1, so (lo, hi) wins on [lo - 0.05, hi + 0.05)."""
+    nd = NormalDist(mu, sd)
+    lo, hi = interval
+    up = 1.0 if hi is None else nd.cdf(hi / 10 + HALF_TICK)
+    down = 0.0 if lo is None else nd.cdf(lo / 10 - HALF_TICK)
+    return max(up - down, 0.0)
+
+
+def taker_fee(price: float, fee_type: Any, schedule: Any = None, enabled: Any = None) -> float | None:
+    """Taker fee per share at ``price``. The market's own Gamma fields come first: ``enabled`` (``feesEnabled``) False
+    -> 0; a ``schedule`` (``feeSchedule``) with a finite rate > 0 and exponent > 0 -> that schedule (economics markets
+    showed rate 0.05 on 2026-10-16, negrisk step 0, and the CPI markets 0.01 on 2026-11-26). Without them, the
+    registered rate of ``fee_type`` (``FEE_SCHEDULES``); None for any other or missing type (not eligible)."""
+    if enabled is False:
+        return 0.0
+    rate = num(schedule.get("rate")) if isinstance(schedule, Mapping) else None
+    exp = num(schedule.get("exponent")) if isinstance(schedule, Mapping) else None
+    if rate is None or exp is None:
+        s = FEE_SCHEDULES.get(str(fee_type)) if fee_type is not None else None
+        if s is None:
+            return None
+        rate, exp = s
+    return rate * (price * (1.0 - price)) ** exp
+
+
+def rule_signals(events: Iterable[Iterable[Mapping[str, Any]]], mu: float, sd: float = SD_KZ) -> list[dict[str, Any]]:
+    """Every bracket of the headline YoY events of one release (one list of brackets per event) with its model
+    probability ``q`` and, when eligible, the net edge ``q - ask - fee(ask)``; ``pick`` marks the at most ``MAX_PICKS``
+    signals of the release (edge >= ``EDGE_MIN``; order: edge, then q, then market id; a bracket overlapping an already
+    picked one, e.g. in another event of the same release, is skipped). Not eligible (``why``): no usable model (``mu``
+    not a finite number or ``sd`` not a finite number > 0: every bracket gets 'model', none gets q), a title of the
+    event does not parse or its brackets are not a partition (then no bracket of that event gets q), the bracket was
+    left out before (a ``why`` given in the input, e.g. 'unpaired' from :func:`book_why`, is kept), is closed
+    (``gone_ts``), has no ask, or an unknown fee type. ``q_narrow`` / ``q_wide`` (sd / and * ``SD_ALT_FACTOR``) are
+    descriptive only."""
+    ok = model_ok(mu, sd)
+    out: list[dict[str, Any]] = []
+    for k, ev in enumerate(events):
+        rows = [dict(b) for b in ev]
+        if ok:
+            out += _event_rows(k, rows, float(mu), float(sd))
+        else:
+            out += [{**b, **_blank(k, parse_bracket(b.get("title"))), "why": "model"} for b in rows]
+    cands = sorted((r for r in out if r["edge"] is not None and r["edge"] >= EDGE_MIN - 1e-12),
+                   key=lambda r: (-r["edge"], -r["q"], str(r.get("market_id"))))  # fmt: skip
+    picked: list[tuple[int | None, int | None]] = []
+    for r in cands:
+        if len(picked) >= MAX_PICKS:
+            break
+        if not any(_overlap(r["interval"], p) for p in picked):
+            r["pick"] = True
+            picked.append(r["interval"])
+    return out
+
+
+def _event_rows(k: int, rows: list[dict[str, Any]], mu: float, sd: float) -> list[dict[str, Any]]:
+    ivs = [parse_bracket(b.get("title")) for b in rows]
+    part = all(iv is not None for iv in ivs) and is_partition([iv for iv in ivs if iv is not None])
+    out = []
+    for b, iv in zip(rows, ivs, strict=True):
+        r = {**b, **_blank(k, iv)}
+        if not part or iv is None:
+            r["why"] = "not a partition" if iv is not None else "title"
+        else:
+            r["q"] = bracket_prob(iv, mu, sd)
+            r["q_narrow"] = bracket_prob(iv, mu, sd / SD_ALT_FACTOR)
+            r["q_wide"] = bracket_prob(iv, mu, sd * SD_ALT_FACTOR)
+            ask = b.get("ask")
+            fee = taker_fee(ask, b.get("fee_type"), b.get("fee_schedule"), b.get("fees_enabled")) if ask is not None else None
+            if b.get("why"):
+                r["why"] = b["why"]
+            elif b.get("gone_ts"):
+                r["why"] = "closed"
+            elif ask is None:
+                r["why"] = "no ask"
+            elif fee is None:
+                r["why"] = "fee type"
+            else:
+                r.update(fee=fee, edge=r["q"] - ask - fee)
+        out.append(r)
+    return out
+
+
+def _overlap(a: tuple[int | None, int | None], b: tuple[int | None, int | None]) -> bool:
+    lo = max(x for x in (a[0], b[0], -(10**9)) if x is not None)
+    hi = min(x for x in (a[1], b[1], 10**9) if x is not None)
+    return lo <= hi
+
+
+def _blank(k: int, iv: tuple[int | None, int | None] | None) -> dict[str, Any]:
+    return {"event": k, "interval": iv, "q": None, "q_narrow": None, "q_wide": None, "fee": None, "edge": None,
+            "why": None, "pick": False}  # fmt: skip
+
+
+def _finite(x: Any) -> bool:
+    return isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def model_ok(mu: Any, sd: Any) -> bool:
+    """The model can be evaluated: ``mu`` a finite number (percent; negative allowed) and ``sd`` a finite number > 0."""
+    return _finite(mu) and _finite(sd) and sd > 0
+
+
+def row_why(row: Mapping[str, Any] | None, day: str, target: str) -> str | None:
+    """None when the pm_cpi_snapshot row of ``day`` (ISO, T-d) can carry the stage, else the reason recorded:
+    'no row'; 'status' (not complete / stale / partial); 'target' (the row's target is not the events' month);
+    'no yoy nowcast' (no readable ``nowcast_year.json`` or ``yoy_headline_pct`` empty: a row whose only readable file
+    is the MoM one has no mu); 'nowcast stale' (the last YoY point is more than ``STALE_DAYS`` calendar days before
+    ``day``, or after it); 'unpaired' (complete / stale with ``books_paired`` != 1). A partial row passes here, and its
+    brackets are admitted one by one (:func:`book_why`)."""
+    if row is None:
+        return "no row"
+    if row.get("status") not in ("complete", "stale", "partial"):
+        return "status"
+    if row.get("target") != target:
+        return "target"
+    if not readable(row, "year") or pct(row.get("yoy_headline_pct")) is None:
+        return "no yoy nowcast"
+    try:
+        gap = (date.fromisoformat(day) - date.fromisoformat(str(row.get("cf_last_day_year"))[:10])).days
+    except ValueError:
+        return "no yoy nowcast"
+    if not 0 <= gap <= STALE_DAYS:
+        return "nowcast stale"
+    if row.get("status") != "partial" and int(row.get("books_paired") or 0) != 1:
+        return "unpaired"
+    return None
+
+
+def book_why(bracket: Mapping[str, Any], since: int | None) -> str | None:
+    """A bracket of the row's main set is admitted (None) when its book was read at or after ``since`` (the row's
+    :func:`nowcast_ts`); 'no book' without a book, 'unpaired' for a book read before the nowcast download."""
+    if not bracket.get("book"):
+        return "no book"
+    return None if since is not None and paired(bracket, since) else "unpaired"
+
+
+def fallback_stamp(stamps: Iterable[str], day: str) -> str | None:
+    """The fallback snapshot of stage day ``day`` (ISO): of the snapshot directory stamps ('YYYYMMDDTHHMMZ', UTC), the
+    earliest taken on that UTC day at or after ``FALLBACK_FROM``; None when there is none (malformed stamps ignored)."""
+    ok = []
+    for s in stamps:
+        try:
+            t = datetime.strptime(str(s), "%Y%m%dT%H%MZ")
+        except ValueError:
+            continue
+        if t.date().isoformat() == day and t.time() >= FALLBACK_FROM:
+            ok.append((t, str(s)))
+    return min(ok)[1] if ok else None
+
+
+def fill(
+    asks: Iterable[Any],
+    q: float,
+    fee_type: Any = None,
+    schedule: Any = None,
+    enabled: Any = None,
+    min_size: Any = None,
+    stake: float = STAKE_MAX_USD,
+) -> dict[str, Any]:
+    """Paper entry of one picked bracket along its ask levels ([price, shares], any order; the best is taken first):
+    levels are taken while ``q - a - fee(a) >= EDGE_MIN`` at the level's price a and the cost with fee stays within
+    ``stake`` USD (the last level partly; shares are not rounded). -> shares, cost_usd (with fee), fee_usd, p_in (share-
+    weighted price without fee; None when nothing was taken), levels taken, ``stop`` ('edge' | 'stake' | 'book' |
+    'fee type') and ``executable`` (shares >= the book's ``min_size`` in shares; without a usable min_size, shares > 0).
+    Levels that are not 0 < price < 1 with a finite size > 0 are skipped."""
+    lv = sorted(
+        ([float(p), float(s)] for p, s in (x for x in asks if isinstance(x, list | tuple) and len(x) >= 2)
+         if _finite(p) and _finite(s) and 0 < p < 1 and s > 0),
+        key=lambda x: x[0],
+    )  # fmt: skip
+    shares = cost = fee_usd = notional = 0.0
+    taken, stop = 0, "book"
+    for a, s in lv:
+        f = taker_fee(a, fee_type, schedule, enabled)
+        if f is None:
+            stop = "fee type"
+            break
+        if q - a - f < EDGE_MIN - 1e-12:
+            stop = "edge"
+            break
+        room = stake - cost
+        if room <= 1e-9:
+            stop = "stake"
+            break
+        n = min(s, room / (a + f))
+        shares, cost, fee_usd, notional, taken = shares + n, cost + n * (a + f), fee_usd + n * f, notional + n * a, taken + 1
+        if n < s:
+            stop = "stake"
+            break
+    ms_ = float(min_size) if _finite(min_size) and min_size > 0 else None
+    return {
+        "shares": shares,
+        "cost_usd": cost,
+        "fee_usd": fee_usd,
+        "p_in": notional / shares if shares > 0 else None,
+        "levels": taken,
+        "stop": stop,
+        "executable": shares >= ms_ - 1e-9 if ms_ is not None else shares > 0,
+    }
+
+
+def clv(p_in: Any, shares: Any, bid1: Any, ask1: Any) -> dict[str, float] | None:
+    """Closing-line value of an executable signal at the T-1 mid of the same token: ``usd`` = shares * (mid - p_in)
+    (the primary unit, USD per signal), ``per_share`` = mid - p_in (price units on a 1 USD payout); None when a side
+    of the T-1 book or the entry is missing (never filled in)."""
+    if not all(_finite(x) for x in (p_in, shares, bid1, ask1)):
+        return None
+    mid = (bid1 + ask1) / 2
+    return {"mid": mid, "per_share": mid - p_in, "usd": shares * (mid - p_in)}
+
+
+def _jsonable(x: Any) -> Any:
+    if isinstance(x, bytes | bytearray | memoryview):
+        return {"sha256": hashlib.sha256(bytes(x)).hexdigest()}
+    raise TypeError(f"not JSON: {type(x).__name__}")
+
+
+def sha256_json(obj: Any) -> str:
+    """sha256 (hex) of ``obj`` as canonical JSON (sorted keys, no spaces, UTF-8; bytes as their own sha256); NaN / inf
+    raise ValueError, so a record that cannot be written as strict JSON has no digest."""
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_jsonable)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def row_digest(row: Mapping[str, Any]) -> str:
+    """Digest of the row columns the decision reads (``ROW_DIGEST_COLUMNS``, as stored; a missing column is null)."""
+    return sha256_json({c: row.get(c) for c in ROW_DIGEST_COLUMNS})
+
+
+# ------------------------------------------------------------------ archive SD (registration п. 4, after V1 and V2)
+
+
+def yoy_published(levels: Mapping[str, Any]) -> dict[str, float]:
+    """{'YYYY-MM': CPI-U NSA index level (CPIAUCNS, as text or number)} -> {'YYYY-M' target: 12-month % change rounded
+    half-up to 0.1, as BLS prints it}. A month without its own level or the level 12 months before is left out
+    (October 2025 was never published, so the targets 2025-10 and 2026-10 have no value)."""
+    lv: dict[tuple[int, int], Decimal] = {}
+    for k, v in levels.items():
+        try:
+            y, m = (int(x) for x in str(k)[:7].split("-"))
+            d = Decimal(str(v))
+        except (ValueError, InvalidOperation):
+            continue
+        if d.is_finite() and d > 0:
+            lv[(y, m)] = d
+    out = {}
+    for (y, m), d in sorted(lv.items()):
+        prev = lv.get((y - 1, m))
+        if prev is not None:
+            out[f"{y}-{m}"] = float((100 * (d / prev - 1)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+    return out
+
+
+def archive_errors(data: Any, published: Mapping[str, float], before: str, first: str = "2014-1") -> list[dict[str, Any]]:
+    """Nowcast errors of the headline YoY for every target m from ``first`` whose release (the 'CPI <Mon>' line of its
+    chart) is before ``before`` (ISO; the T-3 day of the release that switches): N_m = the last headline point dated on
+    or before release - 3 days, A_m = ``published[m]``; error = A_m - N_m (pp). A target without the release line (no
+    CPI, as 2025-10), without such a point or without A_m is listed with ``error`` None and a ``why``."""
+    out = []
+    for target, ch in _charts(data).items():
+        if target_key(target) < target_key(first):
+            continue
+        _, pts, vl = cf_daily(ch, HEADLINE)
+        rel = vl.get(f"CPI {MONTHS[target_key(target)[1] - 1]}")
+        r: dict[str, Any] = {"target": target, "release": rel, "day": None, "nowcast": None, "actual": None, "error": None}
+        if rel is None:
+            out.append({**r, "why": "no release"})
+            continue
+        if rel >= before:
+            continue
+        cut = (date.fromisoformat(rel) - timedelta(days=3)).isoformat()
+        day, val = next(((d, v) for d, v in reversed(pts) if d <= cut and v is not None), (None, None))
+        a = published.get(target)
+        r.update(day=day, nowcast=val, actual=a)
+        if val is None:
+            out.append({**r, "why": "no point"})
+        elif a is None:
+            out.append({**r, "why": "no actual"})
+        else:
+            out.append({**r, "error": a - val, "why": None})
+    return out
+
+
+def sigma_archive(errors: Iterable[Mapping[str, Any]]) -> tuple[float | None, int]:
+    """(sqrt(mean(error^2)), n) over the rows with an error: no bias correction, no floor, no weights; (None, 0)
+    without any."""
+    e = [float(r["error"]) for r in errors if _finite(r.get("error"))]
+    return (math.sqrt(sum(x * x for x in e) / len(e)), len(e)) if e else (None, 0)

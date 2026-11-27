@@ -20,6 +20,8 @@ Usage (C = ~/.cache/tradedesk-agents/pm_cpi; the exact commands of the report ar
         --capture C/snapshots/20261126T1920Z/nowcast_year.json --against <later copy> --out C/out_compare.txt
     uv run python scripts/verify_pm_cpi_step0.py --stage snapshot --out <file>  # today's nowcast + active books
     uv run python scripts/verify_pm_cpi_step0.py --stage row --day 2026-12-03 --out <file>  # the collector job's row (DB read-only)
+    uv run python scripts/verify_pm_cpi_step0.py --stage sigma --against <nowcast_year.json of the V2 row> \
+        --before <T-3 day YYYY-MM-DD> --out C/out_sigma.txt  # archive SD of the registration (nowcast vs CPI, no PM prices)
 
 Results (2026-11-26): docs/verification/2026-11-26-pm-cpi-step0.md.
 """
@@ -710,6 +712,47 @@ def _prev_months(target: str, n: int) -> list[str]:
     return out
 
 
+async def fetch_fred(p: Path, series: str) -> None:
+    """Download today's vintage of a FRED series as CSV into ``p`` (core.http.Http, public graph endpoint)."""
+    from tradedesk.core.http import Http
+
+    fred = Http("fred", "https://fred.stlouisfed.org", rate=0.5, timeout=30.0, retries=1, headers=UA)
+    try:
+        f = await fred.get_bytes("/graph/fredgraph.csv", params={"id": series}, tool="fredgraph")
+        p.write_bytes(bytes(f.data))  # noqa: ASYNC240 - one small file
+    finally:
+        await fred.aclose()
+
+
+def stage_sigma(cache: Path, nowcast: Path, before: str, vintage: str | None = None) -> None:
+    """Archive SD of the registration (card, «Попередня реєстрація» п. 4): headline YoY nowcast errors against the
+    published CPI-U NSA 12-month change, from the nowcast file that passed V2 (``nowcast``) and today's CPIAUCNS
+    (FRED, cached per day under <cache>/cleveland/fred/). Nowcast vs actual CPI only: no Polymarket price is read.
+    ``vintage`` (YYYYMMDD) reads an already cached CSV instead of today's and never fetches."""
+    from tradedesk.analytics.pm_cpi import archive_errors, sigma_archive, yoy_published
+
+    vdir = cache / "cleveland" / "fred"
+    vdir.mkdir(parents=True, exist_ok=True)
+    p = vdir / f"CPIAUCNS_{vintage or f'{datetime.now(UTC):%Y%m%d}'}.csv"
+    if not p.exists():
+        if vintage:
+            raise SystemExit(f"sigma: no cached CPI vintage {p.name}")
+        asyncio.run(fetch_fred(p, "CPIAUCNS"))
+    levels = {}
+    for line in p.read_text().splitlines()[1:]:
+        parts = line.split(",")
+        if len(parts) >= 2 and parts[1] not in ("", "."):
+            levels[parts[0][:7]] = parts[1]
+    rows = archive_errors(json.loads(nowcast.read_text()), yoy_published(levels), before)
+    sd, n = sigma_archive(rows)
+    for r in rows:
+        say(f"  {r['target']:7} release {r['release']} point {r['day']} N {r['nowcast']} A {r['actual']} "
+            f"err {r['error']} {r['why'] or ''}")  # fmt: skip
+    used = [r["target"] for r in rows if r["error"] is not None]
+    say(f"nowcast {nowcast} fred {p.name} before {before}: n {n} ({used[0] if used else '-'}..{used[-1] if used else '-'}), "
+        f"left out {len(rows) - n}, sigma_A {sd if sd is None else round(sd, 4)}")  # fmt: skip
+
+
 async def stage_vintage(cache: Path) -> None:
     """Is the archived daily nowcast as published? The FAQ defines the core CPI MoM nowcast as the 12-month moving
     average of past core CPI MoM inflation, so it can be recomputed from the core CPI index (CPILFESL) of two data
@@ -1151,8 +1194,10 @@ def main() -> None:
             "cfsum",
             "snapshot",
             "row",
+            "sigma",
         ],
     )
+    ap.add_argument("--before", help="sigma: ISO T-3 day of the release that switches to the archive SD")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="row: collector database (opened read-only)")
     ap.add_argument("--day", help="row: UTC day YYYY-MM-DD (default: today)")
     ap.add_argument("--export", type=Path, help="row: write the stored nowcast files of the day into this directory")
@@ -1216,6 +1261,10 @@ def main() -> None:
         elif a.stage == "row":
             if not stage_row(a.db, a.day or datetime.now(UTC).date().isoformat(), a.export):
                 raise SystemExit(1)
+        elif a.stage == "sigma":
+            if not (a.against and a.before):
+                raise SystemExit("sigma needs --against <nowcast_year.json that passed V2> and --before <YYYY-MM-DD>")
+            stage_sigma(a.cache_dir, a.against, a.before)
 
 
 if __name__ == "__main__":

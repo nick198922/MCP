@@ -448,9 +448,13 @@ async def test_stream_stats_record_the_venue_address_of_the_connection():
             self.opened.append(ws)
             yield ws
 
-    fake = _Addr([[ConnectionResetError("reset")]], default=[])
+    class _Done(Exception):  # not a stream error: ends the run on the second connection, however slow the machine
+        pass
+
+    fake = _Addr([[ConnectionResetError("reset")], [_Done()]])
     st = StreamStats()
-    await _drain(liq._ws_consume(liq.BYBIT_WS_URL, None, lambda ev: [], max_seconds=0.2, stats=st, connect=fake, backoff_base=0.01))
+    with pytest.raises(_Done):  # a short window would expire before the reconnect on a loaded machine (2026-11-27)
+        await _drain(liq._ws_consume(liq.BYBIT_WS_URL, None, lambda ev: [], max_seconds=60.0, stats=st, connect=fake, backoff_base=0.01))
     assert len(fake.opened) == 2 and st.peer == "18.245.199.103" and st.as_dict()["peer"] == "18.245.199.103"
     plain = StreamStats()  # a connection object without remote_address (the other fakes): no peer, no error
     await _drain(liq._ws_consume(liq.OKX_WS_URL, None, lambda ev: [], max_seconds=0.05, stats=plain, connect=_FakeConnect([[]])))

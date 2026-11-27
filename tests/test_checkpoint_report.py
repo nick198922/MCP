@@ -984,7 +984,8 @@ def test_assistant_paper_counters_and_state():
     assert c["перша / остання угода методу"] == "2026-10-20 / 2026-10-30"
     assert c["проміжків без чинної угоди методу > 1 доби"] == "1 (разом 2.0 дн.)"
     assert c["останнє денне рішення (файл стану)"] == "2026-11-02, actual / hold, 3 год тому"
-    assert any("assistant_paper_status" in x and "не закриває" in x for x in r["notes"])
+    assert any("розраховує саме завдання" in x and "system_health" in x for x in r["notes"])
+    assert not any("не закриває" in x for x in r["notes"])  # the job settles them since item 496
     assert not any("стоїть" in x for x in r["notes"])
     old = cp.assistant_paper_forward(REC, st | {"asof_utc": "2026-10-30T09:00:00Z"}, NOW)
     assert any("старше 36 год" in x for x in old["notes"])

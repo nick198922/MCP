@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 import tradedesk.collector.assistant_paper as mod
@@ -413,6 +414,208 @@ async def test_fetch_closes_paginates_and_drops_today():
     closes = await fetch_closes(Rt(), b, now)  # type: ignore[arg-type]
     assert closes is not None and len(closes) == 2300 and calls == [start, start + 1000 * day, start + 2000 * day]
     assert closes[0] == 100.0 and closes[-1] == 100.0 + 2299
+
+
+# ----------------------------------------------------------------------------- settlement by the job (item 496)
+
+EXPIRED = datetime(2026, 10, 9, 8, tzinfo=UTC)  # a Deribit expiry before NOW (2026-10-10 13:07 UTC)
+DELIVERY_ROWS = [{"date": "2026-10-09", "delivery_price": 83_826.89}, {"date": "2026-10-08", "delivery_price": 83_911.12}]
+LEGS = [[80_000.0, False, 1.0, 0.5, 1200.0], [86_000.0, True, 1.0, 0.5, 1300.0]]
+SETTLED_COLS = ("status", "settled_ts", "delivery_price", "pnl_usd", "pnl_pct_spot", "r_worst_case", "r_study")
+
+
+def _settle_rt(tmp_path: Path, ctl: dict[str, Any], name: str = "p.sqlite") -> Runtime:
+    """The job's runtime whose Deribit also answers get_delivery_prices from ``ctl`` (rows, status) and counts the calls."""
+    tr = make_transports(State())
+    chain = tr["deribit"].handler
+
+    def deribit(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("get_delivery_prices"):
+            ctl["calls"] = ctl.get("calls", 0) + 1
+            if ctl.get("status", 200) != 200:
+                return httpx.Response(ctl["status"], text="down")
+            rows = ctl.get("rows", DELIVERY_ROWS)
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": {"data": rows, "records_total": len(rows)}})
+        return chain(req)
+
+    tr["deribit"] = httpx.MockTransport(deribit)
+    settings = Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / name), assistant_paper_enabled=True)
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=tr, exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    return rt
+
+
+async def _due(rt: Runtime, *, source: str = "method", legs: list[Any] | None = None) -> int:
+    await rt.store.init()
+    return await rt.store.rec_paper_insert(
+        opened_ts=int((EXPIRED - timedelta(days=14)).timestamp()),
+        currency="BTC",
+        structure="long_strangle25",
+        expiry_ts=int(EXPIRED.timestamp()),
+        spot=82_000.0,
+        forward=82_100.0,
+        t_years=14 / 365,
+        legs=LEGS if legs is None else legs,
+        premium_per_btc=2500.0,
+        entry_fees_per_btc=49.2,
+        max_loss_per_btc=2549.2,
+        risk_basis="max_loss",
+        size_btc=0.3,
+        deposit_usd=100_000.0,
+        risk_pct=1.0,
+        risk_usd=764.76,
+        within_risk=True,
+        source=source,
+        method_mean_pct=-0.01,
+        method_q05_pct=-0.03,
+        regime="rv30_b1",
+        trigger="chain",
+    )
+
+
+async def test_job_settles_due_trades_like_the_tool_before_09_utc(tmp_path, monkeypatch):
+    from test_assistant_paper import _call
+    from tradedesk.server import build_server
+
+    _patch(monkeypatch, _closes())
+    ctl: dict[str, Any] = {}
+    job, tool = _settle_rt(tmp_path, ctl, "job.sqlite"), _settle_rt(tmp_path, ctl, "tool.sqlite")
+    early = datetime(2026, 10, 10, 8, 30, tzinfo=UTC)  # before the decision gate: settlement still runs
+    job.now = tool.now = lambda: early
+    try:
+        jid, tid = await _due(job), await _due(tool)
+        manual = await _due(job, source="manual")
+        assert await collect_assistant_paper(job) == 2  # both due rows, any source; no decision before 09:00
+        assert not state_path(job.settings.db_path).exists() and ctl["calls"] == 1
+        srv, _ = build_server(tool)
+        env = await _call(srv, "assistant_paper_status")
+        assert env["ok"] is True and env["data"]["open"] == []
+        await tool.store.init()
+        by_job, by_tool = await job.store.rec_paper_get(jid), await tool.store.rec_paper_get(tid)
+        assert by_job["status"] == "settled" and by_job["delivery_price"] == 83_826.89 and by_job["settled_ts"] == int(EXPIRED.timestamp())
+        # the same shared code: the stored numbers are those the tool books
+        assert {k: by_job[k] for k in SETTLED_COLS} == {k: by_tool[k] for k in SETTLED_COLS}
+        assert (await job.store.rec_paper_get(manual))["status"] == "settled"
+        calls = ctl["calls"]
+        assert await collect_assistant_paper(job) == 0  # re-run: nothing due, no request, nothing changes
+        assert ctl["calls"] == calls and await job.store.rec_paper_get(jid) == by_job
+    finally:
+        await job.aclose()
+        await tool.aclose()
+
+
+async def test_job_settles_on_a_day_already_decided(tmp_path, monkeypatch):
+    _patch(monkeypatch, _closes())
+    ctl: dict[str, Any] = {}
+    rt = _settle_rt(tmp_path, ctl)
+    try:
+        assert await collect_assistant_paper(rt) == 1  # today's booking; nothing due -> no delivery request
+        assert ctl.get("calls", 0) == 0
+        tid = await _due(rt)
+        rt.now = lambda: NOW + timedelta(minutes=60)
+        assert await collect_assistant_paper(rt) == 1  # decision skipped (already in the state file), settlement ran
+        assert (await rt.store.rec_paper_get(tid))["status"] == "settled"
+        assert len([x for x in await rt.store.rec_paper_list() if x["opened_ts"] >= int(NOW.timestamp())]) == 1
+    finally:
+        await rt.aclose()
+
+
+async def test_job_delivery_not_published_stays_open_then_settles(tmp_path, monkeypatch):
+    _patch(monkeypatch, _closes())
+    ctl: dict[str, Any] = {"rows": DELIVERY_ROWS[1:]}  # 2026-10-09 not published yet
+    rt = _settle_rt(tmp_path, ctl)
+    rt.now = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=UTC)
+    try:
+        tid = await _due(rt)
+        assert await collect_assistant_paper(rt) == 0  # silent: no error, retried next period
+        assert (await rt.store.rec_paper_get(tid))["status"] == "open"
+        ctl["rows"] = DELIVERY_ROWS
+        assert await collect_assistant_paper(rt) == 1
+        assert (await rt.store.rec_paper_get(tid))["status"] == "settled"
+    finally:
+        await rt.aclose()
+
+
+async def test_job_delivery_failure_does_not_block_the_decision(tmp_path, monkeypatch):
+    _patch(monkeypatch, _closes())
+    ctl: dict[str, Any] = {"status": 500}  # delivery prices down, the option chain up
+    rt = _settle_rt(tmp_path, ctl)
+    path = state_path(rt.settings.db_path)
+    try:
+        tid = await _due(rt)
+        with pytest.raises(RuntimeError, match="no delivery prices"):  # the scheduler records it in collector health
+            await collect_assistant_paper(rt)
+        st = json.loads(path.read_text())
+        assert st["date"] == "2026-10-10" and st["trade_id"] is not None  # the day's decision and booking were written
+        assert not any(m["field"].startswith(("delivery_prices", "rec_paper")) for m in st["missing"])
+        assert (await rt.store.rec_paper_get(tid))["status"] == "open"
+        ctl["status"] = 200  # next period: Deribit back
+        rt.now = lambda: NOW + timedelta(hours=1)
+        assert await collect_assistant_paper(rt) == 1  # settled; the decision is not redone
+        assert (await rt.store.rec_paper_get(tid))["status"] == "settled"
+        assert sum(1 for x in await rt.store.rec_paper_list() if x["opened_ts"] >= int(NOW.timestamp())) == 1
+    finally:
+        await rt.aclose()
+
+
+async def test_job_settlement_store_error_does_not_block_the_decision(tmp_path, monkeypatch):
+    import sqlite3
+
+    _patch(monkeypatch, _closes())
+    rt = _settle_rt(tmp_path, {})
+    try:
+        await _due(rt)
+
+        async def boom(*_a, **_k):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(rt.store, "rec_paper_settle", boom)
+        with pytest.raises(RuntimeError, match="settlement failed: OperationalError"):
+            await collect_assistant_paper(rt)
+        assert json.loads(state_path(rt.settings.db_path).read_text())["trade_id"] is not None
+    finally:
+        await rt.aclose()
+
+
+async def test_job_decision_failure_keeps_the_settlement(tmp_path, monkeypatch):
+    _patch(monkeypatch, None)  # history down: the decision fails
+    ctl: dict[str, Any] = {}
+    rt = _settle_rt(tmp_path, ctl)
+    try:
+        tid = await _due(rt)
+        with pytest.raises(RuntimeError, match="no data"):
+            await collect_assistant_paper(rt)
+        assert (await rt.store.rec_paper_get(tid))["status"] == "settled"  # not undone by the failed decision
+        assert not state_path(rt.settings.db_path).exists()
+        tid2 = await _due(rt)
+        ctl["status"] = 500  # both fail: one error naming both
+        with pytest.raises(RuntimeError, match="no data.*no delivery prices"):
+            await collect_assistant_paper(rt)
+        assert (await rt.store.rec_paper_get(tid2))["status"] == "open"
+    finally:
+        await rt.aclose()
+
+
+async def test_job_bad_rows_and_legs_stay_open_and_are_counted(tmp_path, monkeypatch):
+    from tradedesk.collector.bad_rows import count_bad_rows
+
+    _patch(monkeypatch, _closes())
+    ctl: dict[str, Any] = {"rows": [{"date": "2026-10-09", "delivery_price": "NaN"}]}
+    rt = _settle_rt(tmp_path, ctl)
+    rt.now = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=UTC)
+    try:
+        tid = await _due(rt)
+        with count_bad_rows() as dropped:  # the scheduler's per-run count (system_health -> collector rows_dropped)
+            assert await collect_assistant_paper(rt) == 0
+        assert dropped.n == 1 and (await rt.store.rec_paper_get(tid))["status"] == "open"
+        bad = await _due(rt, legs=[[1.0, True]])
+        ctl["rows"] = DELIVERY_ROWS
+        assert await collect_assistant_paper(rt) == 1  # the good one; malformed legs are never settled on part of them
+        assert (await rt.store.rec_paper_get(tid))["status"] == "settled"
+        assert (await rt.store.rec_paper_get(bad))["status"] == "open"
+    finally:
+        await rt.aclose()
 
 
 def test_job_off_by_default_and_on_by_switch(tmp_path):

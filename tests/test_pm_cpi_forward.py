@@ -270,7 +270,10 @@ def test_provider_event_reads_one_gamma_event():
      ("2027-01-13", ["- `V1 · pass` по year і month", "V2 · pass", "sigma_A · 0.1500 · n 150", "sigma_A · 0.2"], (0.15, None)),
      ("2027-01-13", ["V1 · pass", "V2 · fail: overwritten"], (0.164, None)),
      ("2027-01-13", ["V1 · pass", "V2 · pass"], (None, "no sigma_A")),
-     ("2027-01-13", ["V1 · pass"], (None, "no sigma_A")), ("2027-01-13", [], (None, "no sigma_A"))],
+     ("2027-01-13", ["V1 · pass"], (None, "no sigma_A")), ("2027-01-13", [], (None, "no sigma_A")),
+     # item 492, review C N1: a line is written only from a verdict of the data, so a missing V line is «no sigma_A»
+     # even next to a 'fail' line (stricter than 0.164)
+     ("2027-01-13", ["V2 · fail: overwritten"], (None, "no sigma_A")), ("2027-01-13", ["V1 · fail: x"], (None, "no sigma_A"))],
 )  # fmt: skip
 def test_sigma_follows_the_vintage_checks_of_the_journal(release, journal, want):
     sd, _, why = f.sigma_for(release, journal)
@@ -281,7 +284,7 @@ def test_journal_lines_may_carry_a_day_or_a_pasted_prefix():
     # review C 484, findings 4 and 6: a V line starting with its day, a stage line pasted with 'journal: '
     dated = ["- 2026-12-03 V1 · pass по year і month", "2026-12-11 `V2 · pass` по year і month", "2026-12-11 sigma_A · 0.1700 · n 140"]
     assert f.sigma_for("2027-01-13", dated)[:1] == (0.17,)
-    assert f.sigma_for("2027-01-13", ["2026-12-03 V1 · fail: x"])[0] == 0.164
+    assert f.sigma_for("2027-01-13", ["2026-12-03 V1 · fail: x", "2026-12-11 V2 · pass"])[0] == 0.164
     sha = "c" * 64
     card = CARD_TEXT.format(lines=f"journal: {R} T−3 · D x · без сигналу · sha256 {sha}\n")
     assert f.journal_sha(card, R) == (sha, None)
@@ -293,9 +296,15 @@ def test_vrows_used_are_the_lines_the_sigma_rests_on():
     j = ["V1 · pass", "2026-12-11 V2 · pass", "sigma_A · 0.1500 · n 150", "sigma_A · 0.2"]
     later = "2027-01-13"
     assert f.vrows_used(R, j) == {} and f.vrows_used(later, []) == {}
-    assert f.vrows_used(later, j) == {"V1": "pass", "V2": "pass", "sigma_A": 0.15}
+    assert f.vrows_used(later, j) == {"V1": "pass", "V2": "pass", "sigma_A": 0.15, "sigma_A_csv": None}
     assert f.vrows_used(later, ["V1 · pass", "V2 · fail: x", "sigma_A · 0.2"]) == {"V1": "pass", "V2": "fail"}
-    assert f.vrows_used(later, ["V1 · pass", "sigma_A · 0.2"]) == {"V1": "pass"}
+    # a V line missing: «no sigma_A» by sigma_for, so the sigma rests on no line (review C 492, N1)
+    assert f.vrows_used(later, ["V1 · pass", "sigma_A · 0.2"]) == {} == f.vrows_used(later, ["V2 · fail: x"])
+    # the CSV a sigma_A line names (review C 492, N2): file day and sha256, as --stage vrows prints them
+    sha = "ab" * 32
+    named = ["V1 · pass", "V2 · pass", f"sigma_A · 0.1523 · n 140 · sha256 nowcast {'c' * 64} · CSV CPIAUCNS_20261211.csv sha256 {sha}"]
+    assert f.vrows_used(later, named)["sigma_A_csv"] == ["20261211", sha]
+    assert f.vrows_used(later, [*named[:2], named[2][:-1]])["sigma_A_csv"] is None  # 63 hex digits: no sha256
     card = CARD_TEXT.format(lines="\n".join(j) + "\n")
     assert f.rebuild({}, later, None, card)["vrows"] == f.vrows_used(later, j) and f.rebuild({}, R, None, card)["vrows"] == {}
 
@@ -1119,11 +1128,11 @@ def test_fallback_of_set_b_runs_in_the_tree_of_m0(world, tmp_path):
 
 @pytest.mark.parametrize(
     ("name", "lines", "drop", "boom", "want", "line"),
-    [("vfail", "V1 · fail: chosen\n", False, False, "proof pass", "V1 fail → fail"),
+    [("vfail", "V1 · fail: chosen\nV2 · fail: chosen\n", False, False, "proof pass", "V1 fail → fail · V2 fail → fail"),
      ("vwrong", "V1 · pass\nV2 · fail: chosen\n", False, False, "proof fail: mismatch (V / sigma_A lines: V1)", "V1 pass → fail · V2 fail → fail"),
      ("vold", "V1 · pass\nV2 · fail: chosen\n", True, False, "proof pass", "V / sigma_A lines: not applicable, M0 before item 492"),
      # review C 492, finding 4: an exception in the check is no verdict on the lines and keeps the proof's other reasons
-     ("vboom", "V1 · fail: chosen\n", False, True, "proof fail: code (code_dirty not empty); not recomputed (V / sigma_A "
+     ("vboom", "V1 · fail: chosen\nV2 · fail: chosen\n", False, True, "proof fail: code (code_dirty not empty); not recomputed (V / sigma_A "
       "lines: raised RuntimeError: boom; run the proof again)", "V / sigma_A lines: raised RuntimeError")],
 )  # fmt: skip
 def test_proof_reruns_the_v_lines_its_m0_used(world, tmp_path, capsys, monkeypatch, name, lines, drop, boom, want, line):
@@ -1196,7 +1205,8 @@ def vw(world, tmp_path, monkeypatch):
              "2026-12-11": (_stamped(y, "2026-12-07 00:00", True), _stamped(mo, "2026-12-07 00:00"))}  # fmt: skip
     w = SimpleNamespace(files=files, snap=snap, fred=CSV_NOV, runs=[], tmp=tmp_path)
     w.db = make_db(tmp_path / "v.sqlite", *(synth_row(d, cf_year_z=_vfile(a), cf_month_z=_vfile(b)) for d, (a, b) in files.items()))
-    w.sd = round(sigma_archive(archive_errors(files["2026-12-11"][0], yoy_published(fred_levels(CSV_NOV)), "2027-01-01"))[0], 4)
+    w.sigma = lambda nowcast, csv: round(sigma_archive(archive_errors(nowcast, yoy_published(fred_levels(csv)), "2027-01-01"))[0], 4)
+    w.sd = w.sigma(files["2026-12-11"][0], CSV_NOV)
 
     def mkdtemp(**kw):
         d = Path(tempfile.mkdtemp(**kw))
@@ -1209,8 +1219,33 @@ def vw(world, tmp_path, monkeypatch):
         return str(d)
 
     monkeypatch.setattr(f, "tempfile", SimpleNamespace(mkdtemp=mkdtemp))
-    tree = f.extract(world.repo, world.m0, f.CODE_PATHS, tmp_path)
-    w.check = lambda used, db=None: f.vrows_check({"vrows": used}, tree, world.repo, db or w.db, tmp_path, offline_env())
+    w.tree = tree = f.extract(world.repo, world.m0, f.CODE_PATHS, tmp_path)
+    # review C 492, N2: the CSVs of sigma_A lines in a ref of main: the 11.12 one has the level of 2026-11, the 12.12
+    # one (a FRED late with it) has not; the vw tests use the first unless a line names another
+    w.csvs = {"20261211": CSV_NOV.encode(), "20261212": FRED_TAIL.encode()}
+
+    def commit(files):
+        """A commit on top of the world's main with ``files`` (path -> bytes): its sha, a ref the check reads."""
+        world.g("checkout", "-q", "-B", "fred-csv", world.after)
+        for p, b in files.items():
+            (world.repo / p).parent.mkdir(parents=True, exist_ok=True)
+            (world.repo / p).write_bytes(b)
+        world.g("add", "-A")
+        world.g("commit", "-q", "-m", "the FRED CSV of a sigma_A line", when="2026-12-12T10:00:00Z")
+        sha = world.g("rev-parse", "HEAD")
+        world.g("checkout", "-q", "--detach", world.after)
+        return sha
+
+    w.commit, w.world_after = commit, world.after
+    w.ref = commit({f"{f.FRED_DIR}/CPIAUCNS_{d}.csv": b for d, b in w.csvs.items()})
+    w.named = lambda d: [d, hashlib.sha256(w.csvs[d]).hexdigest()]  # the CSV part of a sigma_A line
+
+    def check(used, db=None, ref=None):
+        if isinstance(used, dict) and "sigma_A" in used and "sigma_A_csv" not in used:
+            used = {**used, "sigma_A_csv": w.named("20261211")}
+        return f.vrows_check({"vrows": used}, tree, world.repo, db or w.db, tmp_path, offline_env(), ref or w.ref)
+
+    w.check = check
     return w
 
 
@@ -1227,23 +1262,46 @@ def test_vrows_check_reruns_the_registered_commands(vw, capsys):
     # number the command prints, even when it rounds to it
     assert round(sd + 0.00004, 4) == sd and check({"sigma_A": sd + 0.00004}) == ["mismatch (V / sigma_A lines: sigma_A)"]
     assert check({"V1": "pass", "V2": "fail"}) == ["mismatch (V / sigma_A lines: V2)"]
-    for bad in (1, {"V1": "maybe"}, {"sigma_A": "0.15"}, {"sigma_A": True}, {"V3": "pass"}):
+    for bad in (1, {"V1": "maybe"}, {"sigma_A": "0.15"}, {"sigma_A": True}, {"V3": "pass"}, {"sigma_A": sd, "sigma_A_csv": ["x", "y"]},
+                {"V1": "pass", "sigma_A_csv": None}):  # fmt: skip
         assert check(bad) == ["mismatch (V / sigma_A lines: M0 gives no line map)"], bad
     # review C 492, finding 3: every run has its own directory under tmp, the FRED cache inside it
     assert len(vw.runs) == len(set(vw.runs)) >= 4 and all(r.parent == vw.tmp and r.name.startswith("pm_cpi_vrows_") for r in vw.runs)
 
 
-@pytest.mark.parametrize("fred", ["<html><body>FRED is busy</body></html>\n", "observation_date,CPIAUCNS\n", None])
-def test_vrows_sigma_without_a_cpi_level_is_not_recomputed(vw, fred):
-    # review C 492, blocker 1: FRED answering an HTML page or an empty CSV (n 0, 'sigma_A None'), or not answering at
-    # all, gives no verdict: neither a true nor a false sigma_A line is «mismatch»; the next run has a fresh cache
-    vw.fred = fred
-    for sig in (vw.sd, vw.sd + 0.001):
-        got = vw.check({"sigma_A": sig})
-        assert len(got) == 1 and got[0].startswith(NOT_RE + "sigma_A: sigma: ") and got[0].endswith("; run the proof again)"), got
-    assert ("sigma_A None (exit 0)" in got[0]) is (fred is not None), got
-    vw.fred = CSV_NOV
-    assert vw.check({"sigma_A": vw.sd}) == []
+def test_vrows_sigma_reads_the_csv_its_line_names_not_today_fred(vw, capsys):
+    # review C 492, N2: the sigma of the proof does not depend on the FRED of its day. A line computed by step 488 on a
+    # CSV without the level of 2026-11 (FRED late, or BLS moved the release) reproduces through --vintage on that CSV,
+    # while today's FRED (the cache of the run) has the level. Here the 11.12 file gets a release line «CPI Nov», so the
+    # target 2026-11 enters with the level and is left out ('no actual') without it
+    sd, named = vw.sd, vw.named
+    nov = json.loads(json.dumps(vw.files["2026-12-11"][0]))
+    cats = nov[-1]["categories"][0]["category"]
+    cats.insert(len(cats) - 1, {"vline": "true", "label": "CPI Nov"})  # after the point 11/30, before 'PCE Oct'
+    db = make_db(vw.tmp / "nov.sqlite", synth_row("2026-12-09", cf_year_z=_vfile(vw.files["2026-12-09"][0]), cf_month_z=_vfile(vw.files["2026-12-09"][1])),
+                 synth_row("2026-12-11", cf_year_z=_vfile(nov), cf_month_z=_vfile(vw.files["2026-12-11"][1])))  # fmt: skip
+    with_nov, late = vw.sigma(nov, CSV_NOV), vw.sigma(nov, FRED_TAIL)
+    assert late == sd != with_nov, "the November target must change the sigma; update this test"
+    assert vw.check({"sigma_A": late, "sigma_A_csv": named("20261212")}, db) == []
+    assert "fred CPIAUCNS_20261212.csv before 2027-01-01" in (vw.runs[-1] / "out_sigma.txt").read_text()
+    assert vw.check({"sigma_A": with_nov, "sigma_A_csv": named("20261212")}, db) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    assert vw.check({"sigma_A": with_nov}, db) == [] and vw.check({"sigma_A": late}, db) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    vw.fred = None  # no FRED CSV of today in the run's cache, FRED unreachable: the CSV of the line is enough
+    assert vw.check({"sigma_A": late, "sigma_A_csv": named("20261212")}, db) == [] and vw.check({"sigma_A": sd}) == []
+    capsys.readouterr()
+    # what a later run cannot change: a line naming no CSV sha256, a CSV of the ref with other bytes
+    assert vw.check({"sigma_A": sd, "sigma_A_csv": None}) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    assert "mismatch: the line names no CSV sha256" in capsys.readouterr().out
+    assert vw.check({"sigma_A": sd, "sigma_A_csv": ["20261211", "0" * 64]}) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    # no such CSV in the ref (not merged yet, or another ref): no verdict, never a pass
+    for used, ref in (({"sigma_A": sd, "sigma_A_csv": ["20261213", "0" * 64]}, None), ({"sigma_A": sd}, vw.world_after)):
+        got = vw.check(used, ref=ref)
+        assert len(got) == 1 and got[0].startswith(NOT_RE + "sigma_A: no docs/forward/pm-cpi/fred/CPIAUCNS_"), got
+    # a CSV in the ref that gives no level (an HTML page saved by hand; the stage never saves one): no verdict
+    html = b"<html><body>FRED is busy</body></html>\n"
+    ref = vw.commit({f"{f.FRED_DIR}/CPIAUCNS_20261214.csv": html})
+    got = vw.check({"sigma_A": sd, "sigma_A_csv": ["20261214", hashlib.sha256(html).hexdigest()]}, ref=ref)
+    assert len(got) == 1 and got[0].startswith(NOT_RE + "sigma_A: sigma: ") and "sigma_A None (exit 0)" in got[0], got
 
 
 def _crash(real, how):
@@ -1301,6 +1359,92 @@ def test_vrows_data_outcomes_stay_verdicts(vw, monkeypatch):
     same = make_db(vw.tmp / "same.sqlite", *(synth_row(d, cf_year_z=_vfile(y), cf_month_z=_vfile(mo)) for d in f.V_DAYS))
     assert vw.check({"V2": "fail"}, same) == []  # 'V fail: same stamp' (exit 1): the data
     assert vw.check({"V1": "pass", "V2": "pass"}, same) == ["mismatch (V / sigma_A lines: V2)"]  # V1 not recomputed (no S)
+
+
+def test_row_export_comes_first_and_a_blob_that_does_not_decompress_is_not_exported(vw, monkeypatch):
+    # review C 492, N1, the mirror case: an end that the data decide for ever must be a verdict, not «not recomputed».
+    # Books that do not read stop the row command only after the export; a nowcast blob that does not decompress is
+    # «NOT exported» (the data: V fails, п. 4), not a crash
+    y, mo = vw.files["2026-12-09"]
+    bad_books = make_db(vw.tmp / "books.sqlite", *(synth_row(d, cf_year_z=_vfile(a), cf_month_z=_vfile(b), books="{not json")
+                                                   for d, (a, b) in vw.files.items()))  # fmt: skip
+    assert vw.check({"V2": "pass"}, bad_books) == [] and vw.check({"V2": "fail"}, bad_books) == ["mismatch (V / sigma_A lines: V2)"]
+    not_z = make_db(vw.tmp / "notz.sqlite", synth_row("2026-12-09", cf_year_z=_vfile(y), cf_month_z=b"not zlib"),
+                    synth_row("2026-12-11", cf_year_z=_vfile(y), cf_month_z=_vfile(mo)))  # fmt: skip
+    assert vw.check({"V2": "fail"}, not_z) == [] and vw.check({"V2": "pass"}, not_z) == ["mismatch (V / sigma_A lines: V2)"]
+    assert "NOT exported 2026-12-09_nowcast_month.json: the stored bytes do not decompress (error)" in "\n".join(
+        (r / "out_row_2026-12-09.txt").read_text() for r in vw.runs[-2:])  # fmt: skip
+
+
+AFTER_V2 = datetime(2026, 12, 12, 9, 0, tzinfo=UTC)
+
+
+def _stage(vw, line, capsys, *, db=None, card_lines="(записів ще нема)\n", now=AFTER_V2):
+    """--stage vrows in a clone of its own (the card with ``card_lines``): (exit code, output lines, the clone)."""
+    clone = vw.tmp / f"clone_{len(vw.runs)}"
+    (clone / f.CARD).parent.mkdir(parents=True, exist_ok=True)
+    (clone / f.CARD).write_text(CARD_TEXT.format(lines=card_lines))
+    capsys.readouterr()
+    rc = f.vrows_stage(line, now, repo=clone, tree=vw.tree, db=db or vw.db, tmp=vw.tmp, env=offline_env())
+    return rc, capsys.readouterr().out.rstrip().splitlines(), clone
+
+
+def _written(out):
+    """The journal line --stage vrows printed (the line after the note), or None."""
+    return out[out.index(f.JOURNAL_NOTE) + 1] if f.JOURNAL_NOTE in out else None
+
+
+@pytest.mark.parametrize("line", ["V1", "V2"])
+@pytest.mark.parametrize("how", ["db", "crash", "early", "written"])
+def test_vrows_stage_writes_no_line_without_a_verdict_of_the_data(vw, capsys, monkeypatch, line, how):
+    # review C 492, N1: steps 485 / 488 write a V line only from an end the proof's classifier calls a verdict of the
+    # data. After 'cannot read pm_cpi_snapshot', a crash, before the rows are final, or once the card has such a line,
+    # the stage exits 3 and prints no journal line; the last line says to write nothing
+    kw = {}
+    if how == "db":
+        kw["db"] = vw.tmp / "broken.sqlite"
+        kw["db"].write_text("not a database")
+    elif how == "crash":
+        monkeypatch.setattr(f, "run_tree", _crash(f.run_tree, "crash"))
+    elif how == "early":
+        kw["now"] = f.V_FROM[line] - timedelta(minutes=1)
+    else:
+        kw["card_lines"] = f"{line} · fail: written before\n"
+    rc, out, clone = _stage(vw, line, capsys, **kw)
+    assert rc == f.VROWS_NOTHING == 3 and _written(out) is None and out[-1].startswith(f"{line}: write nothing"), out
+    if how == "db":
+        assert "cannot read pm_cpi_snapshot" in out[-1] and "not recomputed, run again" in out[-1], out
+    assert not (clone / f.FRED_DIR).exists()
+
+
+def test_vrows_stage_line_is_what_the_proof_reproduces(vw, capsys):
+    # review C 492, N1 + N2, the whole path of a true line: steps 485 / 488 print V1, V2 and sigma_A lines from the
+    # verdicts of the data, 488 saves the CSV it read; with that CSV merged, the proof's check reproduces all three
+    rc, out, _ = _stage(vw, "V1", capsys)
+    assert rc == f.VROWS_WRITE == 0 and out[-1] == _written(out) and _written(out).startswith("V1 · pass · year: V pass; month: V pass")
+    rc, out, _ = _stage(vw, "V2", capsys)
+    assert rc == 0 and _written(out).startswith("V2 · pass · ")
+    j = ["2026-12-03 V1 · pass · year: V pass; month: V pass", "2026-12-11 V2 · pass · year: V pass; month: V pass"]
+    rc, out, _ = _stage(vw, "sigma_A", capsys, card_lines=j[0] + "\n")  # V2 not in the card yet: run again
+    assert rc == 3 and _written(out) is None and out[-1].endswith("run again once both lines are in the card"), out
+    rc, out, _ = _stage(vw, "sigma_A", capsys, card_lines="V1 · pass\nV2 · fail: x\n")  # σ = 0.164, nothing to write
+    assert rc == 3 and _written(out) is None and out[-1].endswith("σ is 0.164 (п. 4 (б))"), out
+    vw.fred = "<html><body>FRED is busy</body></html>\n"  # FRED gives no level: no line, no CSV saved
+    rc, out, clone = _stage(vw, "sigma_A", capsys, card_lines="\n".join(j) + "\n")
+    assert rc == 3 and _written(out) is None and "sigma_A None (exit 0)" in out[-1] and not (clone / f.FRED_DIR).exists(), out
+    vw.fred = CSV_NOV
+    rc, out, clone = _stage(vw, "sigma_A", capsys, card_lines="\n".join(j) + "\n")
+    line = _written(out)
+    assert rc == 0 and line.startswith(f"sigma_A · {vw.sd} · n "), out
+    saved = list((clone / f.FRED_DIR).iterdir())
+    assert len(saved) == 1 and saved[0].read_bytes() == CSV_NOV.encode() and f"CSV {saved[0].name} sha256 " in line
+    used = f.vrows_used("2027-01-13", [*j, line])
+    assert used["sigma_A"] == vw.sd and used["sigma_A_csv"] == [saved[0].name[9:17], hashlib.sha256(CSV_NOV.encode()).hexdigest()]
+    ref = vw.commit({f"{f.FRED_DIR}/{saved[0].name}": saved[0].read_bytes()})
+    vw.fred = None  # the proof needs no FRED
+    assert vw.check(used, ref=ref) == []
+    rc, out, _ = _stage(vw, "sigma_A", capsys, card_lines="\n".join([*j, line]) + "\n")  # the first line counts
+    assert rc == 3 and "the card already has a sigma_A line" in out[-1]
 
 
 def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsys):

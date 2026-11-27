@@ -8,6 +8,7 @@ Stages (C = ~/.cache/tradedesk-agents/pm_cpi; every stage file is written once, 
     uv run python scripts/pm_cpi_forward.py --stage T-1 --release 2026-12-10 --out C/out_fwd_T-1.txt   # close, CLV (item 487)
     uv run python scripts/pm_cpi_forward.py --stage proof --release 2026-12-10 --out C/out_fwd_proof.txt  # proof (item 487)
     uv run python scripts/pm_cpi_forward.py --stage result --release 2026-12-10 --out C/out_fwd_result.txt  # (items 487, 493)
+    uv run python scripts/pm_cpi_forward.py --stage vrows --line V1 --out C/out_vrows_V1.txt  # V1 / V2 / sigma_A line (485, 488)
 
 Result (item 491, registration п. 7, 8, as amended 27.11): from 15:00 UTC of the release day. It runs the code of R,
 the last first-parent state of ``origin/main`` before the publication (08:30 New York time of the release day, 13:30
@@ -44,9 +45,15 @@ overwritten). ``--stage proof`` (item 487) checks the merged copy of ``T-3.json`
 and, by the code of M0 (``code_sha`` must be M0), a recomputation of the decision from the file's input and a rebuild
 of the whole record from the database row, the file's Gamma answers and the card in M0; after the first release it
 also re-runs the commands of п. 10 (``verify_pm_cpi_step0.py`` of the tree of M0: row export, vcheck, sigma; the V1
-snapshot S and FRED besides) for every V1 / V2 / sigma_A journal line the sigma rests on (item 492; a line no command
+snapshot S and the FRED CSV of the sigma_A line besides) for every V1 / V2 / sigma_A journal line the sigma rests on (item 492; a line no command
 decided is ``not recomputed``: no verdict, run again); its first line names its arguments, its last line is ``proof
-pass`` or ``proof fail: <reason>``.
+pass`` or ``proof fail: <reason>``. The sigma command runs on the FRED CSV the sigma_A line names (its sha256), from
+``docs/forward/pm-cpi/fred/`` of the ref, with ``--vintage`` and no network (review C of item 492, N2).
+
+``--stage vrows --line V1 | V2 | sigma_A`` (dated steps 485, 488; review C of item 492, N1) runs the same commands with
+the same classifier (:func:`vrows_repro`) on the rows of the database (read-only) and exits 0 only for a verdict of the
+data, printing the journal line to write (sigma_A: the FRED CSV it used is saved under ``docs/forward/pm-cpi/fred/``);
+any other end exits 3, nothing is to be written, and the step is run again.
 """
 
 from __future__ import annotations
@@ -495,23 +502,32 @@ _DATE = r"(?:\d{4}-\d{2}-\d{2} )?"  # a journal line may start with its day, as 
 def sigma_for(release: str, journal: Iterable[str]) -> tuple[float | None, str | None, str | None]:
     """(sigma, its source, skip reason) of a release (registration п. 4): 0.164 for 2026-12-10 in any case; later, a
     'V1 · fail' or 'V2 · fail' line -> 0.164 for all; both 'pass' -> the first 'sigma_A · <value>' line of the journal
-    in M0, none -> skip 'no sigma_A'; a verdict line missing -> skip 'no sigma_A' too (no V verdict in M0 yet). The
-    first line of each kind counts; a line may start with 'YYYY-MM-DD ' (format of the card's «Форвард-журнал»)."""
+    in M0, none -> skip 'no sigma_A'; a verdict line missing -> skip 'no sigma_A' too (no V verdict in M0 yet), also
+    when the other one is 'fail' (item 492, review C N1: a line is written only from a verdict of the data, so a
+    missing line is no verdict; stricter than 0.164). The first line of each kind counts; a line may start with
+    'YYYY-MM-DD ' (format of the card's «Форвард-журнал»)."""
     if release <= FIRST_RELEASE:
         return SD_KZ, SD_KZ_SOURCE, None
     v = journal_vrows(journal)
     sig = v["sigma_A"]
+    if v["V1"] is None or v["V2"] is None:
+        return None, None, "no sigma_A"
     if "fail" in (v["V1"], v["V2"]):
         return SD_KZ, SD_KZ_SOURCE + " (a vintage check failed)", None
-    if v["V1"] == v["V2"] == "pass" and sig is not None and sig > 0:
+    if sig is not None and sig > 0:
         return sig, "sigma_A (first line of the journal in M0)", None
     return None, None, "no sigma_A"
 
 
+# the FRED CSV a sigma_A line names (review C of item 492, N2): its file name and sha256, as --stage vrows prints them
+_CSV = re.compile(r"CPIAUCNS_(\d{8})\.csv sha256 ([0-9a-f]{64})(?![0-9a-f])")
+
+
 def journal_vrows(journal: Iterable[str]) -> dict[str, Any]:
     """The first 'V1 · pass|fail', 'V2 · pass|fail' and 'sigma_A · <value>' lines of the journal: {'V1': 'pass' |
-    'fail' | None, 'V2': …, 'sigma_A': float | None}."""
-    v: dict[str, Any] = {"V1": None, "V2": None, "sigma_A": None}
+    'fail' | None, 'V2': …, 'sigma_A': float | None, 'sigma_A_csv': [YYYYMMDD, sha256] of the CSV that first sigma_A
+    line names, or None}."""
+    v: dict[str, Any] = {"V1": None, "V2": None, "sigma_A": None, "sigma_A_csv": None}
     for line in journal:
         s = _clean(line)
         mv = re.match(rf"^{_DATE}(V1|V2) · (pass|fail)", s)
@@ -520,18 +536,25 @@ def journal_vrows(journal: Iterable[str]) -> dict[str, Any]:
         ms = re.match(rf"^{_DATE}sigma_A · (\d+(?:\.\d+)?)", s)
         if ms and v["sigma_A"] is None:
             v["sigma_A"] = float(ms[1])
+            mc = _CSV.search(s)
+            v["sigma_A_csv"] = [mc[1], mc[2]] if mc else None
     return v
 
 
 def vrows_used(release: str, journal: Iterable[str]) -> dict[str, Any]:
     """The journal lines the sigma of a release rests on (registration п. 4, as amended 27.11 by item 492): none for
-    the first release (sigma fixed); else the first V1 and V2 lines there are, and the first sigma_A line when both
-    pass. The proof checks each of them against the registered commands of п. 10 (:func:`vrows_check`)."""
+    the first release (sigma fixed) and none while a V1 or V2 line is missing (the release is «no sigma_A» by
+    :func:`sigma_for`); else the first V1 and V2 lines, and the first sigma_A line (with the CSV it names, ``sigma_A_csv``)
+    when both pass. The proof checks each of them against the registered commands of п. 10 (:func:`vrows_check`)."""
     if release <= FIRST_RELEASE:
         return {}
     v = journal_vrows(journal)
-    used = {k: v[k] for k in ("V1", "V2") if v[k] is not None}
-    return {**used, "sigma_A": v["sigma_A"]} if v["V1"] == v["V2"] == "pass" and v["sigma_A"] is not None else used
+    if v["V1"] is None or v["V2"] is None:
+        return {}
+    used = {"V1": v["V1"], "V2": v["V2"]}
+    if v["V1"] == v["V2"] == "pass" and v["sigma_A"] is not None:
+        used |= {"sigma_A": v["sigma_A"], "sigma_A_csv": v["sigma_A_csv"]}
+    return used
 
 
 def journal_sha(card: str, release: str, stage: str = "T-3") -> tuple[str | None, str | None]:
@@ -1511,24 +1534,37 @@ V_CALL_SECONDS = 600  # one command of п. 10 in the proof; a call still running
 # The ends of a vcheck call that are verdicts of the data (review C of item 492, blocker 2): 'V pass' with exit 0, and
 # with exit 1 a 'V fail' reason of vintage_why on two copies read, a copy whose stored bytes are not JSON, or a check
 # that raised on the structure of the copies. Any other end (another reason, an exception that a failing environment
-# can raise, a crash, a kill, a timeout, no output) is no verdict: the line is «not recomputed».
+# can raise, a crash, a kill, a timeout, no output) is no verdict: the line is «not recomputed». Stored bytes that are
+# not UTF-8 are the data too, as bytes that are not JSON (review C of item 492, N1, the mirror case: S is pinned by its
+# sha256, so only the bytes of a database row can end so).
 V_DATA_FAIL = re.compile(
-    r"V fail: (same stamp|no shared points .+|overwritten .+|no step .+|cannot read a copy \(JSONDecodeError: .*"
+    r"V fail: (same stamp|no shared points .+|overwritten .+|no step .+|cannot read a copy \((JSONDecodeError|UnicodeDecodeError): .*"
     r"|check raised (KeyError|IndexError|TypeError|ValueError|AttributeError|ZeroDivisionError): .*)"
 )
-SIGMA_LINE = re.compile(r"nowcast .+ fred CPIAUCNS_\d{8}\.csv before (\S+): n (\d+) \(.*\), left out \d+, sigma_A (\S+)")
+SIGMA_LINE = re.compile(r"nowcast .+ fred CPIAUCNS_(\d{8})\.csv before (\S+): n (\d+) \(.*\), left out \d+, sigma_A (\S+)")
 V_KINDS = ("year", "month")
+V_LINES = ("V1", "V2", "sigma_A")
+# --stage vrows (steps 485, 488): not before 21:05 UTC of the newest row a line reads (the row of a day is final after
+# 21:00 UTC, registration п. 5); a run before would read a row still being written, or no row yet («NO ROW» is a verdict
+# of the data), and its line would later be «mismatch» (review C of item 492, the check of the whole path)
+V_FROM = {"V1": datetime(2026, 12, 3, 21, 5, tzinfo=UTC), "V2": datetime(2026, 12, 11, 21, 5, tzinfo=UTC),
+          "sigma_A": datetime(2026, 12, 11, 21, 5, tzinfo=UTC)}  # fmt: skip
+FRED_DIR = f"{DOCS_DIR}/fred"  # the FRED CSV of a sigma_A line, saved by step 488 (review C of item 492, N2)
 
 
 def vrows_repro(
-    used: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None
-) -> tuple[dict[str, Any], dict[str, str]]:
-    """The registered commands of п. 10, run by the step-0 script of the tree of M0 on the rows of ``db`` in a new
-    directory of this run (exports, outputs, the FRED cache): ``(got, why)``. ``got``: the verdicts of the data, V1 / V2
-    'pass' (both vcheck calls 'V pass') or 'fail' (a call failed on the data: no row, «NOT exported», a 'V fail' of
-    :data:`V_DATA_FAIL`), sigma_A the number the sigma command printed (n > 0). ``why``: the lines no command decided,
-    each with the reason (the row could not be read, S is not the registered bytes, a call crashed, was killed or timed
-    out, FRED gave no level): no verdict, the proof is run again (review C of item 492, blockers 1, 2)."""
+    used: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None,
+    csv: tuple[str, bytes] | None = None,
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:  # fmt: skip
+    """The registered commands of п. 10, run by the step-0 script of ``tree`` (the tree of M0; the clone for --stage
+    vrows) on the rows of ``db`` in a new directory of this run (exports, outputs, the FRED cache): ``(got, why,
+    notes)``. ``got``: the verdicts of the data, V1 / V2 'pass' (both vcheck calls 'V pass') or 'fail' (a call failed
+    on the data: no row, «NOT exported», a 'V fail' of :data:`V_DATA_FAIL`), sigma_A the number the sigma command
+    printed (n > 0). ``why``: the lines no command decided, each with the reason (the row could not be read, S is not
+    the registered bytes, a call crashed, was killed or timed out, FRED gave no level): no verdict, run again (review C
+    of item 492, blockers 1, 2). ``notes``: V1 / V2 the end of each kind ('year: …; month: …'), sigma_A {'text', 'n',
+    'csv' (path of the CSV it read), 'nowcast_sha256'}. ``csv`` = (YYYYMMDD, bytes): the sigma command reads these
+    bytes with ``--vintage`` and asks no network (the proof; review C of item 492, N2); None: today's CSV from FRED."""
     from verify_pm_cpi_step0 import V1_OLDER, v1_older_why
 
     tmp.mkdir(parents=True, exist_ok=True)
@@ -1547,14 +1583,17 @@ def vrows_repro(
 
     # each file of a pair: True (exported), False (no row, «NOT exported»: data, п. 4), or why it is not known
     files: dict[str, bool | str] = {}
+    absent: dict[str, str] = {}  # the line of the row command that made a file False
     days = ([V_DAYS[0]] if "V1" in used else []) + (list(V_DAYS[1:]) if "V2" in used or "sigma_A" in used else [])
     for d in days:
         rc, text = call(f"row_{d}", "row", "--day", d, "--db", str(db), "--export", str(rows))
         lines = text.splitlines()
         for k in V_KINDS:
             p = rows / f"{d}_nowcast_{k}.json"
-            if f"NO ROW for {d} in {db}" in lines or any(x.startswith(f"  NOT exported {p.name}: ") for x in lines):
+            ne = next((x.strip() for x in lines if x.startswith(f"  NOT exported {p.name}: ")), None)
+            if f"NO ROW for {d} in {db}" in lines or ne:
                 files[str(p)] = False
+                absent[str(p)] = ne or f"NO ROW for {d}"
             elif any(x.startswith(f"  exported {p} (") for x in lines) and p.is_file():
                 files[str(p)] = True
             else:
@@ -1567,14 +1606,17 @@ def vrows_repro(
              "V2": [(nc(V_DAYS[1], k), nc(V_DAYS[2], k), False) for k in V_KINDS]}  # fmt: skip
     got: dict[str, Any] = {}
     why: dict[str, str] = {}
+    notes: dict[str, Any] = {}
     for v in ("V1", "V2"):
         if v not in used:
             continue
         ends: list[str] = []
+        kinds: list[str] = []
         for i, (old, new, step) in enumerate(pairs[v]):
             st = [files[old], files[new]]
             if any(s is False for s in st):
                 ends.append("fail")  # п. 4: no row or «NOT exported» fails the check, no other file is taken
+                kinds.append(f"{V_KINDS[i]}: " + "; ".join(absent[x] for x in (old, new) if files[x] is False))
             elif any(isinstance(s, str) for s in st):
                 ends.append(next(s for s in st if isinstance(s, str)))
             else:
@@ -1582,60 +1624,164 @@ def vrows_repro(
                 last = (text.splitlines() or [""])[-1].rstrip()
                 ok, bad = last == "V pass" and rc == 0, rc == 1 and V_DATA_FAIL.fullmatch(last) is not None
                 ends.append("pass" if ok else "fail" if bad else f"vcheck {i}: {last[:120] or 'no output'} (exit {rc})")
+                kinds.append(f"{V_KINDS[i]}: {last[:200]}")
         if "fail" in ends:
             got[v] = "fail"
         elif all(e == "pass" for e in ends):
             got[v] = "pass"
         else:
             why[v] = "; ".join(e for e in ends if e not in ("pass", "fail"))
+        notes[v] = "; ".join(kinds)
     if "sigma_A" in used:
         src = files[nc(V_DAYS[2], "year")]
         if src is True:
-            rc, text = call("sigma", "sigma", "--against", nc(V_DAYS[2], "year"), "--before", SIGMA_BEFORE)
+            fred = cache / "cleveland" / "fred"
+            vintage: list[str] = []
+            if csv is not None:  # the CSV the line names, never today's FRED (review C of item 492, N2)
+                fred.mkdir(parents=True, exist_ok=True)
+                (fred / f"CPIAUCNS_{csv[0]}.csv").write_bytes(csv[1])
+                vintage = ["--vintage", csv[0]]
+            rc, text = call("sigma", "sigma", "--against", nc(V_DAYS[2], "year"), "--before", SIGMA_BEFORE, *vintage)
             last = (text.splitlines() or [""])[-1].rstrip()
             m = SIGMA_LINE.fullmatch(last)
-            if rc == 0 and m and m[1] == SIGMA_BEFORE and int(m[2]) > 0 and re.fullmatch(r"\d+\.\d+", m[3]):
-                got["sigma_A"] = float(m[3])
+            if (rc == 0 and m and m[2] == SIGMA_BEFORE and int(m[3]) > 0 and re.fullmatch(r"\d+\.\d+", m[4])
+                    and (csv is None or m[1] == csv[0])):  # fmt: skip
+                got["sigma_A"] = float(m[4])
+                notes["sigma_A"] = {"text": m[4], "n": int(m[3]), "csv": str(fred / f"CPIAUCNS_{m[1]}.csv"),
+                                    "nowcast_sha256": hashlib.sha256(Path(nc(V_DAYS[2], "year")).read_bytes()).hexdigest()}  # fmt: skip
             else:  # n 0 / 'sigma_A None' (FRED gave no level, e.g. an HTML page), a failed request, a crash: no verdict
                 why["sigma_A"] = f"sigma: {last[-120:] or 'no output'} (exit {rc})"
         else:
             why["sigma_A"] = f"sigma: no nowcast_year of row {V_DAYS[2]}" + (f" ({src})" if isinstance(src, str) else "")
-    return got, why
+    return got, why, notes
 
 
-def vrows_check(rebuilt: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None) -> list[str]:
+def vrows_check(
+    rebuilt: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None, ref: str = DEFAULT_REF
+) -> list[str]:
     """Registration п. 4, as amended 27.11 by item 492 (review C of item 484, R2): every V1 / V2 / sigma_A line of the
     journal in M0 the sigma of the release rests on (``vrows`` of the rebuild answer: :func:`vrows_used` by the code of
     M0) must be what the commands of п. 10 give on the same rows (V: the verdict; sigma_A: the number, and the line has
     at most 4 decimals, as the command prints it), else «mismatch». A line no command decided (:func:`vrows_repro`,
     ``why``) gives no verdict: ``not recomputed (...)``, never a pass; a mismatch of another line still stands. No
-    ``vrows`` in the answer (M0 before item 492): the check does not apply (п. 9; review C of item 490, blocker 2)."""
+    ``vrows`` in the answer (M0 before item 492): the check does not apply (п. 9; review C of item 490, blocker 2).
+    sigma_A (review C of item 492, N2): the sigma command reads the CSV the line names, ``FRED_DIR/CPIAUCNS_<day>.csv``
+    of ``ref``, with ``--vintage`` and no network. A line naming no CSV sha256, or a CSV of ``ref`` with another sha256,
+    is «mismatch» (nothing a later run can change); no such file in ``ref`` (or git failing) is «not recomputed»."""
     if "vrows" not in rebuilt:
         say("  V / sigma_A lines: not applicable, M0 before item 492")
         return []
     used = rebuilt["vrows"]
     real = lambda x: isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)  # noqa: E731
-    if not isinstance(used, Mapping) or not all(
-        k in ("V1", "V2") and x in ("pass", "fail") or k == "sigma_A" and real(x) for k, x in used.items()
+    named = lambda x: x is None or (isinstance(x, list) and len(x) == 2 and all(isinstance(s, str) for s in x)  # noqa: E731
+                                    and bool(re.fullmatch(r"\d{8}", x[0])) and bool(re.fullmatch(r"[0-9a-f]{64}", x[1])))  # fmt: skip
+    if (
+        not isinstance(used, Mapping)
+        or ("sigma_A" in used) != ("sigma_A_csv" in used)
+        or not all(
+            k in ("V1", "V2") and x in ("pass", "fail") or k == "sigma_A" and real(x) or k == "sigma_A_csv" and named(x)
+            for k, x in used.items()
+        )
     ):
         say("  V / sigma_A lines: M0 gives no line map")
         return ["mismatch (V / sigma_A lines: M0 gives no line map)"]
     if not used:
         say("  V / sigma_A lines: none used")
         return []
-    got, why = vrows_repro(used, tree, repo, db, tmp, env)
+    lines = {k: used[k] for k in V_LINES if k in used}
+    pre: dict[str, str] = {}  # sigma_A lines its CSV decides: mismatch, no command is run
+    pre_why: dict[str, str] = {}
+    csv = None
+    if "sigma_A" in lines:
+        c = used["sigma_A_csv"]
+        path = f"{FRED_DIR}/CPIAUCNS_{c[0]}.csv" if c else ""
+        r = git(repo, "show", f"{ref}:{path}", binary=True, check=False) if c else None
+        if c is None:
+            pre["sigma_A"] = "the line names no CSV sha256"
+        elif r is None or r.returncode != 0:
+            pre_why["sigma_A"] = f"no {path} in {ref}"
+        elif hashlib.sha256(r.stdout).hexdigest() != c[1]:
+            pre["sigma_A"] = f"{path} of {ref} has sha256 {hashlib.sha256(r.stdout).hexdigest()[:12]}…, not the line's"
+        else:
+            csv = (c[0], r.stdout)
+    run = {k: x for k, x in lines.items() if k not in pre and k not in pre_why}
+    got, why, _ = vrows_repro(run, tree, repo, db, tmp, env, csv) if run else ({}, {}, {})
+    why = {**why, **pre_why}
     say("  V / sigma_A lines of M0 vs the commands of п. 10: "
-        + " · ".join(f"{k} {used[k]} → {got[k] if k in got else 'not recomputed: ' + why[k]}" for k in used))  # fmt: skip
+        + " · ".join(f"{k} {lines[k]} → " + (str(got[k]) if k in got else f"mismatch: {pre[k]}" if k in pre else f"not recomputed: {why[k]}")
+                     for k in lines))  # fmt: skip
     bad = [k for k in ("V1", "V2") if k in got and got[k] != used[k]]
     sig = used.get("sigma_A")
     # review C 492, finding 8: sigma_for takes the line's number as it is, so it must be the command's 4-place number
-    if sig is not None and (round(sig, 4) != sig or ("sigma_A" in got and got["sigma_A"] != sig)):
+    if sig is not None and ("sigma_A" in pre or round(sig, 4) != sig or ("sigma_A" in got and got["sigma_A"] != sig)):
         bad.append("sigma_A")
     if bad:
         return [f"mismatch (V / sigma_A lines: {', '.join(bad)})"]
     if why:
         return [f"not recomputed (V / sigma_A lines: {'; '.join(f'{k}: {w}' for k, w in why.items())[:300]}; run the proof again)"]
     return []
+
+
+VROWS_WRITE = 0  # --stage vrows: a verdict of the data; write the printed journal line (and commit the saved CSV)
+VROWS_NOTHING = 3  # any other end: write nothing; the last line says whether and when to run again
+
+
+def vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, tmp: Path, env: Mapping[str, str] | None = None) -> int:
+    """``--stage vrows --line V1 | V2 | sigma_A`` (steps 485, 488; review C of item 492, N1, N2): the commands of п. 10
+    by :func:`vrows_repro`, the classifier of the proof, run by the step-0 script of ``tree`` on the rows of ``db``
+    (read-only). :data:`VROWS_WRITE` only for a verdict of the data: the journal line is printed after
+    :data:`JOURNAL_NOTE`, and for sigma_A the FRED CSV it read is saved as ``FRED_DIR/CPIAUCNS_<day>.csv`` of ``repo``
+    (created with 'x'; the same bytes already there are kept) and named in the line with its sha256. Any other end —
+    before :data:`V_FROM`, a first line of that kind already in the card of ``repo``, sigma_A while the card's first V1
+    / V2 lines are not both 'pass', a line no command decided, any exception — is :data:`VROWS_NOTHING` with the last
+    line '<line>: write nothing …'. Writes no forward record and no other file."""
+    try:
+        return _vrows_stage(line, now, repo=repo, tree=tree, db=db, tmp=tmp, env=env)
+    except Exception as e:  # noqa: BLE001 - never a line on an exception
+        say(f"{line}: write nothing: not recomputed, run again (raised {type(e).__name__}: {str(e)[:200]})")
+        return VROWS_NOTHING
+
+
+def _vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, tmp: Path, env: Mapping[str, str] | None) -> int:
+    say(f"{line} · commands of п. 10 by {tree} · db {db} · at {now.isoformat(timespec='seconds')}")
+    if now < V_FROM[line]:
+        say(
+            f"{line}: write nothing: not before {V_FROM[line]:%Y-%m-%d %H:%M} UTC (the rows it reads are final after 21:00 UTC); run again then"
+        )
+        return VROWS_NOTHING
+    card = journal_vrows(journal_lines((repo / CARD).read_text(encoding="utf-8")))
+    if card[line] is not None:
+        say(f"{line}: write nothing: the card already has a {line} line ({card[line]}); the first line counts")
+        return VROWS_NOTHING
+    if line == "sigma_A" and not card["V1"] == card["V2"] == "pass":
+        later = "; run again once both lines are in the card" if None in (card["V1"], card["V2"]) else "; σ is 0.164 (п. 4 (б))"
+        say(f"{line}: write nothing: the card's first V1 / V2 lines are {card['V1']} / {card['V2']}, sigma_A is written only "
+            f"when both are pass{later}")  # fmt: skip
+        return VROWS_NOTHING
+    got, why, notes = vrows_repro({line: None}, tree, repo, db, tmp, env)
+    if line not in got:
+        say(f"{line}: write nothing: not recomputed, run again ({why.get(line, 'no verdict')[:300]})")
+        return VROWS_NOTHING
+    if line == "sigma_A":
+        n = notes["sigma_A"]
+        src = Path(n["csv"])
+        data = src.read_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+        dest = repo / FRED_DIR / src.name
+        if dest.exists() and dest.read_bytes() != data:
+            say(f"{line}: write nothing: not recomputed, run again the next UTC day ({dest} has other bytes: FRED changed today)")
+            return VROWS_NOTHING
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("xb") as fh:
+                fh.write(data)
+        say(f"sigma_A: verdict of the data {n['text']} (n {n['n']}); FRED CSV saved as {dest} (commit it with the line)")
+        text = f"sigma_A · {n['text']} · n {n['n']} · sha256 nowcast {n['nowcast_sha256']} · CSV {src.name} sha256 {sha}"
+    else:
+        say(f"{line}: verdict of the data {got[line]}")
+        text = f"{line} · pass · {notes[line]}" if got[line] == "pass" else f"{line} · fail: {notes[line]}"
+    journal_line(text)
+    return VROWS_WRITE
 
 
 def proof(release: str, *, repo: Path, ref: str, db: Path, root: Path, tmp: Path, env: Mapping[str, str] | None = None) -> bool:
@@ -1756,7 +1902,7 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
         sb = f"unknown ({type(e).__name__}; descriptive)"
     say(f"  set B: {sb}")
     try:  # item 492; review C 492, finding 4: an exception here leaves the other reasons of the proof as they are
-        vf = vrows_check(rebuilt, tree, repo, db, tmp, env) if rebuilt is not None else []
+        vf = vrows_check(rebuilt, tree, repo, db, tmp, env, ref) if rebuilt is not None else []
     except Exception as e:  # noqa: BLE001 - no verdict on the lines, never a pass
         say(f"  V / sigma_A lines: raised {type(e).__name__}")
         vf = [f"not recomputed (V / sigma_A lines: raised {type(e).__name__}: {str(e)[:200]}; run the proof again)"]
@@ -1834,8 +1980,9 @@ def inner(argv: list[str]) -> int:
 def main() -> None:
     global _OUT
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--stage", required=True, choices=[*WRITE_STAGES, RESULT, "proof"])
-    ap.add_argument("--release", required=True, help="ISO day of the BLS release, e.g. 2026-12-10")
+    ap.add_argument("--stage", required=True, choices=[*WRITE_STAGES, RESULT, "proof", "vrows"])
+    ap.add_argument("--release", help="ISO day of the BLS release, e.g. 2026-12-10 (every stage but vrows)")
+    ap.add_argument("--line", choices=V_LINES, help="vrows: the journal line of step 485 (V1) or 488 (V2, then sigma_A)")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="collector database (opened read-only)")
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="stage files: <root>/<release>/<stage>.json")
     ap.add_argument("--docs", type=Path, default=REPO / DOCS_DIR, help="the clone's copies: <docs>/<release>/<stage>.json")
@@ -1844,12 +1991,21 @@ def main() -> None:
     ap.add_argument("--tmp", type=Path, default=DEFAULT_TMP)
     ap.add_argument("--out", type=Path, help="also append the output to this file")
     a = ap.parse_args()
-    date.fromisoformat(a.release)
+    if a.stage == "vrows":
+        if a.line is None or a.release is not None:
+            ap.error("--stage vrows takes --line and no --release")
+    elif a.release is None:
+        ap.error("--release is required")
+    else:
+        date.fromisoformat(a.release)
     fh = None
     if a.out is not None:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         fh = _OUT = a.out.open("a")
     try:
+        if a.stage == "vrows":  # steps 485, 488 (item 492, review C N1): the exit code says whether to write the line
+            say(f"# pm_cpi_forward --stage vrows --line {a.line} at {datetime.now(UTC).isoformat(timespec='seconds')}")
+            raise SystemExit(vrows_stage(a.line, datetime.now(UTC), repo=a.repo, tree=a.repo, db=a.db, tmp=a.tmp))
         say(f"# pm_cpi_forward --stage {a.stage} --release {a.release} at {datetime.now(UTC).isoformat(timespec='seconds')}")
         if a.stage == "proof":
             ok = proof(a.release, repo=a.repo, ref=a.ref, db=a.db, root=a.root, tmp=a.tmp)

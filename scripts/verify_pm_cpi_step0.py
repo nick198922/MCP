@@ -1149,6 +1149,27 @@ def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
         say(f"NO ROW for {day} in {db}")
         return False
     r = row
+    if export is not None:
+        # first, before any descriptive line (item 492, review C N1, the mirror case: a row whose books do not read
+        # must not stop the export); a stored blob that does not decompress is «NOT exported», as a file not stored
+        export.mkdir(parents=True, exist_ok=True)
+        for kind in ("year", "month"):
+            # a file kept as a reference was resolved by read_rows: its bytes (from the source row, same sha256) are
+            # written under this row's day, so the commands of the registration always name <day>_nowcast_<kind>.json
+            p = export / f"{day}_nowcast_{kind}.json"
+            if r.get(f"cf_{kind}_z") is not None:
+                try:
+                    data = zlib.decompress(r[f"cf_{kind}_z"])
+                except zlib.error as e:
+                    say(f"  NOT exported {p.name}: the stored bytes do not decompress ({type(e).__name__})")
+                    continue
+                p.write_bytes(data)
+                src = r.get(f"_{kind}_from")
+                say(f"  exported {p} (sha256 {r.get(f'cf_{kind}_sha')}" + (f", bytes of row {src})" if src else ")"))
+            else:
+                ref = r.get(f"cf_{kind}_ref")
+                why = f"reference to {ref} not resolved (no such stored file with that sha256)" if ref else "no file in the row"
+                say(f"  NOT exported {p.name}: {why}")
     say(
         f"row {day}: status {r['status']}, late {r['late']}, created {_hm(r['created_ts'])}, updated {_hm(r['updated_ts'])};"
         f" nowcast attempts {r['cf_tries']} (downloads {r['cf_fetches']}), books attempts {r['books_tries']}"
@@ -1192,20 +1213,6 @@ def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
             f" early {len(d.get('early') or [])} books"
         )
     say(f"  missing (latest attempt): {r['missing'] or 'none'}")
-    if export is not None:
-        export.mkdir(parents=True, exist_ok=True)
-        for kind in ("year", "month"):
-            # a file kept as a reference was resolved by read_rows: its bytes (from the source row, same sha256) are
-            # written under this row's day, so the commands of the registration always name <day>_nowcast_<kind>.json
-            p = export / f"{day}_nowcast_{kind}.json"
-            if r.get(f"cf_{kind}_z") is not None:
-                p.write_bytes(zlib.decompress(r[f"cf_{kind}_z"]))
-                src = r.get(f"_{kind}_from")
-                say(f"  exported {p} (sha256 {r.get(f'cf_{kind}_sha')}" + (f", bytes of row {src})" if src else ")"))
-            else:
-                ref = r.get(f"cf_{kind}_ref")
-                why = f"reference to {ref} not resolved (no such stored file with that sha256)" if ref else "no file in the row"
-                say(f"  NOT exported {p.name}: {why}")
     if prev is None:
         say("  no earlier row with a nowcast copy: nothing to compare")
         return True
@@ -1258,6 +1265,9 @@ def main() -> None:
     ap.add_argument(
         "--before",
         help="sigma: ISO day; only targets whose release (the 'CPI <Mon>' line) is before it enter (registration: 2027-01-01)",
+    )
+    ap.add_argument(
+        "--vintage", help="sigma: YYYYMMDD of a CPIAUCNS CSV already in <cache>/cleveland/fred/ (read, never fetched; item 492)"
     )
     ap.add_argument("--step-target", help="vcheck: target 'YYYY-M' whose headline must have moved after the older stamp (V1: 2026-11)")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="row: collector database (opened read-only)")
@@ -1332,7 +1342,9 @@ def main() -> None:
         elif a.stage == "sigma":
             if not (a.against and a.before):
                 raise SystemExit("sigma needs --against <nowcast_year.json of row 11.12 (V2)> and --before 2027-01-01")
-            stage_sigma(a.cache_dir, a.against, a.before)
+            if a.vintage is not None and not re.fullmatch(r"\d{8}", a.vintage):
+                raise SystemExit("sigma: --vintage is YYYYMMDD")
+            stage_sigma(a.cache_dir, a.against, a.before, a.vintage)
 
 
 if __name__ == "__main__":

@@ -752,11 +752,11 @@ def stage_sigma(cache: Path, nowcast: Path, before: str, vintage: str | None = N
             raise SystemExit(f"sigma: no cached CPI vintage {p.name}")
         asyncio.run(fetch_fred(p, "CPIAUCNS"))
     levels = {}
-    for line in p.read_text().splitlines()[1:]:
+    for line in p.read_text(encoding="utf-8").splitlines()[1:]:  # UTF-8, not the locale's (item 492, third review C, Т4)
         parts = line.split(",")
         if len(parts) >= 2 and parts[1] not in ("", "."):
             levels[parts[0][:7]] = parts[1]
-    rows = archive_errors(json.loads(nowcast.read_text()), yoy_published(levels), before)
+    rows = archive_errors(json.loads(nowcast.read_text(encoding="utf-8")), yoy_published(levels), before)
     sd, n = sigma_archive(rows)
     for r in rows:
         say(f"  {r['target']:7} release {r['release']} point {r['day']} N {r['nowcast']} A {r['actual']} "
@@ -883,8 +883,8 @@ def compare_capture(old_path: Path, new_path: Path, series_list: tuple[str, ...]
     """Vintage check between two dated copies of one Cleveland file (a Wayback capture or an earlier snapshot as
     `old_path`, a later fetch as `new_path`): all shared points per series, and separately the `recent` newest
     target months of the old copy (the ones whose daily points matter for the next release)."""
-    old = json.loads(old_path.read_text())
-    new = json.loads(new_path.read_text())
+    old = json.loads(old_path.read_text(encoding="utf-8"))
+    new = json.loads(new_path.read_text(encoding="utf-8"))
     so, sn = old[-1]["chart"].get("_comment"), new[-1]["chart"].get("_comment")
     say(f"old {old_path} (stamp {so}) vs new {new_path} (stamp {sn})")
     if so == sn:
@@ -903,8 +903,8 @@ def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None)
     (compare_capture), then one verdict line from analytics.pm_cpi.vintage_why: 'V pass' or 'V fail: <reason>'. A
     missing or unreadable file is a fail, never a skipped check, and so is any exception of the comparison or of the
     check (review B 481, third round, finding 7): the last line is always 'V pass' or 'V fail: ...'."""
-    try:
-        old, new = json.loads(old_path.read_text()), json.loads(new_path.read_text())
+    try:  # UTF-8, not the locale's: a UnicodeDecodeError is a verdict of the data (item 492, third review C, Т4)
+        old, new = json.loads(old_path.read_text(encoding="utf-8")), json.loads(new_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         say(f"V fail: cannot read a copy ({type(e).__name__}: {e})")
         return False
@@ -1287,7 +1287,7 @@ def main() -> None:
     a = ap.parse_args()
     a.cache_dir.mkdir(parents=True, exist_ok=True)
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    with a.out.open("a") as fh:
+    with a.out.open("a", encoding="utf-8") as fh:  # read back as UTF-8 by the proof (item 492, third review C, Т4)
         _OUT = fh
         say(f"# stage {a.stage} at {datetime.now(UTC).isoformat(timespec='seconds')}")
         if a.stage == "discover":

@@ -693,12 +693,15 @@ def t3_record(
     release: str,
     card_m0: str,
     answers: Callable[[list[str], list[str]], tuple[Mapping[str, Any], Mapping[str, Any], list[Any]]],
+    sigma: tuple[float | None, str | None, str | None] | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     """(the ``REBUILT`` fields of a T-3 record, market ids asked, event ids asked) from the row of day T-3, the card's
     text in M0 (its «Форвард-журнал» gives sigma after the first release) and ``answers(mids, eids)`` -> (gamma,
-    gamma_events, missing): the live requests at D, the file's recorded answers in the proof."""
+    gamma_events, missing): the live requests at D, the file's recorded answers in the proof. ``sigma``: given only by
+    :func:`fallback_record` (set B), else :func:`sigma_for` of the card."""
     rwhy, events, mids = t3_prepare(row, release)
-    sigma = sigma_for(release, [] if release <= FIRST_RELEASE else journal_lines(card_m0))
+    if sigma is None:
+        sigma = sigma_for(release, [] if release <= FIRST_RELEASE else journal_lines(card_m0))
     mids, eids = t3_asks(rwhy, sigma, mids), event_ids(events)
     gamma, gamma_events, missing = answers(mids, eids)
     rec: dict[str, Any] = {"schema": 1, "idea": IDEA, "release": release, "stage": "T-3",
@@ -736,8 +739,16 @@ def fallback_record(row: Mapping[str, Any] | None, release: str, card_m0: str) -
     release of :func:`b_why` always; run by the code of M0 (``--fallback`` of its tree). ``card_m0`` gives only the
     sigma: a «no sigma_A» release of set B is rebuilt with ``--m0 Mσ``, Mσ the first first-parent commit of main
     whose card gives that release a sigma by ``sigma_for`` of the code of that release's M0 (registration п. 8 (1), as
-    amended 27.11 by item 492)."""
-    out, _, _ = t3_record(row, release, card_m0, lambda _m, _e: ({}, {}, []))
+    amended 27.11 by item 492). With no Mσ and a 'V1 · fail' or 'V2 · fail' line in ``card_m0`` (the other V line not
+    there), set B takes 0.164 as the merged п. 4 (б) / п. 8 (1) say (third review C of item 492, Т2): ``sigma_for``
+    gives such a release «no sigma_A», and so does the T-3 record and its rebuild; only set B takes 0.164."""
+    sigma = None
+    if release > FIRST_RELEASE:
+        journal = journal_lines(card_m0)
+        v = journal_vrows(journal)
+        if sigma_for(release, journal)[2] == "no sigma_A" and "fail" in (v["V1"], v["V2"]):
+            sigma = (SD_KZ, SD_KZ_SOURCE + " (set B: a vintage check failed, the other V line missing; п. 8 (1))", None)
+    out, _, _ = t3_record(row, release, card_m0, lambda _m, _e: ({}, {}, []), sigma)
     return {k: out.get(k) for k in REBUILT}
 
 
@@ -1544,11 +1555,15 @@ V_DATA_FAIL = re.compile(
 SIGMA_LINE = re.compile(r"nowcast .+ fred CPIAUCNS_(\d{8})\.csv before (\S+): n (\d+) \(.*\), left out \d+, sigma_A (\S+)")
 V_KINDS = ("year", "month")
 V_LINES = ("V1", "V2", "sigma_A")
-# --stage vrows (steps 485, 488): not before 21:05 UTC of the newest row a line reads (the row of a day is final after
-# 21:00 UTC, registration п. 5); a run before would read a row still being written, or no row yet («NO ROW» is a verdict
-# of the data), and its line would later be «mismatch» (review C of item 492, the check of the whole path)
-V_FROM = {"V1": datetime(2026, 12, 3, 21, 5, tzinfo=UTC), "V2": datetime(2026, 12, 11, 21, 5, tzinfo=UTC),
-          "sigma_A": datetime(2026, 12, 11, 21, 5, tzinfo=UTC)}  # fmt: skip
+# --stage vrows (steps 485, 488): not before 22:00 UTC of the newest row a line reads. The row of a day is final after
+# 21:00 UTC (registration п. 5), but a collector tick that started before 21:00 writes its row only at its end, and a row
+# not written yet shows in no updated_ts; a run before would read a row still being written, or no row yet («NO ROW» is
+# a verdict of the data), and its line would later be «mismatch» (review C of item 492, the check of the whole path).
+# The tick has no wall-clock bound (no timeout in the scheduler, httpx timeouts are per phase); one in which every
+# request uses up its retries (2 nowcast files x 3 x 60 s, 5 Gamma listings and /books x 3 x 10 s, up to 20 /markets x 3 x
+# 10 s) takes about 20 min, so 22:00 leaves three times that (third review C of item 492, Т3; stricter than 21:05)
+V_FROM = {"V1": datetime(2026, 12, 3, 22, 0, tzinfo=UTC), "V2": datetime(2026, 12, 11, 22, 0, tzinfo=UTC),
+          "sigma_A": datetime(2026, 12, 11, 22, 0, tzinfo=UTC)}  # fmt: skip
 FRED_DIR = f"{DOCS_DIR}/fred"  # the FRED CSV of a sigma_A line, saved by step 488 (review C of item 492, N2)
 
 
@@ -1579,7 +1594,7 @@ def vrows_repro(
                                       boot=VBOOT, timeout=V_CALL_SECONDS).returncode  # fmt: skip
         except subprocess.TimeoutExpired:
             rc = None
-        return rc, out.read_text(errors="replace") if out.is_file() else ""
+        return rc, out.read_text(encoding="utf-8", errors="replace") if out.is_file() else ""  # Т4: not the locale's
 
     # each file of a pair: True (exported), False (no row, «NOT exported»: data, п. 4), or why it is not known
     files: dict[str, bool | str] = {}
@@ -1724,6 +1739,7 @@ def vrows_check(
 
 VROWS_WRITE = 0  # --stage vrows: a verdict of the data; write the printed journal line (and commit the saved CSV)
 VROWS_NOTHING = 3  # any other end: write nothing; the last line says whether and when to run again
+VROWS_GIT_ADD = "stage the saved CSV with the line (the next line, as is, from the root of the clone):"  # sigma_A only
 
 
 def vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, tmp: Path, env: Mapping[str, str] | None = None) -> int:
@@ -1731,7 +1747,8 @@ def vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, t
     by :func:`vrows_repro`, the classifier of the proof, run by the step-0 script of ``tree`` on the rows of ``db``
     (read-only). :data:`VROWS_WRITE` only for a verdict of the data: the journal line is printed after
     :data:`JOURNAL_NOTE`, and for sigma_A the FRED CSV it read is saved as ``FRED_DIR/CPIAUCNS_<day>.csv`` of ``repo``
-    (created with 'x'; the same bytes already there are kept) and named in the line with its sha256. Any other end —
+    (created with 'x'; the same bytes already there are kept) and named in the line with its sha256; its ``git add``
+    command is printed after :data:`VROWS_GIT_ADD` (third review C of item 492, Т1). Any other end —
     before :data:`V_FROM`, a first line of that kind already in the card of ``repo``, sigma_A while the card's first V1
     / V2 lines are not both 'pass', a line no command decided, any exception — is :data:`VROWS_NOTHING` with the last
     line '<line>: write nothing …'. Writes no forward record and no other file."""
@@ -1746,7 +1763,7 @@ def _vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, 
     say(f"{line} · commands of п. 10 by {tree} · db {db} · at {now.isoformat(timespec='seconds')}")
     if now < V_FROM[line]:
         say(
-            f"{line}: write nothing: not before {V_FROM[line]:%Y-%m-%d %H:%M} UTC (the rows it reads are final after 21:00 UTC); run again then"
+            f"{line}: write nothing: not before {V_FROM[line]:%Y-%m-%d %H:%M} UTC (the rows it reads are final after 21:00 UTC, once a collector tick begun before has ended); run again then"
         )
         return VROWS_NOTHING
     card = journal_vrows(journal_lines((repo / CARD).read_text(encoding="utf-8")))
@@ -1776,6 +1793,9 @@ def _vrows_stage(line: str, now: datetime, *, repo: Path, tree: Path, db: Path, 
             with dest.open("xb") as fh:
                 fh.write(data)
         say(f"sigma_A: verdict of the data {n['text']} (n {n['n']}); FRED CSV saved as {dest} (commit it with the line)")
+        # third review C of item 492, Т1: the CSV must be in the index, else the guard test fails the delivery's make test
+        say(VROWS_GIT_ADD)
+        say(f"git add {FRED_DIR}/{src.name}")
         text = f"sigma_A · {n['text']} · n {n['n']} · sha256 nowcast {n['nowcast_sha256']} · CSV {src.name} sha256 {sha}"
     else:
         say(f"{line}: verdict of the data {got[line]}")
@@ -2001,7 +2021,7 @@ def main() -> None:
     fh = None
     if a.out is not None:
         a.out.parent.mkdir(parents=True, exist_ok=True)
-        fh = _OUT = a.out.open("a")
+        fh = _OUT = a.out.open("a", encoding="utf-8")
     try:
         if a.stage == "vrows":  # steps 485, 488 (item 492, review C N1): the exit code says whether to write the line
             say(f"# pm_cpi_forward --stage vrows --line {a.line} at {datetime.now(UTC).isoformat(timespec='seconds')}")

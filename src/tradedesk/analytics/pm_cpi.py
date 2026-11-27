@@ -27,7 +27,7 @@ import json
 import math
 import re
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from statistics import NormalDist
 from typing import Any
@@ -669,7 +669,7 @@ def row_why(row: Mapping[str, Any] | None, day: str, target: str) -> str | None:
         return "no row"
     if row.get("status") not in ("complete", "stale", "partial"):
         return "status"
-    if row.get("target") != target:
+    if not same_target(row.get("target"), target):
         return "target"
     if not readable(row, "year") or pct(row.get("yoy_headline_pct")) is None:
         return "no yoy nowcast"
@@ -682,6 +682,15 @@ def row_why(row: Mapping[str, Any] | None, day: str, target: str) -> str | None:
     if row.get("status") != "partial" and int(row.get("books_paired") or 0) != 1:
         return "unpaired"
     return None
+
+
+def same_target(a: Any, b: Any) -> bool:
+    """Two target months are the same month whatever the zero padding ('2027-1' as the row and the Cleveland charts
+    write it, '2027-01' as a slug-derived month may be written); an unparseable side is never the same."""
+    try:
+        return target_key(str(a)) == target_key(str(b))
+    except ValueError:
+        return False
 
 
 def book_why(bracket: Mapping[str, Any], since: int | None) -> str | None:
@@ -780,9 +789,132 @@ def sha256_json(obj: Any) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def digest_preimage(row: Mapping[str, Any]) -> dict[str, Any]:
+    """What :func:`row_digest` hashes, as plain JSON: the ``ROW_DIGEST_COLUMNS`` of the row as stored (a missing column
+    is null), each blob as ``{"sha256": <hex of its stored bytes>}``. The stage file keeps it, so the digest can be
+    recomputed from the file alone: ``row_digest(digest_preimage(row)) == row_digest(row)``."""
+    out: dict[str, Any] = {}
+    for c in ROW_DIGEST_COLUMNS:
+        v = row.get(c)
+        out[c] = _jsonable(v) if isinstance(v, bytes | bytearray | memoryview) else v
+    return out
+
+
 def row_digest(row: Mapping[str, Any]) -> str:
-    """Digest of the row columns the decision reads (``ROW_DIGEST_COLUMNS``, as stored; a missing column is null)."""
-    return sha256_json({c: row.get(c) for c in ROW_DIGEST_COLUMNS})
+    """Digest of the row columns the decision reads (``ROW_DIGEST_COLUMNS``, as stored; a missing column is null);
+    a :func:`digest_preimage` gives the same digest as the row it came from."""
+    return sha256_json(digest_preimage(row))
+
+
+# Stage windows (registration п. 5, 7): the scanner writes the file of stage T-d only from STAGE_FROM on day T-d (the
+# day's row is final after LATE_END; a tick started before 21:00 may still write updated_ts a little after it) and,
+# for the decision stage T-3, no later than T3_UNTIL on day T-1 (before the T-1 window of the job opens at 15:30);
+# the result only from RESULT_FROM on the release day. T-7 and T-1 are records from final rows: no end.
+STAGE_DAYS = {"T-7": 7, "T-3": 3, "T-1": 1, "result": 0}
+STAGE_FROM = time(21, 5)
+T3_UNTIL = time(12, 0)
+RESULT_FROM = time(15, 0)
+
+
+def stage_window(stage: str, release: str) -> tuple[datetime, datetime | None]:
+    """(first moment, last moment or None) in UTC at which the scanner may write the file of ``stage`` ('T-7', 'T-3',
+    'T-1', 'result') of the release on ``release`` (ISO day); KeyError for another stage."""
+    d = STAGE_DAYS[stage]
+    rel = date.fromisoformat(release)
+    if stage == "result":
+        return datetime.combine(rel, RESULT_FROM, UTC), None
+    start = datetime.combine(rel - timedelta(days=d), STAGE_FROM, UTC)
+    end = datetime.combine(rel - timedelta(days=1), T3_UNTIL, UTC) if stage == "T-3" else None
+    return start, end
+
+
+def stage_why(stage: str, release: str, now: datetime) -> str | None:
+    """None when the scanner may write the file of ``stage`` at ``now`` (timezone-aware), else why not: 'stage'
+    (unknown stage or release day), 'naive time', 'early' (before :func:`stage_window`), 'late' (after its end). A
+    file created outside the window is not a record: for T-3 the release is a «пропуск T−3»."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        return "naive time"
+    try:
+        start, end = stage_window(stage, release)
+    except (KeyError, ValueError):
+        return "stage"
+    if now < start:
+        return "early"
+    if end is not None and now > end:
+        return "late"
+    return None
+
+
+GITHUB_COMMITTER = ("GitHub", "noreply@github.com")
+
+
+def merge_proof_why(log_text: str, deadline: datetime) -> tuple[str | None, str | None]:
+    """Proof that a stage file reached main in time (registration п. 7), from the output of
+    ``git log origin/main --first-parent --name-status --format='C %H %cI %ce %cn' -- <path>`` (newest first; on the
+    first-parent chain each merge is diffed against the previous main). -> (None, merge sha) when exactly one commit
+    of that chain touches the path, it adds it ('A'), GitHub made it (committer ``GITHUB_COMMITTER``: a PR merge;
+    main takes nothing else, ruleset ``protect-main``) and its committer date is at or before ``deadline``; else
+    (reason, sha or None): 'not merged', 'changed after' (a later commit modified or deleted it), 'not added', 'not a
+    GitHub merge', 'late', 'unreadable'."""
+    commits: list[list[Any]] = []
+    for line in log_text.splitlines():
+        if line.startswith("C "):
+            parts = line.split(" ", 4)
+            if len(parts) < 5:
+                return "unreadable", None
+            commits.append([parts[1], parts[2], parts[3], parts[4].strip(), []])
+        elif line.strip() and commits:
+            commits[-1][4].append(line.split("\t", 1)[0].strip())
+        elif line.strip():
+            return "unreadable", None
+    if not commits:
+        return "not merged", None
+    if len(commits) > 1:
+        return "changed after", commits[-1][0]
+    sha, when, email, name, status = commits[0]
+    if status != ["A"]:
+        return "not added", sha
+    if (name, email) != GITHUB_COMMITTER:
+        return "not a GitHub merge", sha
+    try:
+        t = datetime.fromisoformat(when)
+    except ValueError:
+        return "unreadable", sha
+    if t.tzinfo is None or deadline.tzinfo is None:
+        return "unreadable", sha
+    return (None, sha) if t <= deadline else ("late", sha)
+
+
+def vintage_why(old: Any, new: Any, step_target: str | None = None, series: Iterable[str] = (HEADLINE, CORE)) -> str | None:
+    """Vintage check V1 / V2 (registration п. 4) between two stored copies of one Cleveland nowcast file: None = pass;
+    else the first reason: 'same stamp' (no update in between, or a stamp is unreadable: equal values would prove
+    nothing), 'no shared points <series>', 'overwritten <series> <target> <day>' (a daily point both copies have
+    differs by 1e-9 or more), 'no step <target>' (``step_target`` given and the newer copy has no new value of the
+    headline after the older copy's stamp for that target, :func:`new_points_after`)."""
+    so, sn = file_stamp(old), file_stamp(new)
+    if so is None or sn is None or so == sn:
+        return "same stamp"
+    o, n = _charts(old), _charts(new)
+    for s in series:
+        pairs = 0
+        for t, ch in o.items():
+            if t not in n:
+                continue
+            dn = dict(cf_daily(n[t], s)[1])
+            for d, v in cf_daily(ch, s)[1]:
+                w = dn.get(d)
+                if v is None or w is None:
+                    continue
+                pairs += 1
+                if abs(w - v) >= 1e-9:
+                    return f"overwritten {s} {t} {d}"
+        if pairs == 0:
+            return f"no shared points {s}"
+    if step_target is not None:
+        r = next((x for x in new_points_after(old, new, HEADLINE) if same_target(x["target"], step_target)), None)
+        if r is None or not r["changed"]:
+            return f"no step {step_target}"
+    return None
 
 
 # ------------------------------------------------------------------ archive SD (registration п. 4, after V1 and V2)

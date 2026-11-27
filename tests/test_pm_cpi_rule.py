@@ -10,6 +10,7 @@ import pytest
 
 from tradedesk.analytics.pm_cpi import (
     EDGE_MIN,
+    ROW_DIGEST_COLUMNS,
     SD_ALT_FACTOR,
     SD_KZ,
     STAKE_MAX_USD,
@@ -17,17 +18,23 @@ from tradedesk.analytics.pm_cpi import (
     book_why,
     bracket_prob,
     clv,
+    digest_preimage,
     fallback_stamp,
     fill,
     is_partition,
+    merge_proof_why,
     model_ok,
     parse_bracket,
     row_digest,
     row_why,
     rule_signals,
+    same_target,
     sha256_json,
     sigma_archive,
+    stage_why,
+    stage_window,
     taker_fee,
+    vintage_why,
     yoy_published,
 )
 
@@ -200,6 +207,17 @@ def test_row_why(kw, want):
     assert row_why(_row(**kw), "2026-12-07", "2026-11") == want
 
 
+def test_row_why_target_ignores_zero_padding():
+    # rereview finding 5: the row writes '2027-1' (as prev_target and the Cleveland charts); a slug month may be '2027-01'
+    row = _row(target="2027-1", cf_last_day_year="2027-01-10")
+    assert row_why(row, "2027-01-10", "2027-01") is None
+    assert row_why(row, "2027-01-10", "2027-1") is None
+    assert row_why(row, "2027-01-10", "2027-02") == "target"
+    assert row_why(row, "2027-01-10", "2027") == "target"
+    assert row_why(_row(target=None), "2026-12-07", "2026-11") == "target"
+    assert same_target("2026-11", "2026-11") and not same_target("garbage", "garbage")
+
+
 def test_row_why_without_a_row_and_book_why():
     assert row_why(None, "2026-12-07", "2026-11") == "no row"
     assert book_why({"book": True, "read_ts": 100}, 100) is None
@@ -275,6 +293,137 @@ def test_digests_detect_any_change_and_ignore_key_order():
     assert sha256_json({"a": [1, 2]}) != sha256_json({"a": [2, 1]})
     with pytest.raises(ValueError):
         sha256_json({"x": float("nan")})
+
+
+def test_digest_preimage_reproduces_the_row_digest_from_the_stage_file_alone():
+    # rereview finding 9: T-3.json keeps the preimage (blobs as their sha256), so its row_digest is checkable offline
+    import hashlib
+    import json
+
+    blob = b"\x78\x9c\x00\x01"
+    row = {**_row(), "day": "2026-12-07", "updated_ts": 1, "books": '{"a":1}', "books_depth_z": blob, "extra": 1}
+    pre = digest_preimage(row)
+    assert set(pre) == set(ROW_DIGEST_COLUMNS) and "extra" not in pre
+    assert pre["books_depth_z"] == {"sha256": hashlib.sha256(blob).hexdigest()}
+    assert pre["books_early"] is None  # a missing column is null
+    stored = json.loads(json.dumps(pre))  # as written into and read back from T-3.json
+    assert row_digest(stored) == row_digest(row)
+    assert row_digest({**stored, "updated_ts": 2}) != row_digest(row)
+
+
+R = "2026-12-10"
+
+
+@pytest.mark.parametrize(
+    ("stage", "now", "want"),
+    [("T-3", "2026-12-07T21:04:59+00:00", "early"), ("T-3", "2026-12-07T21:05:00+00:00", None),
+     ("T-3", "2026-12-07T18:00:00+00:00", "early"), ("T-3", "2026-12-09T12:00:00+00:00", None),
+     ("T-3", "2026-12-09T12:00:01+00:00", "late"), ("T-3", "2026-12-09T14:00:00+02:00", None),
+     ("T-3", "2026-12-09T15:30:00+00:00", "late"), ("T-7", "2026-12-03T21:05:00+00:00", None),
+     ("T-7", "2026-12-03T20:00:00+00:00", "early"), ("T-7", "2026-12-20T00:00:00+00:00", None),
+     ("T-1", "2026-12-09T21:05:00+00:00", None), ("T-1", "2026-12-09T16:00:00+00:00", "early"),
+     ("result", "2026-12-10T14:59:00+00:00", "early"), ("result", "2026-12-10T15:00:00+00:00", None),
+     ("T-2", "2026-12-08T22:00:00+00:00", "stage"), ("T-3", "2026-12-07T22:00:00", "naive time")],
+)  # fmt: skip
+def test_stage_window_refuses_a_stage_file_outside_its_window(stage, now, want):
+    # rereview finding 4: fixed instants only (no real clock)
+    from datetime import datetime
+
+    assert stage_why(stage, R, datetime.fromisoformat(now)) == want
+
+
+def test_stage_window_bounds_and_a_bad_release_day():
+    from datetime import UTC, datetime
+
+    assert stage_window("T-3", R) == (datetime(2026, 12, 7, 21, 5, tzinfo=UTC), datetime(2026, 12, 9, 12, 0, tzinfo=UTC))
+    assert stage_window("T-1", R) == (datetime(2026, 12, 9, 21, 5, tzinfo=UTC), None)
+    assert stage_why("T-3", "2026-13-01", datetime(2026, 12, 8, tzinfo=UTC)) == "stage"
+
+
+_PATH = "docs/forward/pm-cpi/2026-12-10/T-3.json"
+
+
+def _log(*commits):
+    out = []
+    for sha, when, status, who in commits:
+        out += [f"C {sha} {when} {who[1]} {who[0]}", "", f"{status}\t{_PATH}"]
+    return "\n".join(out) + "\n"
+
+
+GH = ("GitHub", "noreply@github.com")
+DL = "2026-12-09T12:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("log", "want"),
+    [(_log(("m1", "2026-12-07T22:10:00+00:00", "A", GH)), (None, "m1")),
+     (_log(("m1", "2026-12-09T12:00:00+00:00", "A", GH)), (None, "m1")),
+     (_log(("m1", "2026-12-09T12:00:01+00:00", "A", GH)), ("late", "m1")),
+     (_log(("m1", "2026-12-09T13:00:00+02:00", "A", GH)), (None, "m1")),
+     (_log(("m2", "2026-12-09T22:00:00+00:00", "M", GH), ("m1", "2026-12-07T22:10:00+00:00", "A", GH)),
+      ("changed after", "m1")),
+     (_log(("m2", "2026-12-09T22:00:00+00:00", "D", GH), ("m1", "2026-12-07T22:10:00+00:00", "A", GH)),
+      ("changed after", "m1")),
+     (_log(("m1", "2026-12-07T22:10:00+00:00", "M", GH)), ("not added", "m1")),
+     (_log(("m1", "2026-12-07T22:10:00+00:00", "A", ("Mykola Khanetskyi (agents)", "a@b.c"))),
+      ("not a GitHub merge", "m1")),
+     ("", ("not merged", None)), ("garbage line\n", ("unreadable", None)),
+     (_log(("m1", "not-a-date", "A", GH)), ("unreadable", "m1"))],
+)  # fmt: skip
+def test_merge_proof_needs_one_github_merge_adding_the_file_before_the_deadline(log, want):
+    # rereview finding 1 (coordinator's proof): git log origin/main --first-parent --name-status
+    #   --format='C %H %cI %ce %cn' -- docs/forward/pm-cpi/<release>/T-3.json
+    from datetime import datetime
+
+    assert merge_proof_why(log, datetime.fromisoformat(DL)) == want
+
+
+def test_merge_proof_parses_a_real_git_log_shape():
+    # the shape git prints on this repository (checked on origin/main 27.11): a merge line, a blank line, the status
+    log = f"C 7437142 2026-11-26T23:25:13+00:00 noreply@github.com GitHub\n\nA\t{_PATH}\n"
+    from datetime import datetime
+
+    assert merge_proof_why(log, datetime.fromisoformat(DL)) == (None, "7437142")
+
+
+def _vchart(target, head, core, stamp=None):
+    cats = [{"label": d} for d, _ in head]
+    ch = {"chart": {"subcaption": target}, "categories": [{"category": cats}],
+          "dataset": [{"seriesname": "CPI Inflation", "data": [{"value": v} for _, v in head]},
+                      {"seriesname": "Core CPI Inflation", "data": [{"value": v} for _, v in core]}]}  # fmt: skip
+    if stamp:
+        ch["chart"]["_comment"] = stamp
+    return ch
+
+
+def _copy(stamp, head_nov, core_nov):
+    return [
+        _vchart("2026-10", [("10/20", 3.0), ("10/27", 3.1)], [("10/20", 2.9), ("10/27", 2.9)]),
+        _vchart("2026-11", head_nov, core_nov, stamp),
+    ]
+
+
+OLD = _copy("2026-11-25 00:00", [("11/18", 3.7), ("11/25", 3.79)], [("11/18", 2.87), ("11/25", 2.87)])
+
+
+def test_vintage_check_passes_only_without_overwrites_and_with_a_new_step():
+    # V1 / V2 (registration п. 4): decided by the stored copies alone
+    new = _copy("2026-12-02 00:00", [("11/18", 3.7), ("11/25", 3.79), ("12/02", 3.83)],
+                [("11/18", 2.87), ("11/25", 2.87), ("12/02", 2.87)])  # fmt: skip
+    assert vintage_why(OLD, new, "2026-11") is None
+    assert vintage_why(OLD, new) is None
+    flat = _copy("2026-12-02 00:00", [("11/18", 3.7), ("11/25", 3.79), ("12/02", 3.79)],
+                 [("11/18", 2.87), ("11/25", 2.87), ("12/02", 2.87)])  # fmt: skip
+    assert vintage_why(OLD, flat, "2026-11") == "no step 2026-11"
+    assert vintage_why(OLD, flat) is None  # V2 asks no step
+    over = _copy("2026-12-02 00:00", [("11/18", 3.71), ("11/25", 3.79), ("12/02", 3.83)],
+                 [("11/18", 2.87), ("11/25", 2.87), ("12/02", 2.87)])  # fmt: skip
+    assert vintage_why(OLD, over, "2026-11") == "overwritten CPI Inflation 2026-11 2026-11-18"
+    core_over = _copy("2026-12-02 00:00", [("11/18", 3.7), ("11/25", 3.79)], [("11/18", 2.86), ("11/25", 2.87)])
+    assert vintage_why(OLD, core_over) == "overwritten Core CPI Inflation 2026-11 2026-11-18"
+    assert vintage_why(OLD, OLD) == "same stamp"
+    assert vintage_why(OLD, _copy(None, [("11/18", 3.7)], [("11/18", 2.87)])) == "same stamp"
+    assert vintage_why(OLD, [_vchart("2025-1", [("01/05", 1.0)], [("01/05", 1.0)], "2026-12-02 00:00")]).startswith("no shared points")
 
 
 # ------------------------------------------------------------------------------------------------------ archive SD

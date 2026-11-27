@@ -35,6 +35,7 @@
 | LIB-20261122-qivty-digest | 1 | 1 | 1 | 0 | 0 | +4.4 % | -1.1 % |
 | LIB-20261123-qivty-digest | 1 | 1 | 1 | 0 | 0 | +2.6 % | -1.1 % |
 | LIB-20261124-qivty-digest | 1 | 1 | 0 | 0 | 0 | — | — |
+| LIB-20261125-doubletop-practice3-btc-call62k | 4 | 4 | 0 | 0 | 0 | — | — |
 | LIB-20261125-qivty-digest | 2 | 2 | 0 | 0 | 0 | — | — |
 | LIB-20261126-qivty-digest | 1 | 1 | 0 | 0 | 0 | — | — |
 
@@ -117,3 +118,7 @@
 | QG-BTC58K-1125 | 2026-11-25 | BTC | long | 58 000–58 500 | 65 500 / 56 000 | чекає зону | — | — | — | — | — | +0.2 % | binanceusdm:BTC/USDT:USDT |
 | QG-BTC55K-1125 | 2026-11-25 | BTC | long | 55 000 | — / — | чекає зону | — | — | — | — | — | +0.2 % | binanceusdm:BTC/USDT:USDT |
 | QG-HYPE58-1126 | 2026-11-26 | HYPE | long | 58.2 | 67 / — | чекає зону | — | — | — | — | — | — | — |
+| DT-P3-BTC577-1125 | 2026-11-25 | BTC | long | 57 700 | 65 700 / — | чекає зону | — | — | — | — | — | +0.2 % | binanceusdm:BTC/USDT:USDT |
+| DT-P3-BTC657S-1125 | 2026-11-25 | BTC | short | 65 700–66 000 | 49 000 / — | чекає зону | — | — | — | — | — | -0.2 % | binanceusdm:BTC/USDT:USDT |
+| DT-P3-ETHS-1125 | 2026-11-25 | ETH | short | 1 800–1 900 | 1 400 / — | чекає зону | — | — | — | — | — | +0.2 % | binanceusdm:ETH/USDT:USDT |
+| DT-P3-BTC50-1125 | 2026-11-25 | BTC | long | 50 000 | — / — | чекає зону | — | — | — | — | — | +0.2 % | binanceusdm:BTC/USDT:USDT |

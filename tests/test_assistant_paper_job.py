@@ -10,6 +10,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+import conftest
 import tradedesk.collector.assistant_paper as mod
 from conftest import NOW, FakeEx, State, make_transports
 from tradedesk.analytics.rec_method import decide, method_pick
@@ -393,6 +394,173 @@ async def test_job_provider_failure_raises_and_retries(tmp_path, monkeypatch):
         assert await collect_assistant_paper(ok) == 1
     finally:
         await ok.aclose()
+
+
+FULL = list(conftest.EXPIRIES)  # 30OCT26 (19.8 d at NOW), 27NOV26 (47.8 d), 26MAR27 (166 d)
+GAP = [FULL[0], FULL[2]]  # expiries below and above 28..56 days, none inside: the live BTC chain of 27.11-03.12
+
+
+async def test_job_calendar_gap_writes_a_skip_and_carries_the_last_decision(tmp_path, monkeypatch):
+    plan: dict[str, Any] = {"pick": "short_straddle", "regime": "rv30_b1", "rv30": 0.30}
+    _force(monkeypatch, plan)
+    rt = _rt(tmp_path)
+    path = state_path(rt.settings.db_path)
+
+    async def day(n: int, *, gap: bool = False, event: str | None = None) -> int:
+        _patch(monkeypatch, _closes(), event=event)
+        monkeypatch.setattr(conftest, "EXPIRIES", GAP if gap else FULL)
+        rt.now = lambda: NOW + timedelta(days=n)
+        return await collect_assistant_paper(rt)
+
+    try:
+        assert await day(0) == 1  # first: a chain trade on 27NOV26
+        (row,) = await rt.store.rec_paper_list()
+        plan.update(regime="rv30_b2", rv30=0.405)  # first decision in a new bucket, barely past the edge: no trade
+        assert await day(1, event="cpi:2026-10-14") == 0
+        real = json.loads(path.read_text())
+        assert (real["state"], real["regime"], real["events_seen"]) == ("actual", "rv30_b2", ["cpi:2026-10-14"])
+        for n in (2, 3):  # two calendar-gap days in a row; an FOMC appears only inside the gap
+            assert await day(n, gap=True, event="fomc:2026-10-15") == 0  # no error, no trade
+            st = json.loads(path.read_text())
+            assert st["date"] == (NOW + timedelta(days=n)).date().isoformat() and st["label"] == "hypothesis"
+            assert (st["state"], st["action"], st["pick"], st["trade_id"], st["trigger"]) == ("skipped", "none", None, None, None)
+            assert (st["regime"], st["rv30"]) == ("rv30_b2", 0.405)  # the last REAL decision's, not reset by the skip
+            assert st["events_seen"] == ["cpi:2026-10-14"] and st["event"] is None  # the gap's FOMC is not marked seen
+            assert st["last_decision_date"] == "2026-10-11" and st["standing_trade"] == row["id"]
+            assert st["open_method_risk_usd"] == pytest.approx(row["risk_usd"], abs=0.01) and st["missing"] == []
+            assert (st["gap"]["below"], st["gap"]["above"]) == ("30OCT26", "26MAR27") and len(st["gap"]) == 4
+            assert 0 < st["gap"]["below_days"] < 28 < 56 < st["gap"]["above_days"]
+            assert "28..56" in st["reason"]
+        assert await day(3, gap=True) == 0 and json.loads(path.read_text()) == st  # same day, still a gap: re-checked, same skip
+        # next day with a 28..56-day expiry: the bucket held on two DECISIONS (day 1 and today), the skip days are not
+        # decisions, so the hysteresis confirms the change (a reset regime would need RV30 2 vol points past the edge)
+        plan["pick"] = "short_strangle25"
+        assert await day(4) == 1
+        st = json.loads(path.read_text())
+        assert (st["state"], st["trigger"], st["regime"]) == ("changed", "regime", "rv30_b2") and "last_decision_date" not in st
+        assert [x["trigger"] for x in reversed(await rt.store.rec_paper_list())] == ["chain", "regime"]
+    finally:
+        await rt.aclose()
+
+
+async def test_job_calendar_gap_first_run_and_incomplete_chains(tmp_path, monkeypatch):
+    _patch(monkeypatch, _closes())
+    rt = _rt(tmp_path)
+    path = state_path(rt.settings.db_path)
+    try:
+        # empty chain, expiries below the band only, above it only: errors, retried, nothing written
+        for exps in ([], FULL[:1], FULL[2:]):
+            monkeypatch.setattr(conftest, "EXPIRIES", exps)
+            with pytest.raises(RuntimeError, match="no data, will retry: .*no listed expiry within 28..56 days"):
+                await collect_assistant_paper(rt)
+            assert not path.exists()
+        monkeypatch.setattr(conftest, "EXPIRIES", FULL[1:])  # the 40-day expiry is there, the 14-day one is not: as before
+        with pytest.raises(RuntimeError, match="no listed expiry within 7..21 days"):
+            await collect_assistant_paper(rt)
+        assert not path.exists()
+        # full chain, but every row of the in-band 27NOV26 lacks a forward (build_chain drops them): the expiry is listed,
+        # so this is an incomplete chain, not a calendar gap
+        monkeypatch.setattr(conftest, "EXPIRIES", FULL)
+        real_book = conftest.option_book
+        for fwd in (None, "n/a"):
+            monkeypatch.setattr(
+                conftest,
+                "option_book",
+                lambda fwd=fwd: [s | {"underlying_price": fwd} if "-27NOV26-" in s["instrument_name"] else s for s in real_book()],
+            )
+            with pytest.raises(RuntimeError, match="no data, will retry: .*27NOV26 is listed within 28..56 days but has no row"):
+                await collect_assistant_paper(rt)
+            assert not path.exists()
+        monkeypatch.setattr(conftest, "option_book", real_book)
+        monkeypatch.setattr(conftest, "EXPIRIES", GAP)  # first run ever on a gap day: nothing to carry
+        assert await collect_assistant_paper(rt) == 0
+        st = json.loads(path.read_text())
+        assert (st["state"], st["regime"], st["rv30"], st["events_seen"]) == ("skipped", None, None, [])
+        assert (st["standing_trade"], st["last_decision_date"], st["open_method_risk_usd"]) == (None, None, 0.0)
+        assert await rt.store.rec_paper_list() == []
+    finally:
+        await rt.aclose()
+
+
+async def test_job_calendar_gap_skip_is_rechecked_the_same_day(tmp_path, monkeypatch):
+    from tradedesk.core.errors import ProviderError
+
+    plan: dict[str, Any] = {"pick": "short_straddle", "regime": "rv30_b1", "rv30": 0.30}
+    _force(monkeypatch, plan)
+    _patch(monkeypatch, _closes())
+    rt = _rt(tmp_path)
+    path = state_path(rt.settings.db_path)
+    fetches = {"n": 0}
+    real_book = conftest.option_book
+
+    def counted() -> list[dict]:
+        fetches["n"] += 1
+        return real_book()
+
+    monkeypatch.setattr(conftest, "option_book", counted)
+
+    def at(day: int, hour: int, exps: list[Any]) -> None:
+        monkeypatch.setattr(conftest, "EXPIRIES", exps)
+        rt.now = lambda: NOW.replace(hour=hour) + timedelta(days=day)
+
+    try:
+        at(0, 10, FULL)
+        assert await collect_assistant_paper(rt) == 1  # a chain trade
+        plan.update(regime="rv30_b2", rv30=0.405)  # first decision in the new bucket, barely past the edge: no trade
+        at(1, 10, FULL)
+        assert await collect_assistant_paper(rt) == 0
+        at(2, 10, GAP)  # a gap (or a partial reply without the middle expiry): a skip, not a closed day
+        assert await collect_assistant_paper(rt) == 0
+        skip = json.loads(path.read_text())
+        assert (skip["state"], skip["regime"], skip["last_decision_date"]) == ("skipped", "rv30_b2", "2026-10-11")
+        # a later period: the chain request fails -> raises as usual, the skip stays as it was
+        at(2, 11, FULL)
+        good = rt.deribit.book_summary
+
+        async def down(*a: Any, **k: Any) -> Any:
+            raise ProviderError("deribit", "backend_error", "down")
+
+        monkeypatch.setattr(rt.deribit, "book_summary", down)
+        with pytest.raises(RuntimeError, match="no data, will retry: option_book"):
+            await collect_assistant_paper(rt)
+        assert json.loads(path.read_text()) == skip
+        monkeypatch.setattr(rt.deribit, "book_summary", good)
+        at(2, 12, GAP)  # still a gap: the skip is rewritten, the carried fields stay the last real decision's
+        n = fetches["n"]
+        assert await collect_assistant_paper(rt) == 0 and fetches["n"] > n
+        st = json.loads(path.read_text())
+        moving = ("asof_utc", "gap", "reason")  # the check time and the days to the neighbouring expiries
+        assert st["asof_utc"] == "2026-10-12T12:07:00Z" and (st["gap"]["below"], st["gap"]["above"]) == ("30OCT26", "26MAR27")
+        assert {k: v for k, v in st.items() if k not in moving} == {k: v for k, v in skip.items() if k not in moving}
+        # the middle expiry is back the same day: the real decision, against the carried rv30_b2 (held two decisions,
+        # so the hysteresis confirms the change; a reset regime would need RV30 2 vol points past the edge)
+        plan["pick"] = "short_strangle25"
+        at(2, 13, FULL)
+        assert await collect_assistant_paper(rt) == 1
+        st = json.loads(path.read_text())
+        assert (st["date"], st["state"], st["trigger"], st["regime"]) == ("2026-10-12", "changed", "regime", "rv30_b2")
+        assert "last_decision_date" not in st and "gap" not in st
+        # today's real decision is on file: a later period returns at once, without fetching the chain
+        n = fetches["n"]
+        at(2, 14, FULL)
+        assert await collect_assistant_paper(rt) == 0 and fetches["n"] == n and json.loads(path.read_text()) == st
+        assert [x["trigger"] for x in reversed(await rt.store.rec_paper_list())] == ["chain", "regime"]
+    finally:
+        await rt.aclose()
+
+
+async def test_job_calendar_gap_still_raises_a_settlement_error(tmp_path, monkeypatch):
+    _patch(monkeypatch, _closes())
+    monkeypatch.setattr(conftest, "EXPIRIES", GAP)
+    rt = _settle_rt(tmp_path, {"status": 500})  # delivery prices down
+    try:
+        tid = await _due(rt)
+        with pytest.raises(RuntimeError, match="no delivery prices"):
+            await collect_assistant_paper(rt)
+        assert json.loads(state_path(rt.settings.db_path).read_text())["state"] == "skipped"  # the skip was written first
+        assert (await rt.store.rec_paper_get(tid))["status"] == "open"
+    finally:
+        await rt.aclose()
 
 
 async def test_fetch_closes_paginates_and_drops_today():

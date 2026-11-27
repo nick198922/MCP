@@ -994,6 +994,38 @@ def test_assistant_paper_counters_and_state():
     assert cp._uncovered([(0, 10), (30, 40)], 0, 50) == [20, 10]  # between the spans and after the last one
 
 
+def test_assistant_paper_calendar_gap_skip_is_a_pause_not_a_decision():
+    st = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "skipped", "action": "none"}
+    key = "останнє денне рішення (файл стану)"
+    r = cp.assistant_paper_forward(REC, st, NOW)
+    assert r["counters"][key] == (
+        "2026-11-02, пауза — немає експірації 28–56 днів, 3 год тому; справжнього рішення у файлі ще немає"
+    )  # no last_decision_date: the first run ever was a gap day
+    assert any(x.startswith("пауза:") and "не збій" in x for x in r["notes"]) and not any("стоїть" in x for x in r["notes"])
+    r = cp.assistant_paper_forward(REC, st | {"last_decision_date": "2026-10-31"}, NOW)
+    assert r["counters"][key].endswith("3 год тому; останнє справжнє рішення 2026-10-31")
+    for bad in ("31.10.2026", "2026-02-30", 20261031, "2026-10-31; rm"):  # another writer's file: not a date, not shown
+        r = cp.assistant_paper_forward(REC, st | {"last_decision_date": bad}, NOW)
+        assert r["counters"][key].endswith("справжнього рішення у файлі ще немає")
+    # a pause the job has not rewritten for > 36 h: the job looks stopped, so no «не збій» next to «стоїть»
+    old = cp.assistant_paper_forward(REC, st | {"asof_utc": "2026-10-31T09:00:00Z", "last_decision_date": "2026-10-29"}, NOW)
+    assert old["counters"][key].startswith("2026-10-31, пауза") and old["counters"][key].endswith("рішення 2026-10-29")
+    assert any("пауза" in x and "старший за 36 год" in x and "стоїть" in x for x in old["notes"])
+    assert not any("не збій" in x or x.startswith("пауза:") for x in old["notes"])
+    plain = cp.assistant_paper_forward(REC, st | {"state": "actual", "action": "hold"}, NOW)
+    assert not any(x.startswith("пауза:") for x in plain["notes"])
+
+
+def test_load_paper_state_keeps_the_last_decision_date(tmp_path):
+    (tmp_path / "assistant").mkdir()
+    st = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "skipped", "action": "none", "regime": "rv30_b2"}
+    (tmp_path / "assistant" / "paper_state.json").write_text(json.dumps(st | {"last_decision_date": "2026-11-01"}), encoding="utf-8")
+    got = script.load_paper_state(str(tmp_path / "t.sqlite"))
+    assert got == {k: v for k, v in st.items() if k != "regime"} | {"last_decision_date": "2026-11-01"}
+    line = cp.assistant_paper_forward([], got, NOW)["counters"]["останнє денне рішення (файл стану)"]
+    assert line == "2026-11-02, пауза — немає експірації 28–56 днів, 3 год тому; останнє справжнє рішення 2026-11-01"
+
+
 def test_assistant_paper_empty_store_and_no_state_file():
     r = cp.assistant_paper_forward([], None, NOW)
     assert r["n"] == 0 and r["counters"]["угод методу"] == 0 and r["verdict"] == cp.COUNTS_ONLY

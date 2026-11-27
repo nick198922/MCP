@@ -150,6 +150,9 @@ def test_paper_rec_view_keeps_known_fields_and_drops_old_or_odd_states():
     assert data["trigger"] == "regime" and data["pick"] == "p" * PAPER_PICK_MAX_LEN and data["trade_id"] == 9
     data, _ = paper_rec_view(_paper_state(state="no_longer_actual", action="none", pick=None, trigger="bogus"), now)
     assert data["state"] == "no_longer_actual" and data["pick"] is None and data["trigger"] is None
+    # a calendar-gap day (no 28..56-day expiry): a known state, shown as such, not "unknown" or "stopped"
+    data, why = paper_rec_view(_paper_state(state="skipped", action="none", pick=None, standing_trade=7), now)
+    assert why is None and (data["state"], data["action"], data["pick"], data["standing_trade"]) == ("skipped", "none", None, 7)
     late = now + timedelta(hours=PAPER_MAX_AGE_HOURS - 20 + 1)
     assert paper_rec_view(_paper_state(), late)[0] is None and "seems stopped" in paper_rec_view(_paper_state(), late)[1]
     assert paper_rec_view(_paper_state(), now + timedelta(hours=PAPER_MAX_AGE_HOURS - 20))[0] is not None  # at the limit

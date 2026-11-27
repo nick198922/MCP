@@ -17,7 +17,7 @@ NEAR_MIN_DAYS = 25.0 / 24.0
 # the paper recommendation's state (collector job assistant_paper, one decision a day after 09:00 UTC): a decision older
 # than this is no longer «today's» (the 08:00 Kyiv brief normally sees yesterday's, ~20 h old; 36 h = one missed day)
 PAPER_MAX_AGE_HOURS = 36.0
-PAPER_STATES = ("actual", "changed", "no_longer_actual")
+PAPER_STATES = ("actual", "changed", "no_longer_actual", "skipped")  # skipped: calendar gap, no 28..56-day expiry, no decision
 PAPER_ACTIONS = ("open", "hold", "none")
 PAPER_TRIGGERS = ("chain", "regime", "event")
 PAPER_PICK_MAX_LEN = 40
@@ -77,7 +77,8 @@ def paper_rec_view(state: Any, now: datetime) -> tuple[dict[str, Any] | None, st
     """The brief's view of the paper recommendation: ``(data, None)``, or ``(None, reason)`` when there is nothing usable.
 
     ``state`` is the parsed state file of the collector job ``assistant_paper`` (``collector.assistant_paper``: one
-    decision a day after 09:00 UTC; ``state`` is ``actual`` / ``changed`` / ``no_longer_actual``). Only known keys and
+    decision a day after 09:00 UTC; ``state`` is ``actual`` / ``changed`` / ``no_longer_actual``, or ``skipped`` on a
+    day without a listed 28..56-day expiry, when no decision is made and nothing is recommended). Only known keys and
     values are kept; ``pick`` stays an untrusted string (capped, escaped at render time). A decision older than
     PAPER_MAX_AGE_HOURS at ``now`` is not shown as current. The recommendation is a hypothesis: the method showed no
     edge (H1 rejected 18.10), so the data carries ``label: hypothesis``.

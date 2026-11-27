@@ -69,7 +69,7 @@ PANEL_URL_ENV = "TRADEDESK_PANEL_URL"
 DASHBOARD_URL_PATH = Path("/var/lib/tradedesk-mcp/assistant/dashboard_url")  # written by scripts/server/23-tailscale.sh
 PAGES = (("Бриф", "brief"), ("Опціони", "options"), ("Радар", "radar"), ("Журнал", "journal"), ("Polymarket", "polymarket"))
 BUTTONS_PER_ROW = 3
-PAPER_STATE_UA = {"actual": "актуальна", "changed": "змінилась", "no_longer_actual": "більше не актуальна"}
+PAPER_STATE_UA = {"actual": "актуальна", "changed": "змінилась", "no_longer_actual": "більше не актуальна", "skipped": "на паузі"}
 PAPER_PICK_UA = {  # analytics.option_replay.STRUCTURES; "_14d" = the ~14-day expiry, the rest ~40 days
     "long_straddle": "купівля стреддлу ATM",
     "short_straddle": "продаж стреддлу ATM",
@@ -325,7 +325,12 @@ def _paper(snap: dict, now: float) -> list[str]:
         if state is None:
             return []
         name, action = _pick_ua(d.get("pick")), d.get("action")
-        if d.get("state") == "no_longer_actual":
+        skipped = d.get("state") == "skipped"
+        if skipped:  # calendar gap: no decision that day, as in the registered study
+            detail = "немає експірації 28–56 днів, як у тесті, тож рішення того дня немає" + (
+                "; чинну паперову угоду лишено" if d.get("standing_trade") is not None else ""
+            )
+        elif d.get("state") == "no_longer_actual":
             detail = "метод сьогодні не обирає жодної структури"
         elif not name:
             detail = ""
@@ -337,7 +342,7 @@ def _paper(snap: dict, now: float) -> list[str]:
         else:
             detail = f"{name} — чинна паперова угода"
         asof = db.parse_utc(d.get("asof_utc"))
-        when = f" (рішення {db.kyiv(asof, '%d.%m')})" if asof else ""
+        when = f" ({'перевірка' if skipped else 'рішення'} {db.kyiv(asof, '%d.%m')})" if asof else ""
         txt = f"Паперова рекомендація {state}" + (f": {detail}" if detail else "") + f"{when}."
         return [f"• <i>гіпотеза</i> · {_h(txt)}"]
     except Exception:  # noqa: BLE001 - an odd section only drops this line

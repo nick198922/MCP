@@ -1610,12 +1610,13 @@ def demo_forwards(trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict
     return out
 
 
-# Tail of the P&L-mismatch note. docs/verification/2026-11-26-demo-pnl-mismatch.md: all 7 trades flagged among those
-# closed before 26.11 16:00 UTC were funding inside Bybit's closedPnl (inferred from public data), pnl_usd right; later
-# ones are unproven. The count and the cutoff stay in the text, so a reader can tell that an 8th trade is unverified.
+# Tail of the P&L-mismatch note. docs/verification/2026-11-26-demo-pnl-mismatch.md (with its 28.11 addendum): all 8
+# trades flagged among those closed before 27.11 22:40 UTC were funding inside Bybit's closedPnl (inferred from public
+# data), pnl_usd right; later ones are unproven. The count and the cutoff stay in the text, so a reader can tell that a
+# 9th trade is unverified.
 # One segment with no '; ' inside and <= NOTE_CHARS // 3 of tools/demo_status.py, so its compact cut keeps all of it.
 PNL_MISMATCH_TAIL = (
-    "; P&L у БД ≠ (вихід − вхід)·qty − комісії. 7 угод, закритих до 26.11 16:00 UTC: різниця — фандинг "
+    "; P&L у БД ≠ (вихід − вхід)·qty − комісії. 8 угод, закритих до 27.11 22:40 UTC: різниця — фандинг "
     "(за публічними даними), P&L правильний. Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py"
 )
 

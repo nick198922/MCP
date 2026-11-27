@@ -110,6 +110,7 @@
 - Дрейф BTC після CPI («8 з 9 цього року»): H1 у LIB-20261015-doubletop-stream.
 - Ринки Polymarket «на дотик» у дні подій: `IDEA-20261015-polymarket-touch-ladder-event-days` (`inconclusive`; лише forward-збір знімків книги).
 - MSCI і MSTR, описово, одна подія: H2 у LIB-20261015-doubletop-stream.
+- **«Памп до FOMC, після нього падіння»** (DoubleTop, 25.11, про FOMC 9.12; [LIB](../library/LIB-20261125-doubletop-practice3-btc-call62k.md), https://www.youtube.com/watch?v=HUS05TZNZjQ) — не перевірено, картки нема (тріаж 27.11: потужність). ≈ 54 планові FOMC за 2020–2026; за припущеної SD BTC 3.3 % за добу і 9 % за тиждень MDE ≈ 1.3 п.п. на добу, 3.4 п.п. на тиждень, ≈ 4.8 п.п. на різницю «тиждень до − тиждень після». Близьке ◯: «ріст ≥ 3 % у реліз» (вище, MDE 5.4 п.п.). Дослідження NY Fed (Benigno, Rosa, лютий 2023, [SR 1052](https://www.newyorkfed.org/research/staff_reports/sr1052.html), [блог авторів](https://libertystreeteconomics.newyorkfed.org/2023/02/is-there-a-bitcoin-macro-disconnect/)) за внутрішньоденними даними знаходить слабку реакцію біткойна на макроновини й не знаходить реакції на монетарні сюрпризи (за переказом пошуку; повний текст не читали; це реакція на релізи, а не дрейф перед ними; наші виміри сплеску після FOMC — вище). Як користуватись: сценарій автора, а не календарна перевага.
 
 ## Як користуватись зараз
 

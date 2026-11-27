@@ -160,11 +160,20 @@ wip_branch() {
   return 1
 }
 # Agent branches that wait to be merged: not merged, not a doctor's fix, not work in progress.
+# A branch whose last commit is older than STALE_OPEN seconds no longer holds a slot (owner 2026-11-27: «Щоб більше
+# такого не було!» — a branch whose work the doctor had already carried into main held one of two slots for two days).
+# It is not forgotten: its PR stays open, pr_watch reports a red or conflicting one, and the weekly audit lists leftovers.
+STALE_OPEN="${TRADEDESK_AGENTS_STALE_OPEN_SECONDS:-21600}"
+
 open_branches() {
-  local work b
+  local work b now
   work="$(work_branch)"
+  now="$(date +%s)"
   git -C "$REPO" branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##' | grep -v -- '-fix-' |
-    grep -vxF -- "${work:-//none//}" | while read -r b; do wip_branch "$b" || echo "$b"; done || true
+    grep -vxF -- "${work:-//none//}" | while read -r b; do
+    (($(git -C "$REPO" log -1 --format=%ct "origin/$b" 2>/dev/null || echo 0) < now - STALE_OPEN)) && continue
+    wip_branch "$b" || echo "$b"
+  done || true
 }
 
 # doctor "<what happened>" ["<failure signature>"]: the doctor, unless the usage limit is near. For a failure (with a

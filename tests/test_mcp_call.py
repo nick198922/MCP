@@ -34,6 +34,18 @@ def test_bad_arguments(capsys):
     assert mc.main(["odds_devig", "{not json"]) == 2
 
 
+def test_unknown_argument_name_is_not_called(monkeypatch, capsys):
+    """backlog 27.11: the server would drop the key and answer with defaults (BTC for symbol="ETH")."""
+
+    async def never(self, name, arguments=None, *a, **k):
+        raise AssertionError("called the tool despite an unknown argument name")
+
+    monkeypatch.setattr(mc.Client, "call_tool", never)
+    assert mc.main(["perps_funding_history", json.dumps({"symbol": "ETH", "days_back": 7}), "--local"]) == 2
+    out = capsys.readouterr().out
+    assert "'symbol'" in out and "not called" in out and "base, days_back" in out and "'days_back'" not in out
+
+
 def test_output_is_cut(capsys):
     assert mc.main(["odds_devig", json.dumps({"odds": [1.9, 1.9]}), "--max-chars", "20", "--local"]) == 0
     assert "cut at 20" in capsys.readouterr().out

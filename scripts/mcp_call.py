@@ -16,7 +16,8 @@ of a rule holds, whether a new tool answers.
 
 Only a service that cannot be reached (connect or handshake fails) leads to the in-process server; once connected,
 any failure is reported as it is and nothing is called a second time. Exit codes: 0 the answer is printed;
-2 bad usage, arguments not a JSON object, or no such tool; 3 a write tool, refused; 4 the tool answered with an
+2 bad usage, arguments not a JSON object, no such tool, or an argument name the tool does not have (checked against
+its inputSchema before calling: the server would drop it and run with defaults); 3 a write tool, refused; 4 the tool answered with an
 error (e.g. it rejected the arguments), its text is printed; 5 the call failed after connecting (transport or
 protocol error, unreadable response) or the in-process server did not start.
 """
@@ -34,6 +35,7 @@ from typing import Any
 from mcp import Client
 
 from tradedesk.server import build_server
+from tradedesk.unknown_args import schema_params, shown_names, unknown_keys, valid_text
 
 URL = os.environ.get("TRADEDESK_MCP_URL", "http://127.0.0.1:8000/mcp")
 # Tools that write to the local store (no orders anywhere): never through this script (owner 14.11, Q-20261114-1 «Г1»).
@@ -86,10 +88,14 @@ async def _session(c: Client, tool: str | None, args: dict[str, Any], list_only:
             f"{t.name}{' [writes: refused here]' if t.name in WRITE_TOOLS else ''}: {(t.description or '').splitlines()[0][:150]}"
             for t in sorted(tools, key=lambda t: t.name)
         )
-    names = {t.name for t in tools}
-    if tool not in names:
-        near = sorted(n for n in names if tool and (tool in n or n in tool))
+    by_name = {t.name: t for t in tools}
+    if tool not in by_name:
+        near = sorted(n for n in by_name if tool and (tool in n or n in tool))
         return 2, f"no tool '{tool}'" + (f"; similar: {', '.join(near)}" if near else "; see --list")
+    params = schema_params(by_name[tool].input_schema)
+    unknown = unknown_keys(args, params)
+    if unknown:  # the SDK would drop them silently and run with defaults (backlog 27.11): not called
+        return 2, f"'{tool}' has no argument(s) {shown_names(unknown)}; not called. Valid parameters: {valid_text(params)}"
     res = await c.call_tool(tool, args)
     if res.is_error:
         return 4, _text(res) or f"'{tool}' returned an error without text"

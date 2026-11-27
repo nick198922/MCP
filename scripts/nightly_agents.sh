@@ -450,6 +450,10 @@ ALLOWED=(
   # Read-only (26.11): diff with the pager off, a dry-run merge that lists conflicts, the clone's tree, the MCP log.
   "Bash(git -P diff:*)" "Bash(git merge-tree --write-tree:*)" "Bash(git -C /home/tradedesk/tradedesk-agents ls-tree:*)"
   "Bash(journalctl -u tradedesk-mcp:*)"
+  # Read-only (27.11): the git version, log and status with the pager off, diff with quotepath off, and which commits
+  # of a branch main already has.
+  "Bash(git --version)" "Bash(git -P log:*)" "Bash(git -P status:*)" "Bash(git -c core.quotepath=off diff:*)"
+  "Bash(git cherry -v:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and

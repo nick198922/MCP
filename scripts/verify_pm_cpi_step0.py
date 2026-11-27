@@ -976,11 +976,10 @@ def snapshot_series(cache: Path, given: list[str]) -> tuple[list[str], str | Non
 
 
 async def stage_snapshot(cache: Path, root: Path | None = None, series: list[str] | None = None) -> None:
-    """Today's nowcast file and the books of every bracket of the open CPI events (first sample of a forward record).
-    `root` (default <cache>/snapshots): the fallback for the 10.12 release writes under
-    ~/.local/state/tradedesk-agents/pm_cpi/snapshots, which the server backups cover (~/.cache is not backed up).
-    Since item 480 the collector job pm_cpi_snapshot writes the same data to the database daily; this stays the manual
-    fallback."""
+    """Today's nowcast file and the books of every bracket of the open CPI events. `root` (default <cache>/snapshots):
+    ~/.local/state/tradedesk-agents/pm_cpi/snapshots is covered by the server backups (~/.cache is not). Since item 480
+    the collector job pm_cpi_snapshot writes the same data to the database daily. Data preservation only; never a
+    source of a forward stage (registration п. 5: scripts/pm_cpi_forward.py reads the job's row alone)."""
     from tradedesk.core.http import Http
     from tradedesk.server import build_server
 

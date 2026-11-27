@@ -1,0 +1,756 @@
+"""Forward scanner of IDEA-20261028-pm-cpi-brackets-vs-nowcast-forward, step 2 (item 484): scripts/pm_cpi_forward.py.
+
+No network: Gamma is an ``httpx.MockTransport`` in-process and an unreachable proxy (127.0.0.1:9) in the subprocesses;
+the time is a parameter. Prices of the decision tests are synthetic; the fixture of 26.11 is used only where the
+registration asks for it (the CODE_PATHS list), and no decision on it is asserted.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import zlib
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from tradedesk.analytics.pm_cpi import book_depth, bracket_prob, brackets, clv, row_digest, with_book
+from tradedesk.collector.pm_cpi_snapshot import SERIES
+from tradedesk.config import Settings
+from tradedesk.core.errors import ProviderError
+from tradedesk.core.ratelimit import TokenBucket
+from tradedesk.runtime import Runtime
+from tradedesk.store import Store
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import pm_cpi_forward as f  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = REPO_ROOT / "tests" / "fixtures" / "pm_cpi_snapshot_2026-11-26.json"
+R = "2026-12-10"
+AT_T7 = datetime(2026, 12, 3, 21, 30, tzinfo=UTC)
+AT_T3 = datetime(2026, 12, 7, 22, 10, tzinfo=UTC)
+AT_T1 = datetime(2026, 12, 9, 21, 30, tzinfo=UTC)
+TITLES = ["≤3.3%", "3.4%", "3.5%", "3.6%", "3.7%", "3.8%", "3.9%", "4.0%", "4.1%", "4.2%", "4.3%", "≥4.4%"]
+ASKS = {"3.8%": 0.10, "3.7%": 0.11}  # synthetic: q(3.8) ~ 0.239, q(3.7) ~ 0.207 at mu 3.79, sd 0.164; the rest 0.50
+RULES = "the 12-month change ... before seasonal adjustment ... with only one decimal point ..."
+GH = ("GitHub", "noreply@github.com")
+
+
+def _ts(day: str, hm: str = "15:40") -> int:
+    return int(datetime.fromisoformat(f"{day}T{hm}:00+00:00").timestamp())
+
+
+def _bracket(series, eid, slug, end, i, title, ask, ts, fee_type="economics_fees", **kw):
+    bid = round(ask - 0.01, 4) if ask is not None else None
+    return {"series": series, "event_id": eid, "event_slug": slug, "end_date": end, "market_id": f"{eid}m{i}",
+            "title": title, "fee_type": fee_type, "token": f"{eid}t{i}", "book": True, "bid": bid, "ask": ask,
+            "bid_usd": 5.0, "ask_usd": 30.0, "book_ts_ms": ts * 1000, "read_ts": ts, **kw}  # fmt: skip
+
+
+def synth_brackets(day, asks=None, yoy_slug="november-inflation-us-annual", extra=()):
+    ts = _ts(day)
+    asks = {**ASKS, **(asks or {})}
+    yoy = [_bracket("10007", "e1", yoy_slug, "2026-12-10T13:30:00Z", i, t, asks.get(t, 0.5), ts) for i, t in enumerate(TITLES)]
+    mom = [_bracket("10008", "e2", "november-inflation-us-monthly", "2026-12-11T04:59:00Z", i, t, 0.3, ts)
+           for i, t in enumerate(["≤0.1%", "0.2%", "≥0.3%"])]  # fmt: skip
+    core = [_bracket("11905", "e3", "core-cpi-yoy-november-2026", "2026-12-10T13:30:00Z", i, t, 0.3, ts)
+            for i, t in enumerate(["≤2.8%", "2.9%", "≥3.0%"])]  # fmt: skip
+    return [*yoy, *mom, *core, *extra]
+
+
+def synth_depth(brs):
+    main = {}
+    for b in brs:
+        if b.get("book") and isinstance(b.get("ask"), float) and math.isfinite(b["ask"]):
+            main[b["token"]] = {"read_ts": b["read_ts"], "min_size": 5.0, "bids": [[b["bid"], 100.0]],
+                                "asks": [[b["ask"], 300.0], [round(b["ask"] + 0.02, 4), 1000.0]]}  # fmt: skip
+    return {"main": main, "early": []}
+
+
+def base_row(day, brs, depth, **kw):
+    ts = _ts(day)
+    row = {"day": day, "created_ts": ts - 600, "updated_ts": ts + 60, "status": "complete", "late": 0, "cf_tries": 1,
+           "cf_fetches": 1, "books_tries": 1, "cf_year_ts": ts - 60, "cf_month_ts": ts - 60, "cf_year_sha": "a" * 64,
+           "cf_month_sha": "b" * 64, "cf_stamp_year": f"{day} 00:00", "cf_last_day_year": day, "cf_last_day_month": day,
+           "cf_fresh": 1, "target": "2026-11", "mom_target": "2026-11", "yoy_headline_pct": 3.79, "cf_points": "{}",
+           "books": json.dumps({"series_listed": list(SERIES), "counts": {}, "brackets": brs}), "books_paired": 1,
+           "books_early": None, "books_depth_z": zlib.compress(json.dumps(depth).encode()), "books_ts": ts,
+           "n_events": len({b["event_id"] for b in brs}), "n_brackets": len(brs), "n_quoted": len(brs)}  # fmt: skip
+    return {**row, **kw}
+
+
+def synth_row(day, asks=None, **kw):
+    brs = synth_brackets(day, asks)
+    return base_row(day, brs, synth_depth(brs), **kw)
+
+
+def fixture_row(day):
+    """The fixture's events and books of 26.11 as a complete row of ``day`` (nowcast point moved to that day)."""
+    sample = json.loads(FIXTURE.read_text())
+    ts = _ts(day)
+    books = {b["asset_id"]: b for b in sample["books"]}
+    main = [with_book(b, books.get(b["token"]), ts) for sid, evs in sample["events"].items() for b in brackets(sid, evs)]
+    depth = {"main": {b["token"]: {"read_ts": ts, **book_depth(books[b["token"]])} for b in main if b["token"] in books}, "early": []}
+    return base_row(day, main, depth)
+
+
+def make_db(path: Path, *rows) -> Path:
+    async def go():
+        s = Store(path)
+        await s.init()
+        try:
+            for r in rows:
+                await s.upsert_pm_cpi(r)
+        finally:
+            await s.aclose()
+
+    asyncio.run(go())
+    return path
+
+
+# Real Gamma answers of 2026-11-27 (non-price fields only): /markets/{id} has no `events` field (review C 484, blocker 2),
+# the event title is in /events/{id}. The fakes below keep that shape.
+GAMMA_SAMPLE = json.loads((REPO_ROOT / "tests" / "fixtures" / "polymarket_cpi_event_market_2026-11-27.json").read_text())
+EVENT_TITLES = {"e1": "November Inflation US - Annual", "e2": "November Inflation US - Monthly", "e3": "Core CPI YoY - November 2026"}
+
+
+def gamma_answer(mid, desc=RULES, **kw):
+    """A /markets/{id} answer: the real sample's fields with this id, the rule text and a fee rate of 0.02 (other than
+    the fee_type table's 0.01, so a test sees which one the decision took)."""
+    return {**GAMMA_SAMPLE["market"], "id": mid, "description": desc, "feeSchedule": {"rate": 0.02, "exponent": 1},
+            "feeType": "economics_fees", "orderMinSize": 5, **kw}  # fmt: skip
+
+
+def event_answer(eid, **kw):
+    """A /events/{id} answer: the real sample's fields with this id and title."""
+    return {**GAMMA_SAMPLE["event"], "id": eid, "title": EVENT_TITLES.get(eid, f"event {eid}"), **kw}
+
+
+def gamma_rt(answers=None, down=False, calls=None, events=None):
+    def handler(req: httpx.Request) -> httpx.Response:
+        kind, key = req.url.path.rsplit("/", 2)[-2:]
+        if calls is not None:
+            calls.append(req.url.path)
+        if down:
+            return httpx.Response(500, text="down")
+        if kind == "events":
+            a = (events or {}).get(key, event_answer(key))
+        else:
+            a = (answers or {}).get(key, gamma_answer(key))
+        return httpx.Response(200, json=a) if a is not None else httpx.Response(404, text="not found")
+
+    def factory():
+        rt = Runtime(Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+                     transports={"polymarket:gamma": httpx.MockTransport(handler)})  # fmt: skip
+        rt.polymarket.gamma._limiter = TokenBucket(1000.0, 1000)
+        rt.now = lambda: AT_T3  # not read by the scanner (D is a parameter); pinned all the same
+        return rt
+
+    return factory
+
+
+def write(stage, at, tmp_path, db, rt_factory=None):
+    return f.write_stage(stage, R, at, db=db, root=tmp_path / "state", docs=tmp_path / "docs", repo=REPO_ROOT, code_sha="HEAD",
+                         m0=None, tree=REPO_ROOT, rt_factory=rt_factory or gamma_rt(down=True))  # fmt: skip
+
+
+def rec_of(tmp_path, stage):
+    return json.loads((tmp_path / "state" / R / f"{stage}.json").read_bytes())
+
+
+def offline_env():
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env.update(HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9", ALL_PROXY="http://127.0.0.1:9", NO_PROXY="")
+    return env
+
+
+# --------------------------------------------------------------------------------------------------- pure functions
+
+
+def test_job_series_are_the_collectors():
+    assert f.JOB_SERIES == SERIES
+
+
+@pytest.mark.parametrize(
+    ("slug", "end", "want"),
+    [("november-inflation-us-annual", "2026-12-10T13:30:00Z", "2026-11"),
+     ("december-inflation-us-annual", "2027-01-13T13:30:00Z", "2026-12"),
+     ("january-inflation-us-annual-lower-brackets-817", "2026-02-11T13:30:00Z", "2026-1"),
+     ("november-inflation-us-annual", "2027-01-13T13:30:00Z", None),  # the end date is not in the next month
+     ("inflation-us-annual", "2026-12-10", None), ("november-inflation-us-annual", "garbage", None)],
+)  # fmt: skip
+def test_event_month_needs_the_end_date_in_the_next_month(slug, end, want):
+    assert f.event_month(slug, end) == want
+
+
+def test_select_events_takes_only_headline_yoy_of_the_target():
+    brs = synth_brackets("2026-12-07", extra=[
+        _bracket("10007", "e4", "cpi-yoy-november-2026", "2026-12-10T13:30:00Z", 0, "3.7%", 0.2, 1),  # renamed
+        _bracket("10007", "e5", "october-inflation-us-annual", "2026-11-13T13:30:00Z", 0, "3.7%", 0.2, 1),
+        _bracket("99", "e6", "november-inflation-us-annual", "2026-12-10T13:30:00Z", 0, "3.7%", 0.2, 1),
+    ])  # fmt: skip
+    ev = {e["event_id"]: e for e in f.select_events(brs, "2026-11")}
+    assert ev["e1"]["taken"] and ev["e1"]["month"] == "2026-11" and ev["e1"]["n_brackets"] == 12
+    assert (ev["e2"]["why"], ev["e3"]["why"], ev["e4"]["why"]) == ("not headline YoY",) * 3
+    assert ev["e5"]["why"] == "target" and ev["e6"]["why"] == "series"
+    assert f.select_events(brs, "2026-1")[0]["why"] in ("target", "not headline YoY")
+    assert f.target_of_release("2026-12-10") == "2026-11" and f.target_of_release("2027-01-13") == "2026-12"
+
+
+def test_rule_phrases_and_gamma_fields():
+    assert f.rules_why([None, ""]) == ("unchecked", None)
+    assert f.rules_why([RULES, None]) == ("ok", None)
+    assert f.rules_why([RULES, "12-month, one decimal"]) == ("missing", "rules: no 'before seasonal adjustment'")
+    g = f.gamma_fields(gamma_answer("7", feeSchedule='{"rate": 0.03, "exponent": 1}', orderMinSize=float("nan")), "7")
+    assert g["ok"] and g["feeSchedule"] == {"rate": 0.03, "exponent": 1} and g["orderMinSize"] is None
+    assert g["description_sha256"] == hashlib.sha256(RULES.encode()).hexdigest() and all(g["phrases"].values())
+    assert (g["closed"], g["active"], g["acceptingOrders"]) == (False, True, True)  # descriptive (finding 7)
+    assert tuple(sorted(g)) == tuple(sorted(f.GAMMA_KEYS))
+    assert f.gamma_fields({"id": "8"}, "7") == {"ok": False, "why": "not this market"}
+    assert f.gamma_fields(None, "7")["ok"] is False
+    e = f.event_fields(event_answer("e1"), "e1")
+    assert e == {"ok": True, "title": "November Inflation US - Annual", "slug": "november-inflation-us-annual", "closed": False,
+                 "active": True}  # fmt: skip
+    assert f.event_fields(event_answer("e1"), "e2") == {"ok": False, "why": "not this event"}
+
+
+def test_gamma_fakes_have_the_real_answer_shape():
+    # review C 484, blocker 2: the live /markets/{id} has no `events`; the title is only in /events/{id}
+    real = GAMMA_SAMPLE
+    assert "events" not in real["market_keys"] and "title" in real["event_keys"] and "markets" in real["event_keys"]
+    assert real["event"]["id"] == "1376034" and real["event"]["title"] == "November Inflation US - Annual"
+    assert real["market"]["groupItemTitle"] == "≤3.3%" and set(real["market"]) <= set(real["market_keys"])
+    assert "events" not in gamma_answer("x") and set(gamma_answer("x")) <= set(real["market_keys"])
+    assert set(event_answer("e1")) <= set(real["event_keys"])
+    prices = {"bestBid", "bestAsk", "lastTradePrice", "outcomePrices", "spread", "volume", "liquidity"}
+    assert not prices & (set(real["market"]) | set(real["event"]) | {k for m in real["event"]["markets"] for k in m})
+
+
+def test_provider_event_reads_one_gamma_event():
+    def handler(req):
+        if req.url.path == "/events/1376034":
+            return httpx.Response(200, json=GAMMA_SAMPLE["event"])
+        return httpx.Response(200, json=[])  # not a mapping
+
+    rt = Runtime(Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+                 transports={"polymarket:gamma": httpx.MockTransport(handler)})  # fmt: skip
+    rt.now = lambda: AT_T3  # not read by the provider; pinned all the same
+
+    async def go():
+        try:
+            got = await rt.polymarket.event("1376034")
+            with pytest.raises(ProviderError, match="unexpected shape at /events"):
+                await rt.polymarket.event("2")
+            return got
+        finally:
+            await rt.aclose()
+
+    got = asyncio.run(go())
+    assert got.data["title"] == "November Inflation US - Annual" and got.evidence.tool == "event"
+    assert got.evidence.args == {"id": "1376034"}
+
+
+@pytest.mark.parametrize(
+    ("release", "journal", "want"),
+    [(R, ["V1 · fail: x"], (0.164, None)),
+     ("2027-01-13", ["- `V1 · pass` по year і month", "V2 · pass", "sigma_A · 0.1500 · n 150", "sigma_A · 0.2"], (0.15, None)),
+     ("2027-01-13", ["V1 · pass", "V2 · fail: overwritten"], (0.164, None)),
+     ("2027-01-13", ["V1 · pass", "V2 · pass"], (None, "no sigma_A")),
+     ("2027-01-13", ["V1 · pass"], (None, "no sigma_A")), ("2027-01-13", [], (None, "no sigma_A"))],
+)  # fmt: skip
+def test_sigma_follows_the_vintage_checks_of_the_journal(release, journal, want):
+    sd, _, why = f.sigma_for(release, journal)
+    assert (sd, why) == want
+
+
+def test_journal_lines_may_carry_a_day_or_a_pasted_prefix():
+    # review C 484, findings 4 and 6: a V line starting with its day, a stage line pasted with 'journal: '
+    dated = ["- 2026-12-03 V1 · pass по year і month", "2026-12-11 `V2 · pass` по year і month", "2026-12-11 sigma_A · 0.1700 · n 140"]
+    assert f.sigma_for("2027-01-13", dated)[:1] == (0.17,)
+    assert f.sigma_for("2027-01-13", ["2026-12-03 V1 · fail: x"])[0] == 0.164
+    sha = "c" * 64
+    card = CARD_TEXT.format(lines=f"journal: {R} T−3 · D x · без сигналу · sha256 {sha}\n")
+    assert f.journal_sha(card, R) == (sha, None)
+    assert f.one_line("3.8%\nabc\r\x1b d") == "3.8% abc   d"
+
+
+def test_decide_picks_two_and_fills_along_the_depth():
+    row = synth_row("2026-12-07")
+    why, events, mids = f.t3_prepare(row, R)
+    assert why is None and mids == [f"e1m{i}" for i in range(12)]  # every YoY market; titles come from /events/{id}
+    assert f.event_ids(events) == ["e3", "e1", "e2"]  # every open event, ordered by slug
+    p = f.t3_payload(row, R, why, events, {}, {}, [], (0.164, "x", None))
+    picks = [r for r in p["decision"]["rule_signals"] if r["pick"]]
+    assert [r["title"] for r in picks] == ["3.7%", "3.8%"] and p["skip"] is None  # flagged in the row order
+    q38 = bracket_prob((38, 38), 3.79, 0.164)
+    assert picks[1]["q"] == pytest.approx(q38) and picks[1]["edge"] == pytest.approx(q38 - 0.10 - 0.01 * 0.10 * 0.90)
+    f37, f38 = p["decision"]["fills"]
+    assert f38["stop"] == "stake" and f38["levels"] == 2 and f38["cost_usd"] == pytest.approx(50.0) and f38["executable"]
+    assert f37["stop"] == "edge" and f37["shares"] == pytest.approx(300.0) and f37["p_in"] == pytest.approx(0.11)
+    assert f.same_record(f.decide(json.loads(json.dumps(p["decision_input"]))), json.loads(json.dumps(p["decision"])))
+
+
+def test_t3_skip_reasons():
+    row = synth_row("2026-12-07")
+    why, events, _ = f.t3_prepare(row, R)
+    assert f.t3_payload(row, R, why, events, {}, {}, [], (None, None, "no sigma_A"))["skip"] == "no sigma_A"
+    assert f.t3_payload(row, R, why, events, {}, {}, [], (float("nan"), "x", None))["skip"] == "model"
+    brs = synth_brackets("2026-12-07", asks=dict.fromkeys(TITLES))  # no ask and no bid anywhere in the YoY event
+    row = base_row("2026-12-07", brs, synth_depth(brs))
+    why, events, _ = f.t3_prepare(row, R)
+    assert f.t3_payload(row, R, why, events, {}, {}, [], (0.164, "x", None))["skip"] == "no quotes"
+
+
+# --------------------------------------------------------------------------------------------- write stages in-process
+
+
+def test_t3_writes_once_inside_its_window_from_the_row_and_gamma(tmp_path, capsys):
+    row = synth_row("2026-12-07")
+    db = make_db(tmp_path / "db.sqlite", row, synth_row("2026-12-06", asks={"3.8%": 0.01}))
+    calls: list = []
+    assert write("T-3", datetime(2026, 12, 7, 21, 4, tzinfo=UTC), tmp_path, db, gamma_rt(calls=calls)) == 1  # early
+    assert write("T-3", datetime(2026, 12, 9, 12, 0, 1, tzinfo=UTC), tmp_path, db, gamma_rt(calls=calls)) == 1  # late
+    assert not (tmp_path / "state").exists() and calls == []
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(calls=calls)) == 0
+    out = capsys.readouterr().out.splitlines()
+    raw = (tmp_path / "state" / R / "T-3.json").read_bytes()
+    assert (tmp_path / "docs" / R / "T-3.json").read_bytes() == raw  # the copy for main: the same bytes
+    # the journal line is printed alone on the line after the note, without a prefix, and gives the file's sha256
+    line = out[out.index(f.JOURNAL_NOTE) + 1]
+    assert line.startswith(f"{R} T−3 · D {AT_T3.isoformat()} · джерело рядок 2026-12-07/")
+    assert f.journal_sha(CARD_TEXT.format(lines=line + "\n"), R) == (hashlib.sha256(raw).hexdigest(), None)
+    rec = json.loads(raw)
+    assert rec["source"]["day"] == "2026-12-07" and rec["D"] == AT_T3.isoformat() and rec["skip"] is None
+    # the digest is recomputed from the file alone and equals the database row's (read mode=ro)
+    assert f.row_digest(rec["digest_preimage"]) == rec["row_digest"] == row_digest(f.read_row(db, "2026-12-07"))
+    assert rec["row"]["books_depth_z"]["main"]["e1t5"]["asks"][0] == [0.10, 300.0]  # unpacked
+    # Gamma: /markets/{id} of every YoY market, /events/{id} of every open event; the market's own feeSchedule wins
+    # over the fee_type table
+    assert sorted(calls) == sorted([f"/markets/e1m{i}" for i in range(12)] + ["/events/e1", "/events/e2", "/events/e3"])
+    assert set(rec["gamma"]) == {f"e1m{i}" for i in range(12)} and set(rec["gamma_events"]) == {"e1", "e2", "e3"}
+    assert rec["gamma"]["e1m0"]["acceptingOrders"] is True and rec["gamma"]["e1m0"]["closed"] is False
+    sig = {r["title"]: r for r in rec["decision"]["rule_signals"]}
+    assert sig["3.8%"]["fee"] == pytest.approx(0.02 * 0.10 * 0.90) and sig["3.8%"]["pick"]
+    ev = {e["event_id"]: e for e in rec["events"]}
+    assert ev["e1"]["rules"] == "ok" and ev["e2"]["why"] == "not headline YoY"
+    assert {k: e["title"] for k, e in ev.items()} == EVENT_TITLES  # the title of every open event (registration п. 2)
+    assert f.gamma_why(rec, rec["gamma"], rec["gamma_events"]) == []
+    assert f.same_record(f.decide(rec["decision_input"]), rec["decision"])
+    assert rec["code_sha"] == "HEAD" and rec["CODE_PATHS"] == list(f.CODE_PATHS) and isinstance(rec["code_dirty"], str)
+    # written once: a second run (also after deleting the local file, the copy stays) writes nothing
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt()) == 1 and "exists" in capsys.readouterr().out
+    (tmp_path / "state" / R / "T-3.json").unlink()
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt()) == 1
+    assert not (tmp_path / "state" / R / "T-3.json").exists() and (tmp_path / "docs" / R / "T-3.json").read_bytes() == raw
+
+
+def test_unusable_t3_row_is_a_skip_and_no_other_day_is_substituted(tmp_path):
+    # registration п. 5 (1): nothing is substituted, neither another day's row nor a snapshot. That no snapshot is read
+    # rests on the scanner having no code that reads one (review C 484, finding 9 (a)): the snapshot directory below
+    # sits where no implementation would look, so the assertions about it are a check of the source, not more.
+    snap = tmp_path / "snapshots" / "20261207T1600Z"
+    snap.mkdir(parents=True)
+    (snap / "events_open.json").write_text("[]")
+    (snap / "nowcast_year.json").write_text("[]")
+    stale = synth_row("2026-12-07", cf_last_day_year="2026-12-01")
+    db = make_db(tmp_path / "db.sqlite", stale, synth_row("2026-12-06"), synth_row("2026-12-08"))
+    calls: list = []
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(calls=calls)) == 0
+    rec = rec_of(tmp_path, "T-3")
+    assert rec["skip"] == "nowcast stale" and rec["decision"] is None and rec["decision_input"] is None
+    assert sorted(calls) == ["/events/e1", "/events/e2", "/events/e3"]  # titles only: no market asked for a skip
+    assert rec["source"]["day"] == "2026-12-07" and rec["row_digest"] == row_digest(stale)
+    assert "20261207T1600Z" not in json.dumps(rec) and "snapshots/" not in json.dumps(rec)
+    empty = tmp_path / "e"
+    empty.mkdir()
+    db2 = make_db(empty / "db.sqlite", synth_row("2026-12-06"))
+    assert write("T-3", AT_T3, empty, db2) == 0
+    rec = rec_of(empty, "T-3")
+    assert rec["skip"] == "no row" and rec["row_digest"] is None and rec["source"] == {"day": "2026-12-07", "why": "no row"}
+
+
+@pytest.mark.parametrize("how", ["renamed", "only other series", "rule text"])
+def test_no_yoy_event_is_a_recorded_skip(tmp_path, how):
+    if how == "renamed":
+        brs = [b for b in synth_brackets("2026-12-07", yoy_slug="cpi-yoy-november-2026")]
+    elif how == "only other series":
+        brs = [b for b in synth_brackets("2026-12-07") if b["event_id"] != "e1"]
+    else:
+        brs = synth_brackets("2026-12-07")
+    db = make_db(tmp_path / "db.sqlite", base_row("2026-12-07", brs, synth_depth(brs)))
+    answers = {f"e1m{i}": gamma_answer(f"e1m{i}", desc="12-month change, one decimal") for i in range(12)} if how == "rule text" else None
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(answers)) == 0
+    rec = rec_of(tmp_path, "T-3")
+    assert rec["skip"] == "no YoY event" and not any(e["taken"] for e in rec["events"])
+    assert {e["slug"] for e in rec["events"]} == {b["event_slug"] for b in brs}  # every open event listed with its reason
+    if how == "rule text":
+        e1 = next(e for e in rec["events"] if e["event_id"] == "e1")
+        assert e1["why"] == "rules: no 'before seasonal adjustment'" and e1["rules"] == "missing"
+
+
+def test_gamma_down_takes_the_registered_fallbacks(tmp_path):
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"))
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(down=True)) == 0
+    rec = rec_of(tmp_path, "T-3")
+    assert rec["skip"] is None and len(rec["missing"]) == 12 + 3 and not any(g["ok"] for g in rec["gamma"].values())
+    assert all(e["title"] is None for e in rec["events"]) and f.gamma_why(rec, rec["gamma"], rec["gamma_events"]) == []
+    e1 = next(e for e in rec["events"] if e["event_id"] == "e1")
+    assert e1["taken"] and e1["rules"] == "unchecked"  # taken by its slug
+    sig = {r["title"]: r for r in rec["decision"]["rule_signals"]}
+    assert sig["3.8%"]["fee"] == pytest.approx(0.01 * 0.10 * 0.90)  # the fee_type table: economics_fees 0.01
+
+
+def test_non_finite_prices_are_no_ask_and_the_file_is_strict_json(tmp_path):
+    # fourth review B 481, finding 5
+    brs = synth_brackets("2026-12-07", asks={"3.8%": float("nan"), "3.9%": float("inf")})
+    depth = synth_depth(brs)
+    depth["main"]["e1t7"] = {"read_ts": 1, "min_size": float("nan"), "asks": [[float("nan"), 5.0], [0.05, float("inf")]]}
+    text = json.dumps({"series_listed": list(SERIES), "counts": {}, "brackets": brs})  # NaN / Infinity literals
+    db = make_db(tmp_path / "db.sqlite", base_row("2026-12-07", brs, depth, books=text))
+    assert write("T-3", AT_T3, tmp_path, db, gamma_rt(down=True)) == 0
+    raw = (tmp_path / "state" / R / "T-3.json").read_text()
+    rec = json.loads(raw, parse_constant=lambda c: pytest.fail(f"non-strict JSON literal {c}"))  # allow_nan=False
+    sig = {r["title"]: r for r in rec["decision"]["rule_signals"]}
+    assert sig["3.8%"]["why"] == "no ask" and sig["3.9%"]["why"] == "no ask" and sig["3.8%"]["q"] is not None
+    assert rec["decision_input"]["depth"]["e1t7"] == {"asks": [], "min_size": None, "read_ts": 1}
+
+
+def test_the_scanner_has_no_code_that_reads_a_snapshot():
+    # the property the snapshot-directory tests rest on (review C 484, finding 9 (a)): apart from docstrings, no
+    # string, name or attribute of the scanner refers to the snapshot directory or the snapshot stage
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "scripts" / "pm_cpi_forward.py").read_text())
+    docs = {id(n.body[0].value) for n in ast.walk(tree) if isinstance(n, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef)
+            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}  # fmt: skip
+    words = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+    words += [n.id for n in ast.walk(tree) if isinstance(n, ast.Name)] + [n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
+    assert not [w for w in words if "snapshots" in w or "stage_snapshot" in w or "/snapshots" in w]
+
+
+def test_journal_line_is_printed_alone_and_on_one_line(capsys):
+    f.journal_line(f"{R} T−3 · D x · 3.8%\nevil · sha256 {'d' * 64}")
+    out = capsys.readouterr().out.splitlines()
+    assert out == [f.JOURNAL_NOTE, f"{R} T−3 · D x · 3.8% evil · sha256 {'d' * 64}"]
+
+
+def test_same_record_takes_two_nans_as_equal():
+    assert f.same_record({"edge": float("nan")}, {"edge": float("nan")})
+    assert not f.same_record({"edge": float("nan")}, {"edge": 0.1})
+
+
+def test_t1_row_without_a_yoy_nowcast_gives_the_clv_from_its_books_alone(tmp_path, capsys):
+    # item 484 (a): the T-1 source is the job's row only. The snapshot directory of 09.12 next to it is a check of the
+    # source, as above: the scanner has no code that reads snapshots (review C 484, finding 9 (a))
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-07"))
+    assert write("T-3", AT_T3, tmp_path, db) == 0
+    t3 = rec_of(tmp_path, "T-3")
+    picks = {x["token"]: x for x in t3["decision"]["fills"]}
+    brs = synth_brackets("2026-12-09", asks={"3.8%": 0.15, "3.7%": 0.09})
+    for b in brs:
+        b["read_ts"] = _ts("2026-12-09", "15:31")  # read before the nowcast download: the T-3 pairing would drop it
+    t1 = base_row("2026-12-09", brs, synth_depth(brs), status="partial", cf_year_sha=None, yoy_headline_pct=None,
+                  cf_year_ts=_ts("2026-12-09", "15:35"), cf_month_ts=_ts("2026-12-09", "15:35"), books_paired=0)  # fmt: skip
+    snap = tmp_path / "snapshots" / "20261209T1600Z"
+    snap.mkdir(parents=True)
+    (snap / "books_e1.json").write_text(json.dumps([{"asset_id": t, "bids": [{"price": "0.90", "size": "9"}],
+                                                       "asks": [{"price": "0.95", "size": "9"}]} for t in picks]))  # fmt: skip
+    db = make_db(tmp_path / "db.sqlite", t1)
+    assert f.row_why(t1, "2026-12-09", "2026-11") == "no yoy nowcast"
+    assert write("T-1", datetime(2026, 12, 9, 21, 4, tzinfo=UTC), tmp_path, db) == 1  # early
+    assert write("T-1", AT_T1, tmp_path, db) == 0
+    rec = rec_of(tmp_path, "T-1")
+    assert rec["t3_file"]["kind"] == "docs" and rec["source"]["day"] == "2026-12-09"
+    by = {c["token"]: c for c in rec["clv"]}
+    assert set(by) == set(picks)
+    b38 = next(b for b in brs if b["title"] == "3.8%")
+    c = by[b38["token"]]
+    assert (c["bid"], c["ask"], c["why"]) == (b38["bid"], 0.15, None)
+    want = clv(picks[b38["token"]]["p_in"], picks[b38["token"]]["shares"], b38["bid"], 0.15)
+    assert c["clv"]["usd"] == pytest.approx(want["usd"]) and c["clv"]["mid"] == pytest.approx((b38["bid"] + 0.15) / 2)
+    assert rec["quotes"][b38["token"]] == {"bid": b38["bid"], "ask": 0.15, "why": None}
+    assert "decision" not in rec and "20261209T1600Z" not in json.dumps(rec) and "snapshots/" not in json.dumps(rec)
+    assert all(c["clv"]["mid"] < 0.9 for c in rec["clv"])  # the snapshot's 0.90 / 0.95 books were never used
+    assert f.t1_check(rec, f.read_row(db, "2026-12-09")) == (True, True)
+    assert f.t1_check(rec, {**t1, "updated_ts": 1}) == (False, False)  # another row: the DB row applies (п. 8)
+
+
+def test_t1_without_a_row_has_no_clv_and_t7_is_a_record_without_decision(tmp_path):
+    db = make_db(tmp_path / "db.sqlite", synth_row("2026-12-03"))
+    calls: list = []
+    assert write("T-7", AT_T7, tmp_path, db, gamma_rt(calls=calls)) == 0
+    rec = rec_of(tmp_path, "T-7")
+    assert rec["mu"] == 3.79 and len(rec["quotes"]) == 18 and "decision" not in rec and "gamma" not in rec
+    assert sorted(calls) == ["/events/e1", "/events/e2", "/events/e3"] and rec["missing"] == []  # titles only
+    assert {e["event_id"]: e["title"] for e in rec["events"]} == EVENT_TITLES
+    assert write("T-1", AT_T1, tmp_path, db) == 0
+    rec = rec_of(tmp_path, "T-1")
+    assert rec["source"]["why"] == "no row" and rec["quotes"] == {} and rec["clv"] is None and rec["t3_file"]["kind"] is None
+
+
+# ------------------------------------------------------------------------------------------------------ subprocesses
+
+
+def test_code_paths_are_every_module_the_scanner_imports(tmp_path):
+    # item 484 (c), registration п. 7: the scanner run in a subprocess on the fixture (Gamma unreachable, so the
+    # request path runs too); every tradedesk.* and scanner module in sys.modules must be one of CODE_PATHS and back
+    db = make_db(tmp_path / "db.sqlite", fixture_row("2026-12-07"), fixture_row("2026-12-09"))
+    found, foreign = {}, []
+    for stage, at in (("T-3", AT_T3), ("T-1", AT_T1)):
+        args = ["--stage", stage, "--release", R, "--at", at.isoformat(), "--code-sha", "HEAD", "--tree", str(REPO_ROOT),
+                "--repo", str(REPO_ROOT), "--db", str(db), "--root", str(tmp_path / "state"), "--docs", str(tmp_path / "docs"),
+                "--http-retries", "0"]  # fmt: skip
+        res = f.run_tree(REPO_ROOT, args, REPO_ROOT, offline_env())
+        assert res.returncode == 0, res.stdout + res.stderr
+        rec = rec_of(tmp_path, stage)
+        found[stage] = set(rec["modules"])
+        foreign += [x for x in rec["code_dirty"].splitlines() if x[:1] in "XO"]  # imported, not in CODE_PATHS / the tree
+    t3 = rec_of(tmp_path, "T-3")
+    assert t3["skip"] is None and t3["missing"] and t3["decision"] is not None  # Gamma was asked (and failed offline)
+    want = "CODE_PATHS = (\n" + "".join(f'    "{p}",\n' for p in sorted(found["T-3"], key=_order)) + ")"
+    assert found["T-3"] == set(f.CODE_PATHS), f"regenerate the constant in scripts/pm_cpi_forward.py:\n{want}"
+    assert found["T-1"] <= set(f.CODE_PATHS) and foreign == []
+    assert list(f.CODE_PATHS) == sorted(f.CODE_PATHS, key=_order)
+
+
+def _order(p):
+    return (not p.startswith("scripts/"), p)
+
+
+def _git(repo, *args, when="2026-12-07T20:00:00Z", who=("agent", "agent@example.invalid"), home=None):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "agent", "GIT_AUTHOR_EMAIL": "agent@example.invalid", "GIT_COMMITTER_NAME": who[0],
+           "GIT_COMMITTER_EMAIL": who[1], "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when, "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": str(home / "gitconfig"), "HOME": str(home)}  # fmt: skip
+    return subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+
+CARD_TEXT = "# card\n\n## Форвард-журнал\nРядки етапів.\n\n{lines}\n## Вердикт\n"
+
+
+def fetched(repo, when):
+    """A FETCH_HEAD in ``repo`` with mtime ``when`` (ISO): what `git fetch` leaves."""
+    p = repo / ".git" / "FETCH_HEAD"
+    p.write_text("0" * 40 + "\t\tbranch 'main' of origin\n")
+    ts = datetime.fromisoformat(when).timestamp()
+    os.utime(p, (ts, ts))
+
+
+@pytest.fixture(scope="module")
+def world(tmp_path_factory):
+    """A git repository whose main has M0 (07.12 20:00, the scanner's CODE_PATHS) and a later commit changing
+    core/http.py (07.12 21:30); T-3 written by `launch` from the M0 tree (subprocess, Gamma unreachable)."""
+    base = tmp_path_factory.mktemp("fwd")
+    home = base / "home"
+    home.mkdir()
+    (home / "gitconfig").write_text("")
+    repo = base / "repo"
+    repo.mkdir()
+    g = lambda *a, **kw: _git(repo, *a, home=home, **kw)  # noqa: E731
+    g("init", "-q", "-b", "main")
+    for p in f.CODE_PATHS:
+        (repo / p).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / p, repo / p)
+    (repo / f.CARD).parent.mkdir(parents=True, exist_ok=True)
+    (repo / f.CARD).write_text(CARD_TEXT.format(lines="(записів ще нема)\n"))
+    g("add", "-A")
+    g("commit", "-q", "-m", "M0")
+    m0 = g("rev-parse", "HEAD")
+    http = repo / "src/tradedesk/core/http.py"
+    http.write_text(http.read_text() + "\n# a merge after M0\n")
+    g("commit", "-q", "-am", "after M0", when="2026-12-07T21:30:00Z")
+    after = g("rev-parse", "HEAD")
+    # a local commit before 21:00 with M0's CODE_PATHS and another card (review C 484, blocker 1: «чужий --ref»)
+    g("checkout", "-q", "-b", "side", m0)
+    (repo / f.CARD).write_text(CARD_TEXT.format(lines="V1 · fail: chosen\n"))
+    g("commit", "-q", "-am", "side", when="2026-12-07T20:30:00Z")
+    side = g("rev-parse", "HEAD")
+    g("checkout", "-q", "main")
+    g("update-ref", "refs/remotes/origin/main", after)
+    fetched(repo, "2026-12-07T21:30:00+00:00")  # the launcher's `git fetch` at the start of step 486
+    db = make_db(base / "db.sqlite", synth_row("2026-12-07"), synth_row("2026-12-09"))
+    db2 = make_db(base / "db2.sqlite", synth_row("2026-12-07", updated_ts=1), synth_row("2026-12-09", updated_ts=1))
+    out: list[str] = []
+    rc = f.launch("T-3", R, AT_T3, repo=repo, ref="origin/main", db=db, root=base / "state", docs=base / "docs",
+                  tmp=base / "tmp", http_retries=0, env=offline_env())  # fmt: skip
+    raw = (base / "state" / R / "T-3.json").read_bytes()
+    return SimpleNamespace(base=base, home=home, repo=repo, g=g, m0=m0, after=after, side=side, db=db, db2=db2, raw=raw, rc=rc,
+                           out=out)  # fmt: skip
+
+
+def _case(w, name, content, *, journal=None, merge_by=GH, merge_at="2026-12-07T22:30:00Z", branch_edits=0, change_after=False):
+    g, path = w.g, w.repo / f.DOCS_DIR / R / "T-3.json"
+    g("checkout", "-q", "-B", f"br-{name}", w.after)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for k in range(branch_edits):
+        path.write_bytes(content + b" " * (k + 1))
+        g("add", "-A")
+        g("commit", "-q", "-m", f"edit {k}", when="2026-12-07T22:12:00Z")
+    sha = journal or hashlib.sha256(content).hexdigest()
+    line = f"{R} T−3 · D {AT_T3.isoformat()} · джерело рядок 2026-12-07 · без сигналу · sha256 {sha}\n"
+    (w.repo / f.CARD).write_text(CARD_TEXT.format(lines=line))
+    path.write_bytes(content)
+    g("add", "-A")
+    g("commit", "-q", "-m", "T-3", when="2026-12-07T22:15:00Z")
+    g("checkout", "-q", "-B", f"mn-{name}", w.after)
+    g("merge", "-q", "--no-ff", "--no-edit", f"br-{name}", when=merge_at, who=merge_by)
+    if change_after:
+        path.write_bytes(content + b"\n")
+        g("commit", "-q", "-am", "later", when="2026-12-09T20:00:00Z", who=merge_by)
+    g("update-ref", f"refs/remotes/{name}/main", "HEAD")
+    g("checkout", "-q", "--detach", w.after)
+    return f"{name}/main"
+
+
+def _ask(inp, title, ask):
+    """The decision input with the ask of the bracket ``title`` set to ``ask`` (and its mid)."""
+    inp = json.loads(json.dumps(inp))
+    for g in inp["events"]:
+        for b in g:
+            if b["title"] == title:
+                b["ask"], b["mid"] = ask, (b["bid"] + ask) / 2 if b["bid"] is not None else None
+    return inp
+
+
+def _edit(raw, **kw):
+    rec = json.loads(raw)
+    for k, v in kw.items():
+        rec[k] = v(rec) if callable(v) else v
+    return f.dump(rec)
+
+
+def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
+    # fourth review B 481, finding 1: main changed a CODE_PATHS file after M0, the record stays valid
+    assert world.rc == 0
+    rec = json.loads(world.raw)
+    assert rec["code_sha"] == rec["M0"] == world.m0 and rec["code_dirty"] == "" and rec["skip"] is None
+    assert set(rec["modules"]) == set(f.CODE_PATHS) and rec["decision"]["fills"]
+    assert f.m0_of(world.repo, "origin/main", R) == world.m0
+    ref = _case(world, "pass", world.raw)
+    capsys.readouterr()
+    assert f.proof(R, repo=world.repo, ref=ref, db=world.db, root=tmp_path, tmp=tmp_path) is True
+    out = capsys.readouterr().out.rstrip().splitlines()
+    assert out[-1] == "proof pass", out
+    # finding 8: the first line names the arguments, the ref with its sha
+    assert out[0].startswith(f"{R} proof args · repo {world.repo} · ref {ref} = ") and f"db {world.db}" in out[0]
+    assert any("row_digest = БД так" in x for x in out)
+    assert any("перерахунок = записаному так · перебудова з рядка БД = записаному так · Gamma ok" in x for x in out), out
+    assert any("T-1: no file" in x for x in out)
+    # T-1 checked against the database (finding 3): the verdict stays, the line says which applies
+    assert f.write_stage("T-1", R, AT_T1, db=world.db, root=tmp_path / "s", docs=tmp_path / "d", repo=world.repo,
+                         code_sha=world.after, m0=None, tree=world.repo, rt_factory=gamma_rt()) == 0  # fmt: skip
+    capsys.readouterr()
+    assert f.proof(R, repo=world.repo, ref=ref, db=world.db, root=tmp_path / "s", tmp=tmp_path) is True
+    assert any("T-1 (local): row_digest = БД так · close quotes = recomputed так" in x for x in capsys.readouterr().out.splitlines())
+    assert f.proof(R, repo=world.repo, ref=ref, db=world.db2, root=tmp_path / "s", tmp=tmp_path) is False  # T-3 row differs
+    out = capsys.readouterr().out
+    assert "T-1 (local): row_digest = БД ні" in out and "the DB row applies" in out
+
+
+@pytest.mark.parametrize(
+    ("name", "build", "db2", "want"),
+    [("absent", None, False, "proof fail: not merged (not merged)"),
+     ("late", {"merge_at": "2026-12-09T12:00:01Z"}, False, "not merged (late)"),
+     ("notgh", {"merge_by": ("agent", "agent@example.invalid")}, False, "not merged (not a GitHub merge)"),
+     ("after", {"change_after": True}, False, "not merged (changed after)"),
+     ("journal", {"journal": "0" * 64}, False, "not merged (sha256 ≠ journal"),
+     ("branch", {"branch_edits": 1}, False, "not merged (edited on the way to main: 2 commits)"),
+     ("dbrow", {}, True, "mismatch (row_digest ≠ DB row)"),
+     ("preimage", {"edit": {"digest_preimage": lambda r: {**r["digest_preimage"], "late": 1}}}, False,
+      "mismatch (row_digest ≠ its preimage)"),
+     ("recompute", {"edit": {"decision": lambda r: {**r["decision"], "fills": [{**r["decision"]["fills"][0], "shares": 1.0},
+                                                                              *r["decision"]["fills"][1:]]}}}, False,
+      "mismatch (recompute)"),
+     ("dirty", {"edit": {"code_dirty": "M src/tradedesk/core/http.py"}}, False, "code (code_dirty not empty)"),
+     ("codesha", {"edit": {"code_sha": "AFTER"}}, False, "code (code_sha ≠ M0)"),
+     # review C 484, blocker 1 (b): a commit before 21:00 with M0's CODE_PATHS (git diff --quiet = 0) and another card
+     ("foreign", {"edit": {"code_sha": "SIDE", "M0": "SIDE"}}, False, "code (code_sha ≠ M0, M0 field ≠ M0)"),
+     ("paths", {"edit": {"CODE_PATHS": lambda r: r["CODE_PATHS"][:-1]}}, False, "code (CODE_PATHS ≠ those of M0)"),
+     ("window", {"edit": {"D": "2026-12-07T21:00:00+00:00"}}, False, "window (early)"),
+     # finding 9: D inside the window but after the merge commit (22:30 07.12)
+     ("dafter", {"edit": {"D": "2026-12-08T10:00:00+00:00"}}, False, "window (D after the merge)"),
+     # blocker 1, scenario A: the release hidden as a skip with a data reason
+     ("skipmodel", {"edit": {"skip": "model", "decision_input": None, "decision": None}}, False,
+      "mismatch (rebuild: decision_input, decision, skip)"),
+     ("skipnorow", {"edit": {"skip": "no row", "decision_input": None, "decision": None}}, False,
+      "mismatch (rebuild: decision_input, decision, skip)"),
+     # blocker 1, scenario B: an ask of the decision input changed and the decision recomputed by the same decide
+     ("input", {"edit": {"decision_input": lambda r: _ask(r["decision_input"], "3.9%", 0.05),
+                         "decision": lambda r: f.decide(r["decision_input"])}}, False,
+      "mismatch (rebuild: decision_input, decision)"),
+     ("title", {"edit": {"events": lambda r: [{**e, "title": "x"} for e in r["events"]]}}, False, "mismatch (rebuild: events)"),
+     ("gammakeys", {"edit": {"gamma": lambda r: dict(list(r["gamma"].items())[1:])}}, False,
+      "mismatch (gamma: gamma keys ≠ asked (11 vs 12))"),
+     ("missing", {"edit": {"missing": lambda r: r["missing"][1:]}}, False, "mismatch (gamma: gamma e1m0: request failed ≠ missing)"),
+     ("raised", {"raw": b"not json"}, False, "proof fail: raised JSONDecodeError")],
+)  # fmt: skip
+def test_proof_fails_for_every_reason(world, tmp_path, capsys, name, build, db2, want):
+    if build is None:
+        ref = "origin/main"
+    else:
+        build = dict(build)
+        raw = build.pop("raw", world.raw)
+        subst = {"AFTER": world.after, "SIDE": world.side}
+        edit = {k: subst.get(v, v) if isinstance(v, str) else v for k, v in (build.pop("edit", {}) or {}).items()}
+        ref = _case(world, name, _edit(raw, **edit) if edit else raw, **build)
+    capsys.readouterr()
+    assert f.proof(R, repo=world.repo, ref=ref, db=world.db2 if db2 else world.db, root=tmp_path, tmp=tmp_path) is False
+    last = capsys.readouterr().out.rstrip().splitlines()[-1]
+    assert last.startswith("proof fail: ") and want in last, last
+    if name in ONLY:  # this reason alone; for all but codesha / dafter it is a check the proof lacked before review C 484,
+        assert last == f"proof fail: {want}", last  # so the record passed without it
+
+
+ONLY = {"codesha", "foreign", "paths", "dafter", "skipmodel", "skipnorow", "input", "title", "gammakeys", "missing"}
+
+
+def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsys):
+    kw = {"repo": world.repo, "db": world.db, "root": tmp_path / "s", "docs": tmp_path / "d", "tmp": tmp_path}
+    assert f.launch("T-3", R, datetime(2026, 12, 9, 12, 1, tzinfo=UTC), ref="origin/main", **kw) == 1
+    assert "outside its window (late)" in capsys.readouterr().out
+    assert f.launch("T-3", "2026-12-08", datetime(2026, 12, 5, 22, 0, tzinfo=UTC), ref="origin/main", **kw) == 1
+    assert "no M0" in capsys.readouterr().out  # the repository has no commit before 05.12 21:00
+    assert not (tmp_path / "s").exists()
+    # an M0 without the scanner (not merged before 21:00 of T-3): nothing written, no traceback
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    _git(bare, "init", "-q", "-b", "main", home=world.home)
+    (bare / "README").write_text("x")
+    _git(bare, "add", "-A", home=world.home)
+    _git(bare, "commit", "-q", "-m", "M0 without the scanner", home=world.home)
+    _git(bare, "update-ref", "refs/remotes/origin/main", "HEAD", home=world.home)
+    # finding 5: origin/main is trusted only after a fetch at or after 21:00 UTC of day T-3; T-3 takes origin/main only
+    assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
+    assert "may be stale (no FETCH_HEAD); run `git fetch origin main` first" in capsys.readouterr().out
+    fetched(bare, "2026-12-07T20:59:59+00:00")
+    assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
+    assert "may be stale (last fetch 2026-12-07T20:59:59+00:00 is before 2026-12-07T21:00:00+00:00)" in capsys.readouterr().out
+    fetched(bare, "2026-12-07T21:00:00+00:00")
+    assert f.launch("T-3", R, AT_T3, ref="main", **{**kw, "repo": bare}) == 1
+    assert "T-3 takes M0 from origin/main only" in capsys.readouterr().out
+    assert f.launch("T-3", R, AT_T3, ref="origin/main", **{**kw, "repo": bare}) == 1
+    assert "cannot be extracted (CalledProcessError" in capsys.readouterr().out and not (tmp_path / "s").exists()
+
+
+def test_code_dirty_lists_changed_missing_and_foreign_files(world, tmp_path):
+    tree = f.extract(world.repo, world.m0, f.CODE_PATHS, tmp_path)
+    assert f.code_dirty(world.repo, world.m0, tree, f.CODE_PATHS, (list(f.CODE_PATHS), [])) == ""
+    (tree / "src/tradedesk/core/http.py").write_text("changed")
+    (tree / "src/tradedesk/core/cache.py").unlink()
+    out = f.code_dirty(world.repo, world.m0, tree, f.CODE_PATHS, ([*f.CODE_PATHS, "src/tradedesk/extra.py"], ["/elsewhere/x.py"]))
+    assert out.splitlines() == ["D src/tradedesk/core/cache.py", "M src/tradedesk/core/http.py", "X src/tradedesk/extra.py",
+                                "O /elsewhere/x.py"]  # fmt: skip
+    assert f.code_dirty(world.repo, "0" * 40, tree, f.CODE_PATHS, ([], [])).startswith("git ls-tree failed")
+    assert f.code_paths_at(world.repo, world.m0) == f.CODE_PATHS
+    with pytest.raises(subprocess.CalledProcessError):
+        f.code_paths_at(world.repo, "0" * 40)

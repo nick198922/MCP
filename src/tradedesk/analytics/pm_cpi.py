@@ -816,10 +816,13 @@ def same_record(a: Any, b: Any, rel: float = 1e-9) -> bool:
     """The recomputed decision equals the recorded one (proof check of item 487, third review B 481, finding 2):
     the same JSON structure, mappings with the same keys, lists and tuples of the same length in the same order (a
     tuple written to JSON comes back as a list), equal strings, None and bools; numbers equal within ``rel`` relative
-    (abs 1e-12), so float last bits between Python versions do not matter. A bool never equals a number."""
+    (abs 1e-12), so float last bits between Python versions do not matter. A bool never equals a number. Two NaN are
+    equal (fourth review B 481, finding 5: a NaN in a recorded output must not turn a lawful record into a mismatch)."""
     if isinstance(a, bool) or isinstance(b, bool):
         return type(a) is type(b) and a == b
     if isinstance(a, int | float) and isinstance(b, int | float):
+        if math.isnan(a) or math.isnan(b):
+            return math.isnan(a) and math.isnan(b)
         return math.isclose(float(a), float(b), rel_tol=rel, abs_tol=1e-12)
     if isinstance(a, Mapping) and isinstance(b, Mapping):
         return set(a) == set(b) and all(same_record(a[k], b[k], rel) for k in a)

@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,7 @@ from tradedesk.store import Store
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import pm_cpi_forward as f  # noqa: E402
+import verify_pm_cpi_step0 as v0  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "pm_cpi_snapshot_2026-11-26.json"
@@ -284,6 +286,18 @@ def test_journal_lines_may_carry_a_day_or_a_pasted_prefix():
     card = CARD_TEXT.format(lines=f"journal: {R} T−3 · D x · без сигналу · sha256 {sha}\n")
     assert f.journal_sha(card, R) == (sha, None)
     assert f.one_line("3.8%\nabc\r\x1b d") == "3.8% abc   d"
+
+
+def test_vrows_used_are_the_lines_the_sigma_rests_on():
+    # item 492 (review C 484, R2): what the proof re-runs; nothing for 10.12 (sigma fixed), sigma_A only when both pass
+    j = ["V1 · pass", "2026-12-11 V2 · pass", "sigma_A · 0.1500 · n 150", "sigma_A · 0.2"]
+    later = "2027-01-13"
+    assert f.vrows_used(R, j) == {} and f.vrows_used(later, []) == {}
+    assert f.vrows_used(later, j) == {"V1": "pass", "V2": "pass", "sigma_A": 0.15}
+    assert f.vrows_used(later, ["V1 · pass", "V2 · fail: x", "sigma_A · 0.2"]) == {"V1": "pass", "V2": "fail"}
+    assert f.vrows_used(later, ["V1 · pass", "sigma_A · 0.2"]) == {"V1": "pass"}
+    card = CARD_TEXT.format(lines="\n".join(j) + "\n")
+    assert f.rebuild({}, later, None, card)["vrows"] == f.vrows_used(later, j) and f.rebuild({}, R, None, card)["vrows"] == {}
 
 
 def test_decide_picks_two_and_fills_along_the_depth():
@@ -954,6 +968,7 @@ def test_t3_runs_the_code_of_m0_and_its_proof_passes(world, tmp_path, capsys):
     assert any("перерахунок = записаному так · перебудова з рядка БД = записаному так · Gamma ok · ключі = M0 так" in x
                for x in out), out  # fmt: skip
     assert "  set B: not rules (descriptive)" in out  # review C 484 / 490, finding 4: descriptive, the verdict stays
+    assert "  V / sigma_A lines: none used" in out  # item 492: sigma of 10.12 is fixed, no command is run
     assert any("T-1: no file" in x for x in out)
     # T-1 checked against the database (finding 3): the verdict stays, the line says which applies
     assert f.write_stage("T-1", R, AT_T1, db=world.db, root=tmp_path / "s", docs=tmp_path / "d", repo=world.repo,
@@ -1100,6 +1115,192 @@ def test_fallback_of_set_b_runs_in_the_tree_of_m0(world, tmp_path):
     assert f.same_record(got, json.loads(json.dumps(f.fallback_record(f.read_row(world.db, "2026-12-07"), R, ""))))
     assert got["skip"] is None and got["row_digest"] == json.loads(world.raw)["row_digest"]
     assert all(e["rules"] == "unchecked" for e in got["events"] if e["taken"]) and got["decision"]["fills"]
+
+
+@pytest.mark.parametrize(
+    ("name", "lines", "drop", "boom", "want", "line"),
+    [("vfail", "V1 · fail: chosen\n", False, False, "proof pass", "V1 fail → fail"),
+     ("vwrong", "V1 · pass\nV2 · fail: chosen\n", False, False, "proof fail: mismatch (V / sigma_A lines: V1)", "V1 pass → fail · V2 fail → fail"),
+     ("vold", "V1 · pass\nV2 · fail: chosen\n", True, False, "proof pass", "V / sigma_A lines: not applicable, M0 before item 492"),
+     # review C 492, finding 4: an exception in the check is no verdict on the lines and keeps the proof's other reasons
+     ("vboom", "V1 · fail: chosen\n", False, True, "proof fail: code (code_dirty not empty); not recomputed (V / sigma_A "
+      "lines: raised RuntimeError: boom; run the proof again)", "V / sigma_A lines: raised RuntimeError")],
+)  # fmt: skip
+def test_proof_reruns_the_v_lines_its_m0_used(world, tmp_path, capsys, monkeypatch, name, lines, drop, boom, want, line):
+    # item 492 (review C 484, R2): an M0 for which 10.12 is after the first release (FIRST_RELEASE a day earlier), so
+    # its sigma rests on the journal. The world's database has no row of 03.12, 09.12, 11.12: V1 and V2 re-run as
+    # 'fail' by the data (NO ROW decides, S is not needed: there is none here). A line the commands of п. 10 do not
+    # reproduce is «mismatch»; an M0 without ``vrows`` (before item 492) is not checked (п. 9; review C 490, blocker 2)
+    monkeypatch.setattr(v0, "V1_OLDER", tmp_path / "no-s", raising=False)
+    if boom:
+        monkeypatch.setattr(f, "vrows_check", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    g, scanner = world.g, world.repo / "scripts/pm_cpi_forward.py"
+    g("checkout", "-q", "-B", f"m0-{name}", world.m0)
+    new = scanner.read_text().replace('FIRST_RELEASE = "2026-12-10"', 'FIRST_RELEASE = "2026-12-09"')
+    assert 'FIRST_RELEASE = "2026-12-09"' in new, "update this test"
+    if drop:
+        assert '"vrows": vrows, ' in new, "the rebuild answer of the scanner changed; update this test"
+        new = new.replace('"vrows": vrows, ', "")
+    scanner.write_text(new)
+    (world.repo / f.CARD).write_text(CARD_TEXT.format(lines=lines))
+    g("commit", "-q", "-am", "M0 after the first release", when="2026-12-07T20:30:00Z")
+    m0 = g("rev-parse", "HEAD")
+    g("checkout", "-q", "--detach", world.after)
+    src = f.SD_KZ_SOURCE + " (a vintage check failed)"  # what sigma_for of this M0 gives on a 'fail' line
+    dirty = {"code_dirty": "M scripts/pm_cpi_forward.py"} if boom else {}
+    ref = _case(world, name, _edit(world.raw, code_sha=m0, M0=m0, nowcast=lambda r: {**r["nowcast"], "sigma_source": src}, **dirty),
+                base=m0)  # fmt: skip
+    capsys.readouterr()
+    assert prove(world, ref, db=world.db, root=tmp_path, tmp=tmp_path) is (want == "proof pass")
+    out = capsys.readouterr().out.rstrip().splitlines()
+    assert out[-1] == want, out
+    assert any(line in x for x in out), out
+
+
+def _stamped(charts, stamp, step=False):
+    """A copy of a nowcast file with every chart stamped ``stamp``; ``step``: headline 2026-11 gets a new point 11/30."""
+    out = json.loads(json.dumps(charts))
+    for c in out:
+        c["chart"]["_comment"] = stamp
+    if step:
+        cats = out[-1]["categories"][0]["category"]
+        tail = cats.pop()  # the 'PCE Oct' line closes the chart
+        cats += [{"label": "11/30"}, tail]
+        for ds in out[-1]["dataset"]:
+            ds["data"].append({"value": "3.84" if ds["seriesname"] == "CPI Inflation" else "2.87"})
+    return out
+
+
+def _vfile(charts):
+    return zlib.compress(json.dumps(charts).encode())
+
+
+@pytest.fixture
+def vw(world, tmp_path, monkeypatch):
+    """item 492: the commands of п. 10 (row export, vcheck, sigma) by the step-0 script of the tree of M0 on synthetic
+    copies of the fixture's files: S (registered by its sha256 here) and rows 03.12, 09.12, 11.12 on which V1 (with
+    the step of 2026-11) and V2 pass. ``w.fred``: the FRED CSV put into the cache of each run (None: none, so FRED is
+    asked through an unreachable proxy). ``w.check(used, db=...)``: :func:`f.vrows_check`. No network."""
+    from tradedesk.analytics.pm_cpi import archive_errors, fred_levels, sigma_archive, yoy_published
+
+    sample = json.loads(FIXTURE.read_text())
+    y, mo = sample["nowcast_year"], sample["nowcast_month"]
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "nowcast_year.json").write_text(json.dumps(y))
+    (snap / "nowcast_month.json").write_text(json.dumps(mo))
+    monkeypatch.setattr(v0, "V1_OLDER", snap)
+    monkeypatch.setattr(v0, "V1_OLDER_SHA256", {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in snap.iterdir()})
+    files = {"2026-12-03": (_stamped(y, "2026-11-30 00:00", True), _stamped(mo, "2026-11-30 00:00")),
+             "2026-12-09": (_stamped(y, "2026-11-30 00:00", True), _stamped(mo, "2026-11-30 00:00")),
+             "2026-12-11": (_stamped(y, "2026-12-07 00:00", True), _stamped(mo, "2026-12-07 00:00"))}  # fmt: skip
+    w = SimpleNamespace(files=files, snap=snap, fred=CSV_NOV, runs=[], tmp=tmp_path)
+    w.db = make_db(tmp_path / "v.sqlite", *(synth_row(d, cf_year_z=_vfile(a), cf_month_z=_vfile(b)) for d, (a, b) in files.items()))
+    w.sd = round(sigma_archive(archive_errors(files["2026-12-11"][0], yoy_published(fred_levels(CSV_NOV)), "2027-01-01"))[0], 4)
+
+    def mkdtemp(**kw):
+        d = Path(tempfile.mkdtemp(**kw))
+        w.runs.append(d)
+        if w.fred is not None:
+            fred = d / "cache" / "cleveland" / "fred"
+            fred.mkdir(parents=True)
+            for t in (datetime.now(UTC), datetime.now(UTC) + timedelta(days=1)):  # the command reads the CSV of its day
+                (fred / f"CPIAUCNS_{t:%Y%m%d}.csv").write_text(w.fred)
+        return str(d)
+
+    monkeypatch.setattr(f, "tempfile", SimpleNamespace(mkdtemp=mkdtemp))
+    tree = f.extract(world.repo, world.m0, f.CODE_PATHS, tmp_path)
+    w.check = lambda used, db=None: f.vrows_check({"vrows": used}, tree, world.repo, db or w.db, tmp_path, offline_env())
+    return w
+
+
+NOT_RE = "not recomputed (V / sigma_A lines: "
+
+
+def test_vrows_check_reruns_the_registered_commands(vw, capsys):
+    sd, check = vw.sd, vw.check
+    used = {"V1": "pass", "V2": "pass", "sigma_A": sd}
+    assert check(used) == []
+    assert f"V1 pass → pass · V2 pass → pass · sigma_A {sd} → {sd}" in capsys.readouterr().out
+    assert check({"sigma_A": sd + 0.001}) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    # review C 492, finding 8: sigma_for takes the line as it is, so a line of more than 4 decimals is no 4-place
+    # number the command prints, even when it rounds to it
+    assert round(sd + 0.00004, 4) == sd and check({"sigma_A": sd + 0.00004}) == ["mismatch (V / sigma_A lines: sigma_A)"]
+    assert check({"V1": "pass", "V2": "fail"}) == ["mismatch (V / sigma_A lines: V2)"]
+    for bad in (1, {"V1": "maybe"}, {"sigma_A": "0.15"}, {"sigma_A": True}, {"V3": "pass"}):
+        assert check(bad) == ["mismatch (V / sigma_A lines: M0 gives no line map)"], bad
+    # review C 492, finding 3: every run has its own directory under tmp, the FRED cache inside it
+    assert len(vw.runs) == len(set(vw.runs)) >= 4 and all(r.parent == vw.tmp and r.name.startswith("pm_cpi_vrows_") for r in vw.runs)
+
+
+@pytest.mark.parametrize("fred", ["<html><body>FRED is busy</body></html>\n", "observation_date,CPIAUCNS\n", None])
+def test_vrows_sigma_without_a_cpi_level_is_not_recomputed(vw, fred):
+    # review C 492, blocker 1: FRED answering an HTML page or an empty CSV (n 0, 'sigma_A None'), or not answering at
+    # all, gives no verdict: neither a true nor a false sigma_A line is «mismatch»; the next run has a fresh cache
+    vw.fred = fred
+    for sig in (vw.sd, vw.sd + 0.001):
+        got = vw.check({"sigma_A": sig})
+        assert len(got) == 1 and got[0].startswith(NOT_RE + "sigma_A: sigma: ") and got[0].endswith("; run the proof again)"), got
+    assert ("sigma_A None (exit 0)" in got[0]) is (fred is not None), got
+    vw.fred = CSV_NOV
+    assert vw.check({"sigma_A": vw.sd}) == []
+
+
+def _crash(real, how):
+    """``run_tree`` whose vcheck calls end badly: crash (no output), killed after the verdict line, timed out."""
+
+    def run(tree, args, repo, env=None, boot=f.BOOT, timeout=None):
+        if "vcheck" not in args:
+            return real(tree, args, repo, env, boot, timeout)
+        if how == "crash":
+            return real(tree, args, repo, env, "raise MemoryError", timeout)
+        res = real(tree, args, repo, env, boot, timeout)
+        if how == "killed":
+            return subprocess.CompletedProcess(res.args, -9, res.stdout, res.stderr)
+        raise subprocess.TimeoutExpired(res.args, timeout)
+
+    return run
+
+
+@pytest.mark.parametrize("how", ["db", "no S", "other S", "crash", "killed", "timeout"])
+def test_vrows_environment_failures_are_not_recomputed(vw, monkeypatch, how):
+    # review C 492, blocker 2: a failing environment is no verdict on the data, in either direction. Under each, a true
+    # 'V · pass' line and a false 'V · fail' line both give «not recomputed» (never a pass, never «mismatch»)
+    db = None
+    if how == "db":  # the row export cannot read the database: 'cannot read pm_cpi_snapshot', nothing exported
+        db = vw.tmp / "broken.sqlite"
+        db.write_text("not a database")
+    elif how == "no S":
+        monkeypatch.setattr(v0, "V1_OLDER", vw.tmp / "gone")
+    elif how == "other S":  # S changed: its sha256 is not the registered one
+        (vw.snap / "nowcast_month.json").write_text(json.dumps(vw.files["2026-12-03"][1]))
+    else:
+        monkeypatch.setattr(f, "run_tree", _crash(f.run_tree, how))
+    lines = [{"V1": "pass"}, {"V1": "fail"}] + ([{"V2": "pass"}, {"V2": "fail"}] if how not in ("no S", "other S") else [])
+    for used in lines:
+        got = vw.check(used, db)
+        assert len(got) == 1 and got[0].startswith(f"{NOT_RE}{next(iter(used))}: ") and got[0].endswith("; run the proof again)"), got
+    if how in ("no S", "other S"):  # V2 does not read S: still decided by the data
+        assert vw.check({"V2": "pass"}) == [] and vw.check({"V2": "fail"}) == ["mismatch (V / sigma_A lines: V2)"]
+    if how == "db":
+        assert "cannot read pm_cpi_snapshot" in got[0] or "neither exported nor absent" in got[0], got
+
+
+def test_vrows_data_outcomes_stay_verdicts(vw, monkeypatch):
+    # what the data decides is a verdict even when something else fails: no row (V1, also with S gone), «NOT exported»
+    # and a 'V fail' of vintage_why on two copies read (V2), and a mismatch of one line stands next to a line not
+    # recomputed
+    y, mo = vw.files["2026-12-09"]
+    monkeypatch.setattr(v0, "V1_OLDER", vw.tmp / "gone")
+    no_row = make_db(vw.tmp / "no03.sqlite", *(synth_row(d, cf_year_z=_vfile(a), cf_month_z=_vfile(b))
+                                               for d, (a, b) in vw.files.items() if d != "2026-12-03"))  # fmt: skip
+    assert vw.check({"V1": "fail"}, no_row) == [] and vw.check({"V1": "pass"}, no_row) == ["mismatch (V / sigma_A lines: V1)"]
+    not_exp = make_db(vw.tmp / "ne.sqlite", synth_row("2026-12-09", cf_year_z=_vfile(y)),  # no nowcast_month: «NOT exported»
+                      synth_row("2026-12-11", cf_year_z=_vfile(y), cf_month_z=_vfile(mo)))  # fmt: skip
+    assert vw.check({"V2": "fail"}, not_exp) == [] and vw.check({"V2": "pass"}, not_exp) == ["mismatch (V / sigma_A lines: V2)"]
+    same = make_db(vw.tmp / "same.sqlite", *(synth_row(d, cf_year_z=_vfile(y), cf_month_z=_vfile(mo)) for d in f.V_DAYS))
+    assert vw.check({"V2": "fail"}, same) == []  # 'V fail: same stamp' (exit 1): the data
+    assert vw.check({"V1": "pass", "V2": "pass"}, same) == ["mismatch (V / sigma_A lines: V2)"]  # V1 not recomputed (no S)
 
 
 def test_launch_refuses_outside_the_window_and_without_m0(world, tmp_path, capsys):

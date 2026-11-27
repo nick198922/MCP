@@ -178,6 +178,11 @@ REVIEWED: dict[str, tuple[int, str]] = {
         "compares the clock with a fixed date; the 2026-11-25 string is an --end that --recount refuses at any time",
     ),
     "tests/test_option_legs.py": (1, "_live_rt: scan_option_legs is called with the fixture's LIVE_NOW, not rt.now()"),
+    "tests/test_pm_cpi_forward.py": (
+        2,
+        "the sigma subprocess names its FRED cache by the real day, so the fixture writes the synthetic CSV for today "
+        "and tomorrow (relative); the command takes a fixed --before 2027-01-01 and compares no date with the clock",
+    ),
     "tests/test_radar.py": (1, "test_job_needs_a_store: the job raises on the missing store before rt.now()"),
     "tests/test_stablecoin_supply.py": (
         2,

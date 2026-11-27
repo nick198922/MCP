@@ -42,8 +42,11 @@ Files: ``~/.local/state/tradedesk-agents/pm_cpi/forward/<release>/<stage>.json``
 ``docs/forward/pm-cpi/<release>/<stage>.json`` (both created with ``open(..., "x")``; an existing file is never
 overwritten). ``--stage proof`` (item 487) checks the merged copy of ``T-3.json`` with git, the database (read-only)
 and, by the code of M0 (``code_sha`` must be M0), a recomputation of the decision from the file's input and a rebuild
-of the whole record from the database row, the file's Gamma answers and the card in M0; its first line names its
-arguments, its last line is ``proof pass`` or ``proof fail: <reason>``.
+of the whole record from the database row, the file's Gamma answers and the card in M0; after the first release it
+also re-runs the commands of п. 10 (``verify_pm_cpi_step0.py`` of the tree of M0: row export, vcheck, sigma; the V1
+snapshot S and FRED besides) for every V1 / V2 / sigma_A journal line the sigma rests on (item 492; a line no command
+decided is ``not recomputed``: no verdict, run again); its first line names its arguments, its last line is ``proof
+pass`` or ``proof fail: <reason>``.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zlib
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
@@ -495,21 +499,39 @@ def sigma_for(release: str, journal: Iterable[str]) -> tuple[float | None, str |
     first line of each kind counts; a line may start with 'YYYY-MM-DD ' (format of the card's «Форвард-журнал»)."""
     if release <= FIRST_RELEASE:
         return SD_KZ, SD_KZ_SOURCE, None
-    v: dict[str, str | None] = {"V1": None, "V2": None}
-    sig = None
+    v = journal_vrows(journal)
+    sig = v["sigma_A"]
+    if "fail" in (v["V1"], v["V2"]):
+        return SD_KZ, SD_KZ_SOURCE + " (a vintage check failed)", None
+    if v["V1"] == v["V2"] == "pass" and sig is not None and sig > 0:
+        return sig, "sigma_A (first line of the journal in M0)", None
+    return None, None, "no sigma_A"
+
+
+def journal_vrows(journal: Iterable[str]) -> dict[str, Any]:
+    """The first 'V1 · pass|fail', 'V2 · pass|fail' and 'sigma_A · <value>' lines of the journal: {'V1': 'pass' |
+    'fail' | None, 'V2': …, 'sigma_A': float | None}."""
+    v: dict[str, Any] = {"V1": None, "V2": None, "sigma_A": None}
     for line in journal:
         s = _clean(line)
         mv = re.match(rf"^{_DATE}(V1|V2) · (pass|fail)", s)
         if mv and v[mv[1]] is None:
             v[mv[1]] = mv[2]
         ms = re.match(rf"^{_DATE}sigma_A · (\d+(?:\.\d+)?)", s)
-        if ms and sig is None:
-            sig = float(ms[1])
-    if "fail" in v.values():
-        return SD_KZ, SD_KZ_SOURCE + " (a vintage check failed)", None
-    if v["V1"] == v["V2"] == "pass" and sig is not None and sig > 0:
-        return sig, "sigma_A (first line of the journal in M0)", None
-    return None, None, "no sigma_A"
+        if ms and v["sigma_A"] is None:
+            v["sigma_A"] = float(ms[1])
+    return v
+
+
+def vrows_used(release: str, journal: Iterable[str]) -> dict[str, Any]:
+    """The journal lines the sigma of a release rests on (registration п. 4, as amended 27.11 by item 492): none for
+    the first release (sigma fixed); else the first V1 and V2 lines there are, and the first sigma_A line when both
+    pass. The proof checks each of them against the registered commands of п. 10 (:func:`vrows_check`)."""
+    if release <= FIRST_RELEASE:
+        return {}
+    v = journal_vrows(journal)
+    used = {k: v[k] for k in ("V1", "V2") if v[k] is not None}
+    return {**used, "sigma_A": v["sigma_A"]} if v["V1"] == v["V2"] == "pass" and v["sigma_A"] is not None else used
 
 
 def journal_sha(card: str, release: str, stage: str = "T-3") -> tuple[str | None, str | None]:
@@ -668,7 +690,8 @@ def rebuild(rec: Mapping[str, Any], release: str, row: Mapping[str, Any] | None,
     the Gamma answers and ``missing`` of the file ``rec``, plus :func:`gamma_why` of the file's Gamma part."""
     recorded = (rec.get("gamma") or {}, rec.get("gamma_events") or {}, list(rec.get("missing") or []))
     out, mids, eids = t3_record(row, release, card_m0, lambda _m, _e: recorded)
-    return {"fields": {k: out.get(k) for k in REBUILT}, "gamma_why": gamma_why(rec, mids, eids), "keys": list(T3_KEYS)}
+    vrows = vrows_used(release, journal_lines(card_m0))  # item 492: the V / sigma_A lines the proof re-runs
+    return {"fields": {k: out.get(k) for k in REBUILT}, "gamma_why": gamma_why(rec, mids, eids), "vrows": vrows, "keys": list(T3_KEYS)}
 
 
 def b_why(rec: Mapping[str, Any]) -> str | None:
@@ -687,7 +710,10 @@ def fallback_record(row: Mapping[str, Any] | None, release: str, card_m0: str) -
     """The ``REBUILT`` fields of a T-3 record by the registered fallbacks of п. 8 (в), with no Gamma answer: the row of
     day T-3, the fee by the row's ``fee_type``, ``min_size`` from ``books_depth_z``, every event taken by its slug (no
     rule text). Set B takes a procedural skip from here when neither the copy in main nor the local file is there, and a
-    release of :func:`b_why` always; run by the code of M0 (``--fallback`` of its tree)."""
+    release of :func:`b_why` always; run by the code of M0 (``--fallback`` of its tree). ``card_m0`` gives only the
+    sigma: a «no sigma_A» release of set B is rebuilt with ``--m0 Mσ``, Mσ the first first-parent commit of main
+    whose card gives that release a sigma by ``sigma_for`` of the code of that release's M0 (registration п. 8 (1), as
+    amended 27.11 by item 492)."""
     out, _, _ = t3_record(row, release, card_m0, lambda _m, _e: ({}, {}, []))
     return {k: out.get(k) for k in REBUILT}
 
@@ -976,10 +1002,20 @@ BOOT = (
 )
 
 
-def run_tree(tree: Path, args: list[str], repo: Path, env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:
-    """Run the scanner of ``tree`` in a subprocess, that tree first in ``sys.path`` (isolated mode, no bytecode)."""
-    return subprocess.run([sys.executable, "-I", "-B", "-c", BOOT, str(tree), *args], cwd=repo, capture_output=True,
-                          text=True, env=dict(env) if env is not None else None)  # fmt: skip
+# The step-0 script of the tree (the registered commands of п. 10: row export, vcheck, sigma), for the proof (item 492).
+VBOOT = (
+    "import sys; t = sys.argv[1]; sys.path[:0] = [t + '/src', t + '/scripts']; import verify_pm_cpi_step0 as v; "
+    "sys.argv = ['verify_pm_cpi_step0.py', *sys.argv[2:]]; v.main()"
+)
+
+
+def run_tree(
+    tree: Path, args: list[str], repo: Path, env: Mapping[str, str] | None = None, boot: str = BOOT, timeout: float | None = None
+) -> subprocess.CompletedProcess:
+    """Run the scanner of ``tree`` (``boot``: its step-0 script) in a subprocess, that tree first in ``sys.path``
+    (isolated mode, no bytecode); ``timeout`` seconds: ``subprocess.TimeoutExpired`` (the child is killed)."""
+    return subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(tree), *args], cwd=repo, capture_output=True,
+                          text=True, env=dict(env) if env is not None else None, timeout=timeout)  # fmt: skip
 
 
 # ------------------------------------------------------------------------------------------------------ the stages
@@ -1469,6 +1505,139 @@ def args_why(repo: Path, ref: str, release: str) -> list[str]:
     return out + ([f"{stale}; run `git fetch origin main` first"] if stale else [])
 
 
+V_DAYS = ("2026-12-03", "2026-12-09", "2026-12-11")  # rows of V1 (newer side) and of V2 (older, newer), п. 4, 10
+SIGMA_BEFORE = "2027-01-01"  # --before of the sigma command of п. 10
+V_CALL_SECONDS = 600  # one command of п. 10 in the proof; a call still running then is killed: not recomputed
+# The ends of a vcheck call that are verdicts of the data (review C of item 492, blocker 2): 'V pass' with exit 0, and
+# with exit 1 a 'V fail' reason of vintage_why on two copies read, a copy whose stored bytes are not JSON, or a check
+# that raised on the structure of the copies. Any other end (another reason, an exception that a failing environment
+# can raise, a crash, a kill, a timeout, no output) is no verdict: the line is «not recomputed».
+V_DATA_FAIL = re.compile(
+    r"V fail: (same stamp|no shared points .+|overwritten .+|no step .+|cannot read a copy \(JSONDecodeError: .*"
+    r"|check raised (KeyError|IndexError|TypeError|ValueError|AttributeError|ZeroDivisionError): .*)"
+)
+SIGMA_LINE = re.compile(r"nowcast .+ fred CPIAUCNS_\d{8}\.csv before (\S+): n (\d+) \(.*\), left out \d+, sigma_A (\S+)")
+V_KINDS = ("year", "month")
+
+
+def vrows_repro(
+    used: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """The registered commands of п. 10, run by the step-0 script of the tree of M0 on the rows of ``db`` in a new
+    directory of this run (exports, outputs, the FRED cache): ``(got, why)``. ``got``: the verdicts of the data, V1 / V2
+    'pass' (both vcheck calls 'V pass') or 'fail' (a call failed on the data: no row, «NOT exported», a 'V fail' of
+    :data:`V_DATA_FAIL`), sigma_A the number the sigma command printed (n > 0). ``why``: the lines no command decided,
+    each with the reason (the row could not be read, S is not the registered bytes, a call crashed, was killed or timed
+    out, FRED gave no level): no verdict, the proof is run again (review C of item 492, blockers 1, 2)."""
+    from verify_pm_cpi_step0 import V1_OLDER, v1_older_why
+
+    tmp.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(dir=tmp, prefix="pm_cpi_vrows_"))  # review C 492, finding 3: never shared
+    rows, cache = work / "rows", work / "cache"
+    say(f"  V / sigma_A lines: the commands of п. 10 run in {work}")
+
+    def call(name: str, *args: str) -> tuple[int | None, str]:
+        out = work / f"out_{name}.txt"
+        try:
+            rc: int | None = run_tree(tree, ["--stage", *args, "--cache-dir", str(cache), "--out", str(out)], repo, env,
+                                      boot=VBOOT, timeout=V_CALL_SECONDS).returncode  # fmt: skip
+        except subprocess.TimeoutExpired:
+            rc = None
+        return rc, out.read_text(errors="replace") if out.is_file() else ""
+
+    # each file of a pair: True (exported), False (no row, «NOT exported»: data, п. 4), or why it is not known
+    files: dict[str, bool | str] = {}
+    days = ([V_DAYS[0]] if "V1" in used else []) + (list(V_DAYS[1:]) if "V2" in used or "sigma_A" in used else [])
+    for d in days:
+        rc, text = call(f"row_{d}", "row", "--day", d, "--db", str(db), "--export", str(rows))
+        lines = text.splitlines()
+        for k in V_KINDS:
+            p = rows / f"{d}_nowcast_{k}.json"
+            if f"NO ROW for {d} in {db}" in lines or any(x.startswith(f"  NOT exported {p.name}: ") for x in lines):
+                files[str(p)] = False
+            elif any(x.startswith(f"  exported {p} (") for x in lines) and p.is_file():
+                files[str(p)] = True
+            else:
+                files[str(p)] = f"row {d}: nowcast_{k} neither exported nor absent (exit {rc}; {(lines or ['no output'])[-1][:120]})"
+    sw = v1_older_why()
+    for k in V_KINDS:
+        files[str(V1_OLDER / f"nowcast_{k}.json")] = True if sw is None else f"S: {sw}"
+    nc = lambda d, k: str(rows / f"{d}_nowcast_{k}.json")  # noqa: E731 - the file name --export writes
+    pairs = {"V1": [(str(V1_OLDER / f"nowcast_{k}.json"), nc(V_DAYS[0], k), k == "year") for k in V_KINDS],
+             "V2": [(nc(V_DAYS[1], k), nc(V_DAYS[2], k), False) for k in V_KINDS]}  # fmt: skip
+    got: dict[str, Any] = {}
+    why: dict[str, str] = {}
+    for v in ("V1", "V2"):
+        if v not in used:
+            continue
+        ends: list[str] = []
+        for i, (old, new, step) in enumerate(pairs[v]):
+            st = [files[old], files[new]]
+            if any(s is False for s in st):
+                ends.append("fail")  # п. 4: no row or «NOT exported» fails the check, no other file is taken
+            elif any(isinstance(s, str) for s in st):
+                ends.append(next(s for s in st if isinstance(s, str)))
+            else:
+                rc, text = call(f"{v}_{i}", "vcheck", "--capture", old, "--against", new, *(["--step-target", "2026-11"] if step else []))
+                last = (text.splitlines() or [""])[-1].rstrip()
+                ok, bad = last == "V pass" and rc == 0, rc == 1 and V_DATA_FAIL.fullmatch(last) is not None
+                ends.append("pass" if ok else "fail" if bad else f"vcheck {i}: {last[:120] or 'no output'} (exit {rc})")
+        if "fail" in ends:
+            got[v] = "fail"
+        elif all(e == "pass" for e in ends):
+            got[v] = "pass"
+        else:
+            why[v] = "; ".join(e for e in ends if e not in ("pass", "fail"))
+    if "sigma_A" in used:
+        src = files[nc(V_DAYS[2], "year")]
+        if src is True:
+            rc, text = call("sigma", "sigma", "--against", nc(V_DAYS[2], "year"), "--before", SIGMA_BEFORE)
+            last = (text.splitlines() or [""])[-1].rstrip()
+            m = SIGMA_LINE.fullmatch(last)
+            if rc == 0 and m and m[1] == SIGMA_BEFORE and int(m[2]) > 0 and re.fullmatch(r"\d+\.\d+", m[3]):
+                got["sigma_A"] = float(m[3])
+            else:  # n 0 / 'sigma_A None' (FRED gave no level, e.g. an HTML page), a failed request, a crash: no verdict
+                why["sigma_A"] = f"sigma: {last[-120:] or 'no output'} (exit {rc})"
+        else:
+            why["sigma_A"] = f"sigma: no nowcast_year of row {V_DAYS[2]}" + (f" ({src})" if isinstance(src, str) else "")
+    return got, why
+
+
+def vrows_check(rebuilt: Mapping[str, Any], tree: Path, repo: Path, db: Path, tmp: Path, env: Mapping[str, str] | None) -> list[str]:
+    """Registration п. 4, as amended 27.11 by item 492 (review C of item 484, R2): every V1 / V2 / sigma_A line of the
+    journal in M0 the sigma of the release rests on (``vrows`` of the rebuild answer: :func:`vrows_used` by the code of
+    M0) must be what the commands of п. 10 give on the same rows (V: the verdict; sigma_A: the number, and the line has
+    at most 4 decimals, as the command prints it), else «mismatch». A line no command decided (:func:`vrows_repro`,
+    ``why``) gives no verdict: ``not recomputed (...)``, never a pass; a mismatch of another line still stands. No
+    ``vrows`` in the answer (M0 before item 492): the check does not apply (п. 9; review C of item 490, blocker 2)."""
+    if "vrows" not in rebuilt:
+        say("  V / sigma_A lines: not applicable, M0 before item 492")
+        return []
+    used = rebuilt["vrows"]
+    real = lambda x: isinstance(x, int | float) and not isinstance(x, bool) and math.isfinite(x)  # noqa: E731
+    if not isinstance(used, Mapping) or not all(
+        k in ("V1", "V2") and x in ("pass", "fail") or k == "sigma_A" and real(x) for k, x in used.items()
+    ):
+        say("  V / sigma_A lines: M0 gives no line map")
+        return ["mismatch (V / sigma_A lines: M0 gives no line map)"]
+    if not used:
+        say("  V / sigma_A lines: none used")
+        return []
+    got, why = vrows_repro(used, tree, repo, db, tmp, env)
+    say("  V / sigma_A lines of M0 vs the commands of п. 10: "
+        + " · ".join(f"{k} {used[k]} → {got[k] if k in got else 'not recomputed: ' + why[k]}" for k in used))  # fmt: skip
+    bad = [k for k in ("V1", "V2") if k in got and got[k] != used[k]]
+    sig = used.get("sigma_A")
+    # review C 492, finding 8: sigma_for takes the line's number as it is, so it must be the command's 4-place number
+    if sig is not None and (round(sig, 4) != sig or ("sigma_A" in got and got["sigma_A"] != sig)):
+        bad.append("sigma_A")
+    if bad:
+        return [f"mismatch (V / sigma_A lines: {', '.join(bad)})"]
+    if why:
+        return [f"not recomputed (V / sigma_A lines: {'; '.join(f'{k}: {w}' for k, w in why.items())[:300]}; run the proof again)"]
+    return []
+
+
 def proof(release: str, *, repo: Path, ref: str, db: Path, root: Path, tmp: Path, env: Mapping[str, str] | None = None) -> bool:
     """``--stage proof`` (registration п. 7, item 487): every check printed, the last line ``proof pass`` or ``proof
     fail: <reasons>``; any exception is ``proof fail: raised ...``."""
@@ -1547,6 +1716,7 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
     if not db_ok:
         fails.append("mismatch (row_digest ≠ DB row)" if db_row is not None else "mismatch (no DB row)")
     rc_ok, bad, gw, kw, k_na = False, ["not rebuilt (no M0)"], [], "not checked (no rebuild)", False
+    rebuilt: dict[str, Any] | None = None
     if m0:
         tree = extract(repo, m0, paths, tmp)
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1562,7 +1732,7 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
         # registration п. 7 (2) as amended: the record rebuilt by M0 from the DB row, the file's Gamma part, the card
         res = run_tree(tree, ["--rebuild", str(f), "--release", release, "--db", str(db), "--repo", str(repo), "--m0", m0], repo, env)
         if res.returncode == 0:
-            got = json.loads(res.stdout)
+            got = rebuilt = json.loads(res.stdout)
             bad = [k for k, v in got["fields"].items() if not same_record(v, rec.get(k))]
             gw = list(got["gamma_why"])
             # item 490, R3: the key set of the file is the one the scanner of M0 writes. An M0 before item 490 gives no
@@ -1585,6 +1755,11 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
     except Exception as e:  # noqa: BLE001 - a descriptive line never changes the verdict
         sb = f"unknown ({type(e).__name__}; descriptive)"
     say(f"  set B: {sb}")
+    try:  # item 492; review C 492, finding 4: an exception here leaves the other reasons of the proof as they are
+        vf = vrows_check(rebuilt, tree, repo, db, tmp, env) if rebuilt is not None else []
+    except Exception as e:  # noqa: BLE001 - no verdict on the lines, never a pass
+        say(f"  V / sigma_A lines: raised {type(e).__name__}")
+        vf = [f"not recomputed (V / sigma_A lines: raised {type(e).__name__}: {str(e)[:200]}; run the proof again)"]
     if kw is not None:
         fails.append("mismatch (keys)")
     if not rc_ok:
@@ -1593,6 +1768,7 @@ def _proof(release: str, repo: Path, ref: str, db: Path, root: Path, tmp: Path, 
         fails.append(f"mismatch (rebuild: {', '.join(bad)})")
     if gw:
         fails.append(f"mismatch (gamma: {'; '.join(gw)[:200]})")
+    fails += vf
     t1_path = f"{DOCS_DIR}/{release}/T-1.json"
     t1 = git(repo, "show", f"{ref}:{t1_path}", binary=True, check=False)
     raw1 = (

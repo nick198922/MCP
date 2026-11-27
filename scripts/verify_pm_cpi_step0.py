@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import resource
@@ -51,6 +52,14 @@ from tradedesk.collector.pm_cpi_snapshot import SERIES as DEFAULT_SERIES
 
 DEFAULT_CACHE = Path("~/.cache/tradedesk-agents/pm_cpi").expanduser()
 DEFAULT_DB = Path("/var/lib/tradedesk-mcp/tradedesk.sqlite")
+# S of the registration п. 10: the older side of V1 (the snapshot of 26.11, backed up); the proof of
+# scripts/pm_cpi_forward.py passes its files to --stage vcheck when it re-runs V1 (item 492), only when they are these
+# bytes (sha256 read 27.11; the same in the ~/.cache copy of the snapshot): see v1_older_why
+V1_OLDER = Path("~/.local/state/tradedesk-agents/pm_cpi/snapshots/20261126T1920Z").expanduser()
+V1_OLDER_SHA256 = {
+    "nowcast_year.json": "33758ce12635017dbcd562aa859a559d7eb909f9ec8dccb46fc54c247cf1addd",
+    "nowcast_month.json": "da8d3f57994fe296304082d5cac0b0ac5cfff7e17265f65b9c2795a685821f36",
+}
 QUERIES = ("CPI", "inflation", "core CPI", "CPI year over year", "monthly inflation", "inflation US annual")
 CPI_SLUG = re.compile(r"cpi|inflation", re.I)
 UA = {"User-Agent": "Mozilla/5.0 (research script)"}
@@ -909,6 +918,21 @@ def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None)
     say(f"{old_path.name} vs {new_path.name}" + (f", step target {step_target}" if step_target else ""))
     say("V pass" if why is None else f"V fail: {why}")
     return why is None
+
+
+def v1_older_why() -> str | None:
+    """Why the files of S (``V1_OLDER``) are not the registered ones: missing, unreadable or other bytes than
+    ``V1_OLDER_SHA256`` (None: they are). The proof of scripts/pm_cpi_forward.py asks this before it re-runs V1: such
+    an S gives no verdict there, the V1 line is «not recomputed» (item 492, review C, blocker 2)."""
+    for name, want in V1_OLDER_SHA256.items():
+        p = V1_OLDER / name
+        try:
+            got = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError as e:
+            return f"{p} unreadable ({type(e).__name__})"
+        if got != want:
+            return f"{p} has sha256 {got[:12]}…, not {want[:12]}…"
+    return None
 
 
 def say_new_points(old: Any, new: Any, series_list: tuple[str, ...], recent: int = 3) -> None:

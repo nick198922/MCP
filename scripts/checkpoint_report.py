@@ -531,7 +531,7 @@ def load_paper_state(db: str) -> dict[str, Any] | None:
         d = json.loads((Path(db).resolve().parent / "assistant" / "paper_state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return {k: d.get(k) for k in ("date", "asof_utc", "state", "action")} if isinstance(d, dict) else None
+    return {k: d.get(k) for k in ("date", "asof_utc", "state", "action", "last_decision_date")} if isinstance(d, dict) else None
 
 
 def load_inputs(db: str, now_ms: int) -> dict[str, Any]:

@@ -523,6 +523,19 @@ def test_short_brief_has_one_paper_recommendation_line():
     assert "Паперова рекомендація актуальна" in full  # the long text has it too, under «Головне сьогодні»
 
 
+def test_brief_shows_a_calendar_gap_skip_as_a_pause():
+    snap, asof = _snap()
+    day = db.kyiv(db.parse_utc("2026-10-20T09:05:00Z"), "%d.%m")
+    out = ab.build_brief(_with_paper(snap, state="skipped", action="none", pick=None), asof + 300, short=True)
+    (line,) = [ln for ln in out.splitlines() if "Паперова рекомендація" in ln]
+    assert line == (
+        "• <i>гіпотеза</i> · Паперова рекомендація на паузі: немає експірації 28–56 днів, як у тесті, тож рішення того дня "
+        f"немає; чинну паперову угоду лишено (перевірка {day})."
+    )
+    out = ab.build_brief(_with_paper(snap, state="skipped", action="none", pick=None, standing_trade=None), asof + 300, short=True)
+    assert "тож рішення того дня немає (перевірка" in out and "чинну" not in out and "не актуальна" not in out
+
+
 def test_brief_without_paper_recommendation_data_omits_the_line():
     snap, asof = _snap()
     assert "Паперова" not in ab.build_brief(snap, asof + 300, short=True)  # no section at all (old snapshot)

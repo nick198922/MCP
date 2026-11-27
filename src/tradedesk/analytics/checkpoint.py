@@ -1406,6 +1406,9 @@ def _uncovered(spans: Sequence[tuple[int, int]], start: int, end: int) -> list[i
 def assistant_paper_forward(rows: Sequence[Mapping[str, Any]], state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
     """The collector job ``assistant_paper`` (``rec_paper`` rows, ``state`` = its parsed state file or None): counters
     and state only, no P&L. ``rows`` need ``opened_ts``, ``expiry_ts`` (unix s), ``status``, ``source``, ``trigger``.
+    A state ``skipped`` (no 28..56-day expiry listed, no decision that day) is shown as a pause, not as a decision, with
+    the date of the last real decision (``last_decision_date``, kept only when it is a date); a pause older than
+    PAPER_MAX_AGE_HOURS reads as a stopped job, not as a legitimate pause.
     CHECKPOINT registers no band for it, so there is no verdict either."""
     now_s = now_ms // 1000
     mine = [r for r in rows if (o := _num(r.get("opened_ts"))) is not None and o <= now_s and _num(r.get("expiry_ts")) is not None]
@@ -1442,12 +1445,32 @@ def assistant_paper_forward(rows: Sequence[Mapping[str, Any]], state: Mapping[st
     else:
         st = state or {}
         age = (now_ms - asof) / 3_600_000
-        c["останнє денне рішення (файл стану)"] = f"{_ymd_s(asof // 1000)}, {st.get('state')} / {st.get('action')}, {age:.0f} год тому"
-        if age > PAPER_MAX_AGE_HOURS:
-            notes.append(f"останнє рішення старше {PAPER_MAX_AGE_HOURS:.0f} год: завдання, схоже, стоїть")
+        stale = age > PAPER_MAX_AGE_HOURS
+        if st.get("state") == "skipped":  # calendar gap: the job wrote a pause, not a decision
+            last = _iso_day(st.get("last_decision_date"))
+            c["останнє денне рішення (файл стану)"] = (
+                f"{_ymd_s(asof // 1000)}, пауза — немає експірації 28–56 днів, {age:.0f} год тому; "
+                + (f"останнє справжнє рішення {last}" if last else "справжнього рішення у файлі ще немає")
+            )
+            if stale:  # the job rewrites the pause every period, so an old one means the job is not running
+                notes.append(
+                    f"останній запис — пауза (немає експірації 28–56 днів), але він старший за {PAPER_MAX_AGE_HOURS:.0f} год: "
+                    "завдання пише паузу щоперіоду, тож воно, схоже, стоїть; дивитися system_health → collector, assistant_paper"
+                )
+            else:
+                notes.append(
+                    "пауза: у ланцюжку Deribit немає експірації 28–56 днів (є лише ближчі й дальші), тож рішення того дня немає, "
+                    "як і в зареєстрованому тесті; це не збій. Чинна угода, якщо є, лишається; режим і бачені події взято з "
+                    "останнього справжнього рішення"
+                )
+        else:
+            c["останнє денне рішення (файл стану)"] = f"{_ymd_s(asof // 1000)}, {st.get('state')} / {st.get('action')}, {age:.0f} год тому"
+            if stale:
+                notes.append(f"останнє рішення старше {PAPER_MAX_AGE_HOURS:.0f} год: завдання, схоже, стоїть")
     notes.append(
         "смуги в CHECKPOINT немає, вердикту теж; метод не показав переваги (H1, звіт 18.10), тож це гіпотеза. "
-        "P&L тут не друкується (лише assistant_paper_status). Проміжок без угоди буває й законним: метод того дня нічого не обрав"
+        "P&L тут не друкується (лише assistant_paper_status). Проміжок без угоди буває й законним: метод того дня нічого не обрав "
+        "або в ланцюжку не було експірації 28–56 днів (пауза)"
     )
     return row
 
@@ -1462,6 +1485,16 @@ def _asof_utc(state: Mapping[str, Any] | None) -> int | None:
         return None
     try:
         return int(datetime.strptime(state["asof_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _iso_day(v: Any) -> str | None:
+    """``v`` when it is a ``YYYY-MM-DD`` date string (the state file is another writer's), else None."""
+    if not isinstance(v, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return None
+    try:
+        return date.fromisoformat(v).isoformat()
     except ValueError:
         return None
 

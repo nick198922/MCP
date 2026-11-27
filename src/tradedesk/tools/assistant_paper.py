@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.instruments import expiry_token
+from ..analytics.instruments import expiry_token, parse_option_name
 from ..analytics.option_replay import build_legs, strike_roles
 from ..analytics.options import OptionRow, black76_greeks, build_chain, group_by_expiry
 from ..analytics.rec_paper import comparable_groups, open_paper, paper_vs_simulation, settle_paper, summarize
@@ -159,10 +159,15 @@ async def prepare_chain(
     *,
     target: float = TARGET_DTE,
     band: tuple[float, float] = DTE_BAND,
+    gap: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Live Deribit chain -> the expiry to price (given, else closest to ``target`` days within ``band``) with its surface and roles.
 
     Shared by the tool and the collector job so both book through the same code. Failures go into ``b.missing``.
+    When ``gap`` is given and the fetched chain lists expiries both below and above ``band`` but none inside it (a calendar
+    gap, not a failure), ``gap`` is filled with the nearest listed expiry on each side (``below`` / ``above`` tokens and
+    their ``*_days``); the return is still None with the same ``missing`` entry. "Listed" means an instrument name in the
+    raw book: an expiry inside the band whose rows all lack a numeric forward (dropped by ``build_chain``) is not a gap.
     """
     book = await b.guard("option_book", "deribit", rt.deribit.book_summary(currency, "option"))
     if book is None:
@@ -177,7 +182,29 @@ async def prepare_chain(
     else:
         cands = [e for e in by if band[0] <= (e - now).total_seconds() / 86400 <= band[1]]
         if not cands:
-            b.miss("expiry", "tradedesk", "data_unavailable", f"no listed expiry within {band[0]:g}..{band[1]:g} days; pass `expiry`")
+            # judge the gap by the listed names, not by the priced rows: build_chain drops rows without a numeric forward,
+            # so an expiry inside the band whose rows were all dropped is an incomplete chain, not a calendar gap
+            listed = {
+                p.expiry for s in book if isinstance(s, dict) and (p := parse_option_name(str(s.get("instrument_name", "")))) is not None
+            }
+            days = sorted(((e - now).total_seconds() / 86400, e) for e in listed)
+            inside = [x for x in days if band[0] <= x[0] <= band[1]]
+            detail = (
+                f"{expiry_token(inside[0][1])} is listed within {band[0]:g}..{band[1]:g} days but has no row with a forward"
+                if inside
+                else f"no listed expiry within {band[0]:g}..{band[1]:g} days; pass `expiry`"
+            )
+            b.miss("expiry", "tradedesk", "data_unavailable", detail)
+            if gap is not None and not inside:
+                lo = [x for x in days if 0 < x[0] < band[0]]
+                hi = [x for x in days if x[0] > band[1]]
+                if lo and hi:
+                    gap.update(
+                        below=expiry_token(lo[-1][1]),
+                        below_days=round(lo[-1][0], 2),
+                        above=expiry_token(hi[0][1]),
+                        above_days=round(hi[0][0], 2),
+                    )
             return None
         exp = min(cands, key=lambda e: abs((e - now).total_seconds() / 86400 - target))
     rows = by[exp]

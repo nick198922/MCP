@@ -283,7 +283,8 @@ PAPER_WARNINGS = [
     "docs/verification/2026-10-18-assistant-recommendations.md); the paper journal (rec_paper) tests it, no orders.",
     "State of the job assistant_paper's last daily decision (after 09:00 UTC), not a live view: actual = the standing paper "
     "trade is the method's pick or a new one was booked; changed = the method prefers another structure or a regime / "
-    "FOMC-CPI trigger booked a new one; no_longer_actual = the method picks nothing.",
+    "FOMC-CPI trigger booked a new one; no_longer_actual = the method picks nothing; skipped = no listed expiry within "
+    "28..56 days, so no decision that day (as in the study), no pick, the standing trade (if any) is kept.",
 ]
 
 

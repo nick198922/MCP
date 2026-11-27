@@ -22,6 +22,13 @@ the standing trade is kept and the state is written as ``actual`` or ``changed``
 none of the triggers fired); ``no_longer_actual`` when the method picks nothing today. The state is written to
 <directory of db_path>/assistant/paper_state.json for the dashboard.
 
+Calendar gap: when the fetched chain lists expiries below and above 28..56 days but none inside (judged by the listed
+instrument names, not by the rows left after dropping those without a forward), the study has no decision that day, so
+the job writes the state ``skipped`` (no trade, no error) and carries the regime and the seen events from the last real
+decision (`_write_skip`). A skip does not close the day: later periods re-check the chain and make the real decision
+once a 28..56-day expiry is listed. An empty chain, expiries on one side only, an in-band expiry without usable rows, a
+failed request or a missing 14-day expiry stay errors and the next period retries.
+
 The method's ``mean`` / ``q05`` are fractions of the entry FORWARD (`option_replay.method_summary`); they are stored as
 returned, not converted to spot, so ``r_study`` matches the study.
 """
@@ -174,7 +181,10 @@ async def collect_assistant_paper(rt: "Runtime") -> int:
     """Collector job. Returns the rows written: paper trades settled plus 1 when a new one was booked.
 
     First settles the due paper trades (every run). Then the day's decision: nothing before 09:00 UTC or when today's
-    decision is already in the state file; a failed decision writes nothing, so the next period retries the same day.
+    real decision is already in the state file; a failed decision writes nothing, so the next period retries the same
+    day. Today's calendar-gap skip does not close the day: each later period fetches the chain again and, once a
+    28..56-day expiry is listed, makes the real decision (against the regime and seen events the skip carried); a failed
+    fetch on such a run raises and leaves the skip in place.
     Raises (the scheduler records it in collector health) when the decision's data failed or, after the decision has
     run, when the settlement failed; trades settled before a failed decision stay settled.
     """
@@ -204,13 +214,17 @@ async def _decide_and_book(rt: "Runtime", now: datetime, path: Path) -> int:
         return 0
     today = now.date().isoformat()
     prev = await asyncio.to_thread(_load_state, path)
-    if prev is not None and prev.get("date") == today:
-        return 0
+    if prev is not None and prev.get("date") == today and prev.get("state") != "skipped":
+        return 0  # today's real decision is on file; a skip is re-checked each period (a partial reply can look like a gap)
     # lazy: importing the tool module registers nothing, it only gives the shared booking code
     from ..tools.assistant_paper import DEFAULT_LOT, book_paper, prepare_chain  # noqa: PLC0415
 
     b = Builder()
-    ctx40 = await prepare_chain(rt, b, "BTC", None)
+    gap: dict[str, Any] = {}
+    ctx40 = await prepare_chain(rt, b, "BTC", None, gap=gap)
+    if ctx40 is None and gap:
+        await _write_skip(rt, now, path, prev, gap)
+        return 0
     ctx14 = await prepare_chain(rt, b, "BTC", None, target=SHORT_TARGET_DTE, band=SHORT_DTE_BAND) if ctx40 is not None else None
     closes = await fetch_closes(rt, b, now) if ctx40 is not None and ctx14 is not None else None
     if ctx40 is None or ctx14 is None or closes is None:
@@ -299,6 +313,52 @@ async def _decide_and_book(rt: "Runtime", now: datetime, path: Path) -> int:
     await asyncio.to_thread(write_atomic, path, state)
     log.info("assistant paper: %s (%s), pick=%s", verdict["state"], verdict["reason"], res["pick"])
     return 1 if trade else 0
+
+
+async def _write_skip(rt: "Runtime", now: datetime, path: Path, prev: dict[str, Any] | None, gap: dict[str, Any]) -> None:
+    """Calendar gap: the chain lists expiries below and above 28..56 days but none inside, so the registered study makes no
+    decision that day (verify_assistant_recs.py skips a day without the 40-day long straddle). Writes today's state
+    ``skipped``: no trade, no pick. A skip day is not a decision: ``regime`` / ``rv30`` and ``events_seen`` are carried
+    from the previous state (itself a skip carrying the last real decision), so the next real decision's hysteresis
+    compares with the last real one and an event inside the gap is not marked seen; ``last_decision_date`` names that
+    decision (None when no real decision is on file). The standing trade is read from the store as on any day."""
+    from ..tools.assistant_paper import DTE_BAND  # noqa: PLC0415
+
+    assert rt.store is not None
+    p = prev or {}
+    rows = [x for x in await rt.store.rec_paper_list(limit=5000) if x["source"] == "method"]
+    last = rows[0] if rows else None
+    now_ts = int(now.timestamp())
+    seen = p.get("events_seen")
+    regime, rv30 = p.get("regime"), p.get("rv30")
+    carried = p.get("last_decision_date") if p.get("state") == "skipped" else p.get("date")
+    state = {
+        "schema": SCHEMA,
+        "label": "hypothesis",
+        "date": now.date().isoformat(),
+        "asof_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "state": "skipped",
+        "action": "none",
+        "reason": (
+            f"calendar gap: no listed expiry within {DTE_BAND[0]:g}..{DTE_BAND[1]:g} days ({gap['below']} at {gap['below_days']:g} d, "
+            f"{gap['above']} at {gap['above_days']:g} d); the registered study makes no decision on such a day"
+        ),
+        "pick": None,
+        "regime": regime if isinstance(regime, str) else None,
+        "rv30": rv30 if isinstance(rv30, (int, float)) and not isinstance(rv30, bool) else None,
+        "event": None,
+        "events_seen": sorted({str(x) for x in seen}) if isinstance(seen, list) else [],
+        "trigger": None,
+        "summary_fraction_of_forward": None,
+        "trade_id": None,
+        "standing_trade": last["id"] if last and last["expiry_ts"] > now_ts else None,
+        "open_method_risk_usd": _open_risk(rows, None, now_ts),
+        "gap": gap,
+        "last_decision_date": carried if isinstance(carried, str) else None,
+        "missing": [],
+    }
+    await asyncio.to_thread(write_atomic, path, state)
+    log.info("assistant paper: skipped (%s)", state["reason"])
 
 
 def _load_state(path: Path) -> dict[str, Any] | None:

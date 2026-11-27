@@ -189,8 +189,8 @@ def _unscorable(p: dict[str, Any]) -> str | None:
 
 
 def _rec_unusable(rec: dict[str, Any], plan: dict[str, Any]) -> str | None:
-    """Why a settled rec_paper row cannot score its linked option plan, else None. assistant_paper_status always writes
-    usable values; this guards rows another writer left with text / a blob / inf / 1e308 / 1e20 in settled_ts or
+    """Why a settled rec_paper row cannot score its linked option plan, else None. The shared settlement
+    (assistant_paper.settle_due) always writes usable values; this guards rows another writer left with text / a blob / inf / 1e308 / 1e20 in settled_ts or
     opened_ts (int() raised ValueError / OverflowError, or the store binding OverflowError, out of plan_review and the
     plan_resolve job before item 299), or such a delivery_price / r_worst_case (written into the plan as garbage). A
     delivery price more than MAX_LEVEL_RATIO times away from the plan's entry (the underlying's price) is garbage too."""
@@ -300,7 +300,7 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
                 )
                 if n:
                     resolved.append(p["id"])
-            continue  # a linked option plan is settled with its paper trade (assistant_paper_status), never on candles
+            continue  # a linked option plan is settled with its paper trade (assistant_paper.settle_due), never on candles
         if (why := _unscorable(p)) is not None:
             # a warning, not `missing`: the collector job raises on `missing`, which would fail it every hour for one bad row
             b.warn(f"plan {p['id']} skipped: stored {why}")

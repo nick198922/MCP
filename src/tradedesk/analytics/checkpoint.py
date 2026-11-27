@@ -1429,7 +1429,11 @@ def assistant_paper_forward(rows: Sequence[Mapping[str, Any]], state: Mapping[st
         gaps = [g for g in _uncovered([(int(r["opened_ts"]), int(r["expiry_ts"])) for r in meth], first, now_s) if g > GAP_MIN_S]
         c["проміжків без чинної угоди методу > 1 доби"] = f"{len(gaps)} (разом {sum(gaps) / 86_400:.1f} дн.)"
     if unsettled:
-        notes.append("експіровані угоди розраховує лише виклик assistant_paper_status (завдання їх не закриває)")
+        notes.append(
+            "експіровані угоди розраховує саме завдання щоперіоду (щогодини) за ціною delivery Deribit, як і виклик "
+            "assistant_paper_status; нерозрахована угода чекає на опубліковану ціну або на Deribit (чи має зіпсовані ноги в "
+            "базі): якщо вона висить довше за період завдання, дивитися system_health → collector, assistant_paper і лог колектора"
+        )
     asof = _asof_utc(state)
     if asof is None:
         notes.append("файлу стану завдання немає або він нечитабельний: денних рішень не видно (завдання вимкнене або не запускалось)")

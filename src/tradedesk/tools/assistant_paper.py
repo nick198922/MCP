@@ -266,6 +266,68 @@ async def book_paper(
     return {**_view(row), "max_size_btc": rec["max_size_btc"], "risk_budget_usd": r(rec["risk_budget_usd"], 2)}
 
 
+async def settle_due(rt: Runtime, b: Builder, now_ts: int) -> dict[str, Any]:
+    """Settle every open paper trade (any source) whose expiry has passed (``expiry_ts <= now_ts``) at the Deribit delivery
+    price of its expiry date (UTC); the P&L formulas are `analytics.rec_paper.settle_paper`.
+
+    Shared by `assistant_paper_status` and the collector job `assistant_paper`, so both book the same numbers. One
+    delivery-price request per currency of the due trades, none when nothing is due. A failed request goes into
+    ``b.missing`` (``delivery_prices:<CUR>``) and its trades stay open; a delivery row with a NaN / inf / non-numeric price
+    is reported there as ``parse_error`` and ignored; a trade whose stored legs are malformed stays open with a warning;
+    a trade whose date has no price published yet stays open (``missing`` ``rec_paper:<id>``). Store errors propagate
+    (callers handle them). Running it again changes nothing: `rec_paper_settle` updates only rows still 'open'.
+
+    Returns counts: ``due``, ``settled`` (rows this call settled), ``pending`` (no price for the date yet), ``bad_legs``
+    (ids left open), ``bad_rows`` (delivery rows dropped as malformed), ``failed`` (currencies whose request failed).
+    """
+    assert rt.store is not None
+    out: dict[str, Any] = {"due": 0, "settled": 0, "pending": 0, "bad_legs": [], "bad_rows": 0, "failed": []}
+    open_rows = await rt.store.rec_paper_list(status="open", limit=5000)
+    due = [x for x in open_rows if x["expiry_ts"] <= now_ts]
+    out["due"] = len(due)
+    if not due:
+        return out
+    deliveries: dict[str, dict[str, float]] = {}
+    for cur in sorted({x["currency"] for x in due}):
+        got = await b.guard(f"delivery_prices:{cur}", "deribit", rt.deribit.delivery_prices(f"{cur.lower()}_usd", count=1000))
+        if got is None:
+            out["failed"].append(cur)
+            continue
+        deliveries[cur] = {}
+        for d in got.get("data") or []:
+            # a NaN / inf / non-numeric / 300+-digit delivery price would settle the trade for good on
+            # a non-number (or raise): such a row is reported and the trade stays open
+            try:
+                if d.get("delivery_price"):
+                    deliveries[cur][str(d.get("date"))] = finite_float(d["delivery_price"])
+            except (TypeError, ValueError, AttributeError, OverflowError):
+                out["bad_rows"] += 1
+                b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
+    for t in due:
+        if not _good_legs(t["legs"])[1]:  # settling on part of the legs would book a wrong P&L for good
+            out["bad_legs"].append(t["id"])
+            b.warn(f"rec_paper {t['id']} not settled: its stored legs are malformed; it stays open")
+            continue
+        day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()
+        dp = deliveries.get(t["currency"], {}).get(day)
+        if dp is None:
+            if t["currency"] in deliveries:
+                out["pending"] += 1
+                b.miss(f"rec_paper:{t['id']}", "deribit", "data_unavailable", f"no delivery price for {day} published yet")
+            continue
+        res = settle_paper(t, dp)
+        out["settled"] += await rt.store.rec_paper_settle(
+            t["id"],
+            settled_ts=t["expiry_ts"],
+            delivery_price=dp,
+            pnl_usd=res["pnl_usd"],
+            pnl_pct_spot=res["pnl_pct_spot"],
+            r_worst_case=res["r_worst_case"],
+            r_study=res["r_study"],
+        )
+    return out
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,  # assistant_paper_open writes to the LOCAL store only — no orders, no external effects
@@ -282,7 +344,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`source` is always 'manual' here: rows tagged 'method' are written only by the collector job `assistant_paper` "
             "and are the only ones that test the method; manual rows are kept apart. "
             "Expiry defaults to the listed one closest to 40 days (28..56). The row is tagged 'hypothesis' (see `warnings`). "
-            "Settle with assistant_paper_status after the 08:00 UTC expiry."
+            "After the 08:00 UTC expiry it is settled at the Deribit delivery price by the collector job `assistant_paper` "
+            "within its period (hourly, when the job is on) or by the next assistant_paper_status call, whichever comes first."
         ),
     )
     async def assistant_paper_open(
@@ -353,7 +416,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Paper journal of the assistant's option recommendations (all tagged 'hypothesis', kept apart from the real trades "
             "in `journal`). First settles every open paper trade whose expiry has passed, at the Deribit delivery price "
-            "(GET delivery prices, USD): payoff of the legs minus the entry premium, entry fees and delivery fees, for the "
+            "(GET delivery prices, USD; the collector job `assistant_paper` runs the same settlement every period, so "
+            "usually nothing is left to settle here): payoff of the legs minus the entry premium, entry fees and delivery fees, for the "
             "booked size. Per settled trade: `pnl_usd`, `pnl_pct_spot` (decimal: P&L per 1 BTC of structure / entry spot) and "
             "`r_worst_case` (P&L / the trade's worst-loss risk in USD; NOT the R of the 2026-10-18 report) and `r_study` "
             "(per-unit P&L / premium for a debit, / |method 5 % quantile| * spot for a credit; null for a credit without "
@@ -394,44 +458,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:
-            now = rt.now()
-            now_ts = int(now.timestamp())
-            open_rows = await rt.store.rec_paper_list(status="open", limit=5000)
-            due = [x for x in open_rows if x["expiry_ts"] <= now_ts]
-            if due:
-                deliveries: dict[str, dict[str, float]] = {}
-                for cur in sorted({x["currency"] for x in due}):
-                    got = await b.guard(f"delivery_prices:{cur}", "deribit", rt.deribit.delivery_prices(f"{cur.lower()}_usd", count=1000))
-                    if got is not None:
-                        deliveries[cur] = {}
-                        for d in got.get("data") or []:
-                            # a NaN / inf / non-numeric / 300+-digit delivery price would settle the trade for good on
-                            # a non-number (or raise): such a row is reported and the trade stays open
-                            try:
-                                if d.get("delivery_price"):
-                                    deliveries[cur][str(d.get("date"))] = finite_float(d["delivery_price"])
-                            except (TypeError, ValueError, AttributeError, OverflowError):
-                                b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
-                for t in due:
-                    if not _good_legs(t["legs"])[1]:  # settling on part of the legs would book a wrong P&L for good
-                        b.warn(f"rec_paper {t['id']} not settled: its stored legs are malformed; it stays open")
-                        continue
-                    day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()
-                    dp = deliveries.get(t["currency"], {}).get(day)
-                    if dp is None:
-                        if t["currency"] in deliveries:
-                            b.miss(f"rec_paper:{t['id']}", "deribit", "data_unavailable", f"no delivery price for {day} published yet")
-                        continue
-                    res = settle_paper(t, dp)
-                    await rt.store.rec_paper_settle(
-                        t["id"],
-                        settled_ts=t["expiry_ts"],
-                        delivery_price=dp,
-                        pnl_usd=res["pnl_usd"],
-                        pnl_pct_spot=res["pnl_pct_spot"],
-                        r_worst_case=res["r_worst_case"],
-                        r_study=res["r_study"],
-                    )
+            # the collector job `assistant_paper` runs the same settlement every period; this catches whatever is left
+            await settle_due(rt, b, int(rt.now().timestamp()))
             open_now = await rt.store.rec_paper_list(status="open", limit=5000)
             settled = await rt.store.rec_paper_list(status="settled", limit=5000)
             summary: dict[str, Any] = {}

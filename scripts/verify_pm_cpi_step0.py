@@ -20,6 +20,10 @@ Usage (C = ~/.cache/tradedesk-agents/pm_cpi; the exact commands of the report ar
         --capture C/snapshots/20261126T1920Z/nowcast_year.json --against <later copy> --out C/out_compare.txt
     uv run python scripts/verify_pm_cpi_step0.py --stage snapshot --out <file>  # today's nowcast + active books
     uv run python scripts/verify_pm_cpi_step0.py --stage row --day 2026-12-03 --out <file>  # the collector job's row (DB read-only)
+    uv run python scripts/verify_pm_cpi_step0.py --stage vcheck --capture <older copy> --against <newer copy> \
+        [--step-target 2026-11] --out <file>  # V1 / V2 of the registration: last line 'V pass' or 'V fail: <reason>'
+    uv run python scripts/verify_pm_cpi_step0.py --stage sigma --against <nowcast_year.json of the V2 row 11.12> \
+        --before 2027-01-01 --out C/out_sigma.txt  # archive SD (targets released before --before; no PM prices)
 
 Results (2026-11-26): docs/verification/2026-11-26-pm-cpi-step0.md.
 """
@@ -710,6 +714,49 @@ def _prev_months(target: str, n: int) -> list[str]:
     return out
 
 
+async def fetch_fred(p: Path, series: str) -> None:
+    """Download today's vintage of a FRED series as CSV into ``p`` (core.http.Http, public graph endpoint)."""
+    from tradedesk.core.http import Http
+
+    fred = Http("fred", "https://fred.stlouisfed.org", rate=0.5, timeout=30.0, retries=1, headers=UA)
+    try:
+        f = await fred.get_bytes("/graph/fredgraph.csv", params={"id": series}, tool="fredgraph")
+        p.write_bytes(bytes(f.data))  # noqa: ASYNC240 - one small file
+    finally:
+        await fred.aclose()
+
+
+def stage_sigma(cache: Path, nowcast: Path, before: str, vintage: str | None = None) -> None:
+    """Archive SD of the registration (card, «Попередня реєстрація» п. 4): headline YoY nowcast errors against the
+    published CPI-U NSA 12-month change, from the nowcast file that passed V2 (``nowcast``) and today's CPIAUCNS
+    (FRED, cached per day under <cache>/cleveland/fred/). Nowcast vs actual CPI only: no Polymarket price is read.
+    ``vintage`` (YYYYMMDD) reads an already cached CSV instead of today's and never fetches."""
+    from tradedesk.analytics.pm_cpi import archive_errors, sigma_archive, yoy_published
+
+    if not nowcast.is_file():
+        raise SystemExit(f"sigma: no nowcast file {nowcast} (see the 'exported' / 'NOT exported' lines of --stage row --export)")
+    vdir = cache / "cleveland" / "fred"
+    vdir.mkdir(parents=True, exist_ok=True)
+    p = vdir / f"CPIAUCNS_{vintage or f'{datetime.now(UTC):%Y%m%d}'}.csv"
+    if not p.exists():
+        if vintage:
+            raise SystemExit(f"sigma: no cached CPI vintage {p.name}")
+        asyncio.run(fetch_fred(p, "CPIAUCNS"))
+    levels = {}
+    for line in p.read_text().splitlines()[1:]:
+        parts = line.split(",")
+        if len(parts) >= 2 and parts[1] not in ("", "."):
+            levels[parts[0][:7]] = parts[1]
+    rows = archive_errors(json.loads(nowcast.read_text()), yoy_published(levels), before)
+    sd, n = sigma_archive(rows)
+    for r in rows:
+        say(f"  {r['target']:7} release {r['release']} point {r['day']} N {r['nowcast']} A {r['actual']} "
+            f"err {r['error']} {r['why'] or ''}")  # fmt: skip
+    used = [r["target"] for r in rows if r["error"] is not None]
+    say(f"nowcast {nowcast} fred {p.name} before {before}: n {n} ({used[0] if used else '-'}..{used[-1] if used else '-'}), "
+        f"left out {len(rows) - n}, sigma_A {sd if sd is None else round(sd, 4)}")  # fmt: skip
+
+
 async def stage_vintage(cache: Path) -> None:
     """Is the archived daily nowcast as published? The FAQ defines the core CPI MoM nowcast as the 12-month moving
     average of past core CPI MoM inflation, so it can be recomputed from the core CPI index (CPILFESL) of two data
@@ -840,6 +887,28 @@ def compare_capture(old_path: Path, new_path: Path, series_list: tuple[str, ...]
         say(f"  {s}: all targets {dict(c)}; largest {[(round(a, 4), t, d) for a, t, d in diffs[:5]]}")
         say(f"    newest {sorted(rec)}: {dict(cr)}; differing points {[(round(a, 4), t, d) for a, t, d in dr[:8]]}")
     say_new_points(old, new, series_list, recent)
+
+
+def stage_vcheck(old_path: Path, new_path: Path, step_target: str | None = None) -> bool:
+    """V1 / V2 of the registration (card п. 4) on one pair of stored copies of a nowcast file: the full comparison
+    (compare_capture), then one verdict line from analytics.pm_cpi.vintage_why: 'V pass' or 'V fail: <reason>'. A
+    missing or unreadable file is a fail, never a skipped check, and so is any exception of the comparison or of the
+    check (review B 481, third round, finding 7): the last line is always 'V pass' or 'V fail: ...'."""
+    try:
+        old, new = json.loads(old_path.read_text()), json.loads(new_path.read_text())
+    except (OSError, ValueError) as e:
+        say(f"V fail: cannot read a copy ({type(e).__name__}: {e})")
+        return False
+    try:
+        from tradedesk.analytics.pm_cpi import vintage_why
+
+        compare_capture(old_path, new_path, ("CPI Inflation", "Core CPI Inflation"))
+        why = vintage_why(old, new, step_target)
+    except Exception as e:  # noqa: BLE001 - an unexpected structure fails the check, it never drops the verdict line
+        why = f"check raised {type(e).__name__}: {e}"
+    say(f"{old_path.name} vs {new_path.name}" + (f", step target {step_target}" if step_target else ""))
+    say("V pass" if why is None else f"V fail: {why}")
+    return why is None
 
 
 def say_new_points(old: Any, new: Any, series_list: tuple[str, ...], recent: int = 3) -> None:
@@ -1103,9 +1172,17 @@ def stage_row(db: Path, day: str, export: Path | None = None) -> bool:
     if export is not None:
         export.mkdir(parents=True, exist_ok=True)
         for kind in ("year", "month"):
+            # a file kept as a reference was resolved by read_rows: its bytes (from the source row, same sha256) are
+            # written under this row's day, so the commands of the registration always name <day>_nowcast_<kind>.json
+            p = export / f"{day}_nowcast_{kind}.json"
             if r.get(f"cf_{kind}_z") is not None:
-                (export / f"{day}_nowcast_{kind}.json").write_bytes(zlib.decompress(r[f"cf_{kind}_z"]))
-        say(f"  files exported to {export}")
+                p.write_bytes(zlib.decompress(r[f"cf_{kind}_z"]))
+                src = r.get(f"_{kind}_from")
+                say(f"  exported {p} (sha256 {r.get(f'cf_{kind}_sha')}" + (f", bytes of row {src})" if src else ")"))
+            else:
+                ref = r.get(f"cf_{kind}_ref")
+                why = f"reference to {ref} not resolved (no such stored file with that sha256)" if ref else "no file in the row"
+                say(f"  NOT exported {p.name}: {why}")
     if prev is None:
         say("  no earlier row with a nowcast copy: nothing to compare")
         return True
@@ -1151,8 +1228,15 @@ def main() -> None:
             "cfsum",
             "snapshot",
             "row",
+            "vcheck",
+            "sigma",
         ],
     )
+    ap.add_argument(
+        "--before",
+        help="sigma: ISO day; only targets whose release (the 'CPI <Mon>' line) is before it enter (registration: 2027-01-01)",
+    )
+    ap.add_argument("--step-target", help="vcheck: target 'YYYY-M' whose headline must have moved after the older stamp (V1: 2026-11)")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="row: collector database (opened read-only)")
     ap.add_argument("--day", help="row: UTC day YYYY-MM-DD (default: today)")
     ap.add_argument("--export", type=Path, help="row: write the stored nowcast files of the day into this directory")
@@ -1206,6 +1290,12 @@ def main() -> None:
                 say("no capture to compare (give --capture <file>)")
             for p in caps:
                 compare_capture(p, new, ("CPI Inflation", "Core CPI Inflation"))
+        elif a.stage == "vcheck":
+            if not (a.capture and a.against):
+                say("V fail: vcheck needs --capture <older copy> and --against <newer copy>")
+                raise SystemExit(1)
+            if not stage_vcheck(a.capture, a.against, a.step_target):
+                raise SystemExit(1)
         elif a.stage == "moves":
             summarize_moves(a.cache_dir, "nowcast_year.json")
             summarize_moves(a.cache_dir, "nowcast_month.json")
@@ -1216,6 +1306,10 @@ def main() -> None:
         elif a.stage == "row":
             if not stage_row(a.db, a.day or datetime.now(UTC).date().isoformat(), a.export):
                 raise SystemExit(1)
+        elif a.stage == "sigma":
+            if not (a.against and a.before):
+                raise SystemExit("sigma needs --against <nowcast_year.json of row 11.12 (V2)> and --before 2027-01-01")
+            stage_sigma(a.cache_dir, a.against, a.before)
 
 
 if __name__ == "__main__":

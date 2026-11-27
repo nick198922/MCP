@@ -162,6 +162,40 @@ def test_compare_prints_new_points_after_the_old_stamp(tmp_path, capsys):
     assert "CPI Inflation      2026-10  after 2026-11-25: 0 points, distinct values 0, new value vs old last: False" in out
 
 
+def test_vcheck_gives_one_verdict_line_from_the_stored_copies(tmp_path, capsys):
+    # V1 / V2 of the registration: pass needs no overwritten point and (V1) a new headline value of 2026-11
+    import copy
+    import json
+
+    year, new = _later_year_copy()
+    (tmp_path / "old.json").write_text(json.dumps(year))
+    (tmp_path / "new.json").write_text(json.dumps(new))
+    assert m.stage_vcheck(tmp_path / "old.json", tmp_path / "new.json", "2026-11") is True
+    assert capsys.readouterr().out.rstrip().endswith("V pass")
+    bad = copy.deepcopy(new)
+    ds = next(d for d in bad[-1]["dataset"] if d["seriesname"] == "CPI Inflation")
+    i = next(k for k, x in enumerate(ds["data"]) if x.get("value") not in (None, ""))
+    ds["data"][i]["value"] = "9.99"  # a past daily point of headline 2026-11 rewritten
+    (tmp_path / "bad.json").write_text(json.dumps(bad))
+    assert m.stage_vcheck(tmp_path / "old.json", tmp_path / "bad.json", "2026-11") is False
+    assert "V fail: overwritten CPI Inflation 2026-11" in capsys.readouterr().out
+    assert m.stage_vcheck(tmp_path / "old.json", tmp_path / "missing.json") is False
+    assert "V fail: cannot read a copy" in capsys.readouterr().out
+
+
+def test_vcheck_unexpected_structure_still_ends_with_a_fail_line(tmp_path, capsys):
+    # third review B 481, finding 7: an exception in the comparison or the check is 'V fail: ...', never a traceback
+    import json
+
+    year, _ = _later_year_copy()
+    (tmp_path / "old.json").write_text(json.dumps(year))
+    for name, body in (("dict.json", {"chart": {}}), ("nochart.json", [{"x": 1}]), ("empty.json", [])):
+        (tmp_path / name).write_text(json.dumps(body))
+        assert m.stage_vcheck(tmp_path / "old.json", tmp_path / name, "2026-11") is False
+        last = capsys.readouterr().out.rstrip().splitlines()[-1]
+        assert last.startswith("V fail: check raised "), (name, last)
+
+
 def test_snapshot_series_falls_back_to_the_default_list(tmp_path):
     assert m.snapshot_series(tmp_path, ["10007"]) == (["10007"], None)
     sids, warn = m.snapshot_series(tmp_path, [])  # no events/ at all (the cache was emptied)
@@ -254,8 +288,41 @@ def test_row_stage_reads_the_job_row_read_only(tmp_path, capsys):
     # mode=ro: the database file is not written (SQLite may still create its -shm / -wal side files to read a WAL file)
     assert (db.read_bytes(), db.stat().st_mtime_ns) == before
     assert m.stage_row(db, "2026-12-02") is False and "NO ROW for 2026-12-02" in capsys.readouterr().out
+    # rereview finding 8: a file kept only as a reference is exported under its own day with the source row named
+    exp = tmp_path / "export29"
+    assert m.stage_row(db, "2026-11-29", exp) is True
+    out = capsys.readouterr().out
+    assert f"exported {exp / '2026-11-29_nowcast_year.json'}" in out and "bytes of row 2026-11-28" in out
+    assert (exp / "2026-11-29_nowcast_year.json").read_bytes() == (tmp_path / "export" / "2026-12-01_nowcast_year.json").read_bytes()
+    assert "NOT exported 2026-11-29_nowcast_month.json: no file in the row" in out
     assert m.stage_row(tmp_path / "missing.sqlite", "2026-12-01") is False
     assert "cannot read pm_cpi_snapshot" in capsys.readouterr().out
+
+
+def test_row_export_names_an_unresolved_reference_and_sigma_refuses_a_missing_file(tmp_path, capsys):
+    # rereview finding 8: never a silent empty export followed by a FileNotFoundError in the sigma command
+    import asyncio
+
+    from tradedesk.store import Store
+
+    async def one_row(path):
+        s = Store(path)
+        await s.init()
+        try:
+            await s.upsert_pm_cpi({"day": "2026-12-11", "created_ts": 1, "updated_ts": 2, "status": "stale",
+                                   "cf_year_z": None, "cf_year_sha": "ab", "cf_year_ref": "2026-11-01", "target": "2026-12",
+                                   "books": "{}", "n_events": 0, "n_brackets": 0, "n_quoted": 0})  # fmt: skip
+        finally:
+            await s.aclose()
+
+    db = tmp_path / "td.sqlite"
+    asyncio.run(one_row(db))
+    assert m.stage_row(db, "2026-12-11", tmp_path / "exp") is True
+    out = capsys.readouterr().out
+    assert "NOT exported 2026-12-11_nowcast_year.json: reference to 2026-11-01 not resolved" in out
+    assert not (tmp_path / "exp" / "2026-12-11_nowcast_year.json").exists()
+    with pytest.raises(SystemExit, match="no nowcast file"):
+        m.stage_sigma(tmp_path, tmp_path / "exp" / "2026-12-11_nowcast_year.json", "2027-01-01", vintage="20261211")
 
 
 def test_fred_mom_and_prev_months():
@@ -266,3 +333,22 @@ def test_fred_mom_and_prev_months():
     assert "2024-03" not in mom and "2024-04" not in mom
     assert "2024-01" not in mom
     assert m._prev_months("2025-02", 3) == ["2025-01", "2024-12", "2024-11"]
+
+
+def test_stage_sigma_reads_the_cached_cpi_and_the_given_nowcast_file(tmp_path, capsys):
+    # the archive SD of the registration (card п. 4); no network when the CSV vintage is cached
+    import json
+
+    fred = tmp_path / "cleveland" / "fred"
+    fred.mkdir(parents=True)
+    csv = "observation_date,CPIAUCNS\n2023-01-01,100.0\n2024-01-01,103.05\n2023-02-01,100\n2024-02-01,.\n"
+    (fred / "CPIAUCNS_20241201.csv").write_text(csv)
+    cats = [{"label": "02/05"}, {"label": "02/10"}, {"vline": "true", "label": "CPI Jan"}]
+    chart = {"chart": {"subcaption": "2024-1"}, "categories": [{"category": cats}],
+             "dataset": [{"seriesname": "CPI Inflation", "data": [{"value": 3.0}, {"value": 3.2}]}]}  # fmt: skip
+    nc = tmp_path / "nowcast_year.json"
+    nc.write_text(json.dumps([chart]))
+    m.stage_sigma(tmp_path, nc, "2024-12-01", vintage="20241201")
+    out = capsys.readouterr().out
+    # release 2024-02-10 -> point on or before 02-07 is 02/05 (3.0); A = 3.05 rounded half-up = 3.1
+    assert "n 1 (2024-1..2024-1)" in out and "sigma_A 0.1" in out

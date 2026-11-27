@@ -92,7 +92,7 @@ def test_checkpoint_note_names_funding_not_a_partial_close():
     tail = note[note.rindex("; ") :]
     assert tail == cp.PNL_MISMATCH_TAIL
     assert "фандинг (за публічними даними), P&L правильний" in tail  # inferred from public data, as the report says
-    assert "7 угод, закритих до 26.11 16:00 UTC" in tail  # verified only these: an 8th flagged trade is visibly new
+    assert "8 угод, закритих до 27.11 22:40 UTC" in tail  # verified only these: a 9th flagged trade is visibly new
     assert "Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py" in tail  # a new one is not proven
     assert (Path(__file__).resolve().parent.parent / "scripts" / "verify_demo_pnl_mismatch.py").is_file()
 

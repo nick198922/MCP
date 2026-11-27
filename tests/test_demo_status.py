@@ -254,7 +254,7 @@ async def test_demo_status_compact_cut_keeps_the_whole_funding_explanation(tmp_p
     assert whole.endswith(cp.PNL_MISMATCH_TAIL) and cut.endswith(" …" + cp.PNL_MISMATCH_TAIL)
     assert len(cut) <= demo_status_tool.NOTE_CHARS and len(cp.PNL_MISMATCH_TAIL) <= demo_status_tool.NOTE_CHARS // 3
     assert cp.PNL_MISMATCH_TAIL.count("; ") == 1 and cp.PNL_MISMATCH_TAIL.startswith("; ")  # the cut splits on the last '; '
-    assert "7 угод, закритих до 26.11 16:00 UTC" in cut and "Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py" in cut
+    assert "8 угод, закритих до 27.11 22:40 UTC" in cut and "Пізніші не доведені: scripts/verify_demo_pnl_mismatch.py" in cut
     assert "часткове закриття" not in whole
     assert any("1 long note(s) cut" in w for w in default["warnings"])
 

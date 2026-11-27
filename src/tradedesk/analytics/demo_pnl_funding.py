@@ -3,8 +3,8 @@
 Item 475 of docs/ideas/IDEA-20261102-standing-improvements.md, report docs/verification/2026-11-26-demo-pnl-mismatch.md.
 ``demo_trade.pnl_usd`` is the sum of Bybit's closed-pnl ``closedPnl`` (execution/demo_trader.py ``_sync_trade``);
 ``fees_usd`` holds only the opening and closing trading fees. That ``closedPnl`` also carries the funding the position
-paid or received while open is inferred from the data (public funding rebuilt by this module matches the gap of all 7
-flagged trades within 0.09 USD and leaves no residual beyond tolerance on the 70 trades with a gap above 0.01R), not
+paid or received while open is inferred from the data (on 2026-11-26 public funding rebuilt by this module matched the
+gap of all 7 flagged trades within 0.09 USD and left no residual beyond tolerance on the 70 trades above 0.01R), not
 taken from venue documentation; docs/verification/2026-11-11-s3-stop-exit-accounting.md already named funding the
 probable cause of the P&L remainder. The check in :mod:`.demo_pnl_check` compares ``pnl_usd`` with
 ``sign · (exit − entry) · qty − fees_usd`` and so flags trades that held through large funding. This module rebuilds the

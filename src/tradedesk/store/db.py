@@ -1803,12 +1803,13 @@ class Store:
                 float(r["qty"]),
                 float(r["price"]),
                 float(r["notional_usd"]),
+                r.get("qty_src"),  # Binance: 'z' / 'q'; NULL = not marked (other venues, Binance rows of the old parser)
             )
             for r in rows
         ]
         async with self._write():
             await self.conn.executemany(
-                "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd, qty_src) VALUES (?,?,?,?,?,?,?,?)",
                 payload,
             )
         return len(payload)
@@ -1964,7 +1965,11 @@ class Store:
         if symbol:
             where.append("symbol = ?")
             params.append(symbol)
-        sql = "SELECT ts, venue, symbol, side, qty, price, notional_usd FROM liquidations WHERE " + " AND ".join(where) + " ORDER BY ts"
+        sql = (
+            "SELECT ts, venue, symbol, side, qty, price, notional_usd, qty_src FROM liquidations WHERE "
+            + " AND ".join(where)
+            + " ORDER BY ts"
+        )
         cur = await self.conn.execute(sql, params)
         rows = await cur.fetchall()
         return [dict(r) for r in rows]

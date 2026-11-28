@@ -1155,7 +1155,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "and change_pct (fraction, 0.05 = +5 %) from the first to the last close. Units: USD by default, or "
             "base-asset coins with in_usd=false. USD in Coinalyze = coins x the close of the interval (its own "
             "conversion, checked on daily liquidations), so on crash days USD values are shifted against the coin "
-            "counts; exact USD liquidation sums come from liquidations_summary. Timestamps are interval starts (Binance "
+            "counts; liquidation USD at each liquidation's own price comes from liquidations_summary (last 24 h; its "
+            "Binance rows written by the old parser, before the 2026-11-28 fix was deployed, are understated). Timestamps are interval starts (Binance "
             "openInterestHist stamps the interval end, so its daily series sits one day later). For live OI per venue "
             "use perps_open_interest. Descriptive data, not a signal."
         ),

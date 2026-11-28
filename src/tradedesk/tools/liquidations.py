@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.liquidation_rows import BINANCE_VENUE, binance_understated, binance_understated_note
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS, first_nonfinite, r, store_failed, store_num, store_ready
@@ -24,7 +25,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "notional, longs/shorts USD split, imbalance (buy − sell)/total, top-N by notional, "
             "and a per-symbol breakdown. Venues: Binance USD-M, Bybit, OKX (TRADEDESK_COLLECT_LIQUIDATIONS_VENUES). "
             "Binance undercounts: its stream sends at most the latest liquidation per symbol each second, so cascades "
-            "are understated (a lower bound, not the full volume). Bybit covers only the configured symbols (default "
+            "are understated (a lower bound, not the full volume); its qty is the order's filled quantity (`z`). "
+            "Binance rows written by the old parser (before its 2026-11-28 fix was deployed) hold only the last fill "
+            "(`l`): qty and USD "
+            "understated several times, USD imbalance biased toward shorts; a warning says when the window has such "
+            "rows (they cannot be corrected). Bybit covers only the configured symbols (default "
             "BTC/ETH/SOL USDT perps); OKX says its channel is not the total of its liquidations. Prices: Binance "
             "average fill, Bybit bankruptcy price, OKX liquidation mark price. "
             "Units: notionals in USD (each liquidation at its own price); imbalance a fraction from -1 to 1; ts in "
@@ -104,6 +109,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         top = sorted(rows, key=lambda x: x["notional_usd"], reverse=True)[:top_n]
         if any("binance" in str(row.get("venue", "")) for row in rows):
             b.warn("Binance sends at most one liquidation per symbol per second: its figures are a lower bound in cascades")
+        old = binance_understated(rows)
+        if old:
+            b.warn(binance_understated_note(old, sum(1 for row in rows if row.get("venue") == BINANCE_VENUE)))
         if any(row.get("venue") == "okx" for row in rows):
             b.warn("OKX's liquidation channel is not the total of its liquidations (OKX docs): its figures are a lower bound")
 

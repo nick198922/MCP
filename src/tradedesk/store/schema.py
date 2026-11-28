@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -1151,5 +1151,14 @@ MIGRATIONS: dict[int, list[str]] = {
         # A day the API omitted has no row (unknown, not zero).
         "ALTER TABLE coinalyze_history ADD COLUMN liq_long_usd REAL",  # liquidated longs (forced sells), USD per day
         "ALTER TABLE coinalyze_history ADD COLUMN liq_short_usd REAL",  # liquidated shorts (forced buys), USD per day
+    ],
+    46: [
+        # Which payload field a liquidation's qty came from (providers/liquidations.py; card IDEA-20261017-doubletop-to-
+        # ours, item 4d). Binance: 'z' (accumulated filled qty) or 'q' (original qty, only when z is absent and the
+        # order is FILLED). NULL on Bybit and OKX rows, and on every Binance row written by the old parser (before the
+        # 2026-11-28 fix was deployed), which stored 'l' (the last fill only): those rows' qty and USD are understated
+        # several times and cannot be restored (z / q not kept).
+        # Written by the parser itself, so the marker is exact whenever the fixed code was deployed.
+        "ALTER TABLE liquidations ADD COLUMN qty_src TEXT",
     ],
 }

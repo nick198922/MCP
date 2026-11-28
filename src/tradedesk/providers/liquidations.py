@@ -21,9 +21,9 @@ Payload shape (Binance docs, 2024-11):
         "q":  "0.014",        // original qty
         "p":  "9910",          // original limit price
         "ap": "9910",          // average fill price
-        "X":  "FILLED",
-        "l":  "0.014",
-        "z":  "0.014",
+        "X":  "FILLED",       // NEW / PARTIALLY_FILLED (still working) are dropped
+        "l":  "0.014",        // qty of the LAST fill: not the liquidation size
+        "z":  "0.014",        // accumulated filled qty: what we store
         "T":  1568014460893
       }
     }
@@ -41,11 +41,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import socket
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
+
+from ..analytics.liquidation_rows import BINANCE_VENUE
 
 # USD-M market streams moved under /market/ (checked 2026-10-17): the old /ws/ path still accepts the connection but
 # sends nothing, not even btcusdt@aggTrade.
@@ -53,38 +56,74 @@ BINANCE_WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 # OKX notice on subscribe (2026-10-28): "WebSocket port 8443 will be retired soon. Please migrate to port 443."
 OKX_WS_URL = "wss://ws.okx.com:443/ws/v5/public"
+# Statuses of a force order that is still working: a later snapshot of the same order follows (see the parser).
+BINANCE_WORKING = frozenset({"NEW", "PARTIALLY_FILLED"})
+# Upper bound of a plausible event time in ms (year 2286): a finite but absurd `T` such as 1e30 would overflow SQLite's
+# integer on insert and lose the whole batch.
+MAX_TS_MS = 10**13
 
 
 def parse_binance_force_order(event: dict[str, Any]) -> dict[str, Any] | None:
     """Translate one `!forceOrder@arr` payload into our internal shape.
 
-    Returns ``None`` for anything that is not a filled forceOrder with the
-    fields we need (symbol, side, qty, price, ts).
+    Returns ``None`` for anything that is not a forceOrder with a filled quantity > 0 and the other fields we need
+    (symbol, side, price, ts), and for still-working orders.
+
+    Quantity = ``z`` (the order's accumulated filled quantity); never ``l``, the quantity of the order's LAST fill.
+    Until 2026-11-28 this parser took ``l`` first, so stored Binance rows without ``qty_src`` are understated several
+    times (raw capture 2026-11-28: ``l != z`` in 1945 of 2948 messages, the stored rows equalled the sum of ``l``, the
+    sum of ``z`` equalled Coinalyze; docs/verification/2026-11-28-coinalyze-liq-check.md). ccxt's
+    ``parse_ws_liquidation`` also reads ``l``. Notional = quantity x ``ap`` (the average price of all fills).
+
+    Status ``X``: NEW / PARTIALLY_FILLED (still working) are dropped: the message carries no order id, so that
+    snapshot and the order's later final one would count it twice. Any other status, or none, is a final snapshot
+    and is stored when ``z`` > 0: a liquidation order is IOC, so EXPIRED / CANCELED with 0 < z < q is a real partial
+    liquidation of ``z`` (the rest goes to the insurance fund / ADL) and no other row comes for it. ``q`` (original
+    quantity) replaces a missing ``z`` only when ``X == "FILLED"`` (then q = z); for any other status ``q`` would
+    overcount, so no ``z`` means no row. Unverified: every captured message so far was FILLED with ``z == q`` (2948 +
+    132, 2026-11-28); no non-FILLED message has been seen, so that branch rests on the Binance docs and the IOC logic.
+    ``qty_src`` in the row names the field used.
     """
-    if event.get("e") != "forceOrder":
+    if not isinstance(event, dict) or event.get("e") != "forceOrder":
         return None
-    o = event.get("o") or {}
+    o = event.get("o")
+    if not isinstance(o, dict):
+        return None
+    status = o.get("X")
+    if status is not None and not isinstance(status, str):
+        return None  # a list / dict would raise in the set lookup below and fail the whole collector run
+    if status in BINANCE_WORKING:
+        return None
+    if o.get("z") not in (None, ""):
+        qty_src = "z"
+    elif status == "FILLED":
+        qty_src = "q"
+    else:
+        return None
     try:
         symbol = o["s"]
         side_raw = o["S"]
-        qty = float(o.get("l") or o.get("z") or o.get("q"))
+        qty = float(o[qty_src])
         price = float(o.get("ap") or o.get("p"))
-        ts_ms = int(o.get("T") or event.get("E"))
-    except (KeyError, TypeError, ValueError):
+        ts_ms = int(o.get("T") or event.get("E"))  # JSON Infinity -> OverflowError
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
-    if qty <= 0 or price <= 0 or ts_ms <= 0:
+    if not (0 < qty < math.inf and 0 < price < math.inf) or not 0 < ts_ms < MAX_TS_MS:  # also drops nan
+        return None
+    if not math.isfinite(qty * price):  # two finite but absurd factors
         return None
     side = "buy" if side_raw == "BUY" else "sell" if side_raw == "SELL" else None
     if side is None:
         return None
     return {
         "ts": ts_ms // 1000,
-        "venue": "binanceusdm",
+        "venue": BINANCE_VENUE,
         "symbol": symbol,
         "side": side,
         "qty": qty,
         "price": price,
         "notional_usd": qty * price,
+        "qty_src": qty_src,
     }
 
 
@@ -114,9 +153,9 @@ def parse_bybit_liquidation(event: dict[str, Any]) -> list[dict[str, Any]]:
             qty = float(item["v"])
             price = float(item["p"])
             ts_ms = int(item["T"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):  # JSON Infinity -> OverflowError
             continue
-        if qty <= 0 or price <= 0 or ts_ms <= 0:
+        if not (0 < qty < math.inf and 0 < price < math.inf) or ts_ms <= 0:  # also drops nan
             continue
         # Position side -> taker side of the force order: a liquidated long (Buy) is closed by a sell.
         side = {"buy": "sell", "sell": "buy"}.get(str(side_raw).lower())
@@ -204,9 +243,9 @@ def parse_okx_liquidation(event: dict[str, Any], specs: Mapping[str, tuple[float
                 contracts = float(d["sz"])
                 price = float(d["bkPx"])
                 ts_ms = int(d["ts"])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # JSON Infinity -> OverflowError
                 continue
-            if contracts <= 0 or price <= 0 or ts_ms <= 0:
+            if not (0 < contracts < math.inf and 0 < price < math.inf) or ts_ms <= 0:  # also drops nan
                 continue
             side = {"buy": "buy", "sell": "sell"}.get(str(d.get("side") or "").lower())
             pos_side = str(d.get("posSide") or "").lower()

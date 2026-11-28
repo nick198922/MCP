@@ -33,7 +33,8 @@
 - `deribit_largest_trades('BTC', count=200, only_blocks=True, top_n=3)` —
   3 найбільші block prints за ніч.
 - `liquidations_summary(window_minutes=720, venue='binanceusdm')` —
-  скільки ліквідацій, imbalance.
+  скільки ліквідацій, imbalance (Binance — нижня межа; якщо `warnings` каже про рядки старого парсера
+  (до деплою виправлення 28.11) — USD занижені в кілька разів, а imbalance зміщений до шортів: так і написати).
 
 ## 6. Календар на 24 години
 - `calendar_expiries(horizon_days=1, funding_hours_ahead=24)` —

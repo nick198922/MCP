@@ -16,6 +16,7 @@ from mcp import Client
 
 import tradedesk.providers.liquidations as liq
 from conftest import NOW, FakeEx, make_transports, wait_until
+from tradedesk.analytics.liquidation_rows import binance_understated, binance_understated_note
 from tradedesk.collector import scheduler as sched_mod
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
@@ -76,6 +77,7 @@ def test_parse_sell_is_long_liquidation():
         "qty": pytest.approx(0.014),
         "price": pytest.approx(9910.0),
         "notional_usd": pytest.approx(0.014 * 9910.0),
+        "qty_src": "z",
     }
 
 
@@ -196,6 +198,20 @@ def test_parse_okx_drops_bad_details():
     assert parse_okx_liquidation({"arg": {"channel": "trades"}, "data": [{}]}, specs) == []
     assert parse_okx_liquidation(WS["okx_messages"][0], specs) == []  # port-8443 notice
     assert parse_okx_liquidation(WS["okx_messages"][1], specs) == []  # subscribe ack
+    for d in ({"sz": "inf"}, {"bkPx": "Infinity"}, {"sz": "nan"}):
+        assert parse_okx_liquidation(ev(**d), specs) == [], d
+    raw = json.loads(json.dumps(ev()).replace('"ts": "1793210146299"', '"ts": Infinity'))
+    assert parse_okx_liquidation(raw, specs) == []  # int(inf): OverflowError dropped, not raised
+
+
+def test_parse_bybit_drops_non_finite():
+    def ev(**d):
+        item = {"T": 1_739_502_302_929, "s": "BTCUSDT", "S": "Buy", "v": "1", "p": "80000", **d}
+        return {"topic": "allLiquidation.BTCUSDT", "data": [item]}
+
+    assert len(parse_bybit_liquidation(ev())) == 1
+    for d in ({"v": "inf"}, {"p": "Infinity"}, {"v": "nan"}, {"T": float("inf")}, {"T": float("nan")}):
+        assert parse_bybit_liquidation(ev(**d)) == [], d
 
 
 def test_parse_rejects_bad_events():
@@ -208,6 +224,88 @@ def test_parse_rejects_bad_events():
     assert parse_binance_force_order(bad) is None
     # unknown side
     assert parse_binance_force_order(_event(S="SIDE")) is None
+    # not a dict / no order object: dropped, never a parser exception (that would fail the whole run)
+    assert parse_binance_force_order([_event()]) is None  # type: ignore[arg-type]
+    assert parse_binance_force_order({"e": "forceOrder", "o": ["x"]}) is None
+    assert parse_binance_force_order(_event(z="nan")) is None
+    assert parse_binance_force_order(_event(z="abc")) is None  # a bad z is not replaced by q or l
+    # infinite qty / price never reach notional_usd (rule metrics sum it unchecked)
+    for k in ("z", "ap"):
+        for v in ("inf", "Infinity", "-inf"):
+            assert parse_binance_force_order(_event(**{k: v})) is None, (k, v)
+    assert parse_binance_force_order(_event(ap="", p="inf")) is None
+    # JSON Infinity / NaN as a number in T or E: int(inf) raises OverflowError, which must not escape the parser
+    raw = json.dumps(_event()).replace('"T": 1568014460893', '"T": Infinity')
+    assert json.loads(raw)["o"]["T"] == float("inf")
+    assert parse_binance_force_order(json.loads(raw)) is None
+    raw = json.dumps(_event()).replace('"T": 1568014460893', '"T": null').replace('"E": 1568014460893', '"E": NaN')
+    assert json.loads(raw)["o"]["T"] is None and json.loads(raw)["E"] != json.loads(raw)["E"]  # NaN
+    assert parse_binance_force_order(json.loads(raw)) is None
+
+
+BINANCE_LIVE = json.loads((Path(__file__).parent / "fixtures" / "binance_force_order_2026-11-28.json").read_text())
+
+
+def _binance_live_events() -> list[dict]:
+    # The capture kept the `o` fields and `E` only: wrapped back into the documented forceOrder envelope.
+    return [{"e": "forceOrder", "E": m["E"], "o": {k: v for k, v in m.items() if k != "E"}} for m in BINANCE_LIVE["messages"]]
+
+
+def test_parse_binance_live_takes_filled_qty_not_last_fill():
+    # Live 2026-11-28: a FILLED force order whose last fill `l` is a sliver of the order (BTC SELL l=0.010, z=1.149).
+    # The stored qty is z (= q for FILLED), the notional z x ap (avg price of all fills); the old parser stored l.
+    events = _binance_live_events()
+    rows = [parse_binance_force_order(e) for e in events]
+    assert all(r is not None for r in rows)
+    for ev, row in zip(events, rows, strict=True):
+        o = ev["o"]
+        assert row["qty"] == pytest.approx(float(o["z"])) and row["qty_src"] == "z"
+        assert row["notional_usd"] == pytest.approx(float(o["z"]) * float(o["ap"]))
+        assert row["price"] == pytest.approx(float(o["ap"])) and row["ts"] == o["T"] // 1000
+        assert row["side"] == {"SELL": "sell", "BUY": "buy"}[o["S"]]
+    btc_sell = rows[0]
+    assert btc_sell["symbol"] == "BTCUSDT" and btc_sell["qty"] == pytest.approx(1.149)
+    assert btc_sell["notional_usd"] == pytest.approx(1.149 * 60014.70)  # ~$69k; the `l` parse gave ~$600
+    assert sum(float(e["o"]["l"]) != float(e["o"]["z"]) for e in events) == 4  # the SOL one has l == z
+
+
+def test_parse_binance_qty_fallback_and_statuses():
+    no_z = _event(q="0.5", l="0.1")
+    del no_z["o"]["z"]
+    row = parse_binance_force_order(no_z)
+    assert row["qty"] == pytest.approx(0.5) and row["qty_src"] == "q" and row["notional_usd"] == pytest.approx(0.5 * 9910)
+    assert parse_binance_force_order(_event(z="", q="0.5", l="0.1"))["qty_src"] == "q"
+    no_qty = _event()
+    for k in ("z", "q"):
+        del no_qty["o"][k]
+    assert parse_binance_force_order(no_qty) is None  # only `l` left: never stored
+    # Still working (NEW / PARTIALLY_FILLED): the order's later final snapshot would count it again with z.
+    for status in ("NEW", "PARTIALLY_FILLED"):
+        assert parse_binance_force_order(_event(X=status, z="0.005", l="0.005")) is None, status
+    # Final partial liquidation (IOC order, the rest went to the insurance fund / ADL): stored with z, never q.
+    for status in ("EXPIRED", "CANCELED", "SOMETHING_NEW", None):
+        row = parse_binance_force_order(_event(X=status, q="0.014", z="0.005", l="0.002"))
+        assert row is not None, status
+        assert row["qty"] == pytest.approx(0.005) and row["qty_src"] == "z", status
+        assert row["notional_usd"] == pytest.approx(0.005 * 9910), status
+    no_status = _event(z="0.005")
+    del no_status["o"]["X"]
+    assert parse_binance_force_order(no_status)["qty_src"] == "z"  # X missing altogether: same as any final status
+    # Not FILLED: q is the original quantity and would overcount, so no z -> no row; z = 0 -> no row.
+    for status in ("EXPIRED", "CANCELED", None):
+        no_z = _event(X=status, q="0.014", l="0.002")
+        del no_z["o"]["z"]
+        assert parse_binance_force_order(no_z) is None, status
+        assert parse_binance_force_order(_event(X=status, z="", q="0.014")) is None, status
+        assert parse_binance_force_order(_event(X=status, z="0", q="0.014")) is None, status
+
+
+def test_parse_binance_never_raises_on_absurd_values():
+    for bad_status in (["FILLED"], {"X": "FILLED"}, 1):
+        assert parse_binance_force_order(_event(X=bad_status)) is None, bad_status
+    assert parse_binance_force_order(_event(z="1e200", ap="1e200")) is None  # finite factors, infinite notional
+    assert parse_binance_force_order(_event(T=1e30)) is None  # would overflow SQLite's integer on insert
+    assert parse_binance_force_order(_event()) is not None
 
 
 # ---------- collector jobs ----------
@@ -224,6 +322,7 @@ def test_enabling_liquidations_without_venues_starts_all_three(state, tmp_path, 
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
+    rt.now = lambda: NOW
     sched = build_default_scheduler(rt)
     assert sched is not None
     assert sorted(j.name for j in sched.jobs if j.name.startswith("liquidations")) == [
@@ -270,6 +369,7 @@ async def _job_rt(state, tmp_path) -> Runtime:
         transports=make_transports(state),
         exchange_factory=InstrumentsEx,
     )
+    rt.now = lambda: NOW  # the file holds late-2026 dates: no real clock (tests/test_clock_bombs.py)
     assert rt.store is not None
     await rt.store.init()
     return rt
@@ -315,6 +415,32 @@ async def test_bybit_job_stores_flipped_sides(state, tmp_path, ws_replay):
         }
         rows = await rt.store.liquidations_in_window(since_ts=0, until_ts=2_000_000_000, venue="bybit")
         assert sum(r["side"] == "sell" for r in rows) == 26  # S=Buy (long liquidated) -> "sell"
+    finally:
+        await rt.aclose()
+
+
+async def test_binance_job_stores_filled_qty_marked(state, tmp_path, monkeypatch):
+    # The real parser on the live 2026-11-28 messages, through the collector into the store: qty = z, marked 'z', so
+    # liquidations_summary does not flag these rows as written by the old `l` parser.
+    async def fake(url, subscribe, parser, *, max_seconds, **_):
+        for ev in _binance_live_events():
+            row = parser(ev)
+            if row:
+                yield row
+
+    monkeypatch.setattr(liq, "_ws_consume", fake)
+    rt = await _job_rt(state, tmp_path)
+    rt.now = lambda: datetime.fromtimestamp(1_795_834_020, UTC)  # 2026-11-28 02:47 UTC, all five within 60 min
+    try:
+        assert await sched_mod._collect_liquidations_binance(rt) == 5
+        rows = await rt.store.liquidations_in_window(since_ts=0, until_ts=2_000_000_000, venue="binanceusdm")
+        assert [r["qty_src"] for r in rows] == ["z"] * 5
+        assert sorted(r["qty"] for r in rows) == pytest.approx(sorted(float(m["z"]) for m in BINANCE_LIVE["messages"]))
+        srv, _ = build_server(rt)
+        env = await _call(srv, "liquidations_summary", window_minutes=60)
+        assert env["ok"] is True and env["data"]["count"] == 5
+        assert not any("old parser" in w for w in env["warnings"])
+        assert any("lower bound" in w for w in env["warnings"])
     finally:
         await rt.aclose()
 
@@ -408,6 +534,25 @@ async def test_stream_reconnects_and_resubscribes_after_drops():
     assert StreamStats().stamp() is None and "clock" not in st.as_dict()
     kw = fake.kwargs[0]
     assert (kw["open_timeout"], kw["ping_interval"], kw["ping_timeout"]) == (10.0, 20.0, 30.0)
+
+
+async def test_binance_stream_survives_infinite_values():
+    # json.loads accepts Infinity: T = Infinity used to raise OverflowError in the parser, and a parser exception fails
+    # the whole collector run. Now such frames (and "inf" quantities) are dropped and the run keeps the good rows.
+    good = json.dumps(_event())
+    frames = [
+        good.replace('"T": 1568014460893', '"T": Infinity'),
+        good.replace('"z": "0.014"', '"z": "inf"'),
+        good.replace('"ap": "9910"', '"ap": "Infinity"'),
+        good,
+    ]
+    assert len(set(frames)) == 4  # every replacement applied
+    st = StreamStats()
+    rows = await _drain(
+        liq._ws_consume(liq.BINANCE_WS_URL, None, parse_binance_force_order, max_seconds=0.1, stats=st, connect=_FakeConnect([frames]))
+    )
+    assert [(r["qty"], r["qty_src"]) for r in rows] == [(pytest.approx(0.014), "z")]
+    assert st.frames == 4 and st.rows == 1 and st.failures == 0
 
 
 async def test_every_stream_connects_over_ipv4(monkeypatch):
@@ -982,3 +1127,91 @@ async def test_liquidations_summary_filters_by_symbol(state, tmp_path):
         assert d["count"] == 1 and d["sell_notional_usd"] == 60_000
     finally:
         await rt.aclose()
+
+
+def _liq_row(ts: int, venue: str = "binanceusdm", qty_src: str | None = None) -> dict:
+    row = {"ts": ts, "venue": venue, "symbol": "BTCUSDT", "side": "sell", "qty": 1.0, "price": 60_000.0, "notional_usd": 60_000.0}
+    return row if qty_src is None else {**row, "qty_src": qty_src}
+
+
+async def test_liquidations_summary_flags_binance_rows_of_the_old_parser(state, tmp_path):
+    # Binance rows without qty_src were written by the `l` parser (before 2026-11-28): the warning names how many, and
+    # it is gone once the window holds only rows of the fixed parser. Unmarked Bybit / OKX rows are not flagged.
+    rt = await _rt(state, tmp_path)
+    now_ts = int(NOW.timestamp())
+    await rt.store.insert_liquidations(
+        [_liq_row(now_ts - 3000), _liq_row(now_ts - 2900), _liq_row(now_ts - 60, qty_src="z"), _liq_row(now_ts - 30, "bybit")]
+    )
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "liquidations_summary", window_minutes=60)
+        assert env["ok"] is True and env["data"]["count"] == 4
+        (w,) = [w for w in env["warnings"] if "old parser" in w]
+        assert w.startswith("2 of 3 Binance liquidation rows") and "understated" in w and "shorts" in w
+        recent = await _call(srv, "liquidations_summary", window_minutes=10)
+        assert recent["data"]["count"] == 2 and not any("old parser" in w for w in recent["warnings"])
+        bybit = await _call(srv, "liquidations_summary", window_minutes=60, venue="bybit")
+        assert bybit["data"]["count"] == 1 and not any("old parser" in w for w in bybit["warnings"])
+    finally:
+        await rt.aclose()
+
+
+def test_binance_understated_helpers_are_pure():
+    rows = [_liq_row(1), _liq_row(2, qty_src="z"), _liq_row(3, qty_src="q"), _liq_row(4, "bybit"), _liq_row(5, "okx")]
+    assert binance_understated(rows) == 1 and binance_understated([]) == 0
+    note = binance_understated_note(1, 3)
+    # Worded by parser, not by date: the old code keeps writing unmarked rows after 2026-11-28 until the deploy.
+    assert note.startswith("1 of 3 Binance liquidation rows here were written by the old parser (before its 2026-11-28 fix was deployed")
+    assert binance_understated_note().startswith("Binance liquidation rows here were written by the old parser")
+
+
+async def test_liquidation_rule_metrics_note_old_binance_rows(state, tmp_path):
+    from tradedesk.rules.metrics import MetricContext, build_metrics  # noqa: PLC0415
+
+    rt = await _rt(state, tmp_path)
+    now_ts = int(NOW.timestamp())
+    await rt.store.insert_liquidations([_liq_row(now_ts - 3000), _liq_row(now_ts - 60, qty_src="z")])
+    try:
+        ctx = MetricContext(store=rt.store, now_ts=now_ts)
+        calls = build_metrics(ctx)
+        assert await calls["liquidations_total"](60, "binanceusdm", "BTCUSDT") == pytest.approx(120_000.0)
+        assert await calls["liquidations_imbalance"](60, "binanceusdm") == pytest.approx(-1.0)
+        assert len(ctx.notes) == 2 and ctx.notes[0].startswith("liquidations_total(60, 'binanceusdm', 'BTCUSDT'): ")
+        assert all(": Binance liquidation rows here were written by the old parser" in n for n in ctx.notes)  # no counts: logged once
+        ctx.notes.clear()
+        assert await calls["liquidations_total"](10, "binanceusdm") == pytest.approx(60_000.0)  # fixed rows only
+        assert await calls["liquidations_imbalance"](0.5) is None  # empty window
+        assert ctx.notes == []
+    finally:
+        await rt.aclose()
+
+
+async def test_migration_from_45_keeps_liquidation_rows_unmarked(tmp_path):
+    from tradedesk.store import SCHEMA_VERSION, Store  # noqa: PLC0415
+    from tradedesk.store.schema import MIGRATIONS  # noqa: PLC0415
+
+    path = tmp_path / "old.sqlite"
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
+    for v in sorted(MIGRATIONS):
+        if v <= 45:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute(
+        "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
+        (1_795_830_000, "binanceusdm", "BTCUSDT", "sell", 0.01, 60_000.0, 600.0),
+    )
+    con.execute("PRAGMA user_version = 45")
+    con.commit()
+    con.close()
+    s = Store(path)
+    try:
+        await s.init()
+        assert await s.version() == SCHEMA_VERSION >= 46
+        await s.insert_liquidations([{**_liq_row(1_795_830_100), "qty_src": "z"}])
+        rows = await s.liquidations_in_window(since_ts=0, until_ts=2_000_000_000)
+        # The old row is kept as it was (not rewritten, not deleted) and stays unmarked: still flagged as understated.
+        assert [(r["qty"], r["notional_usd"], r["qty_src"]) for r in rows] == [(0.01, 600.0, None), (1.0, 60_000.0, "z")]
+        assert binance_understated(rows) == 1
+    finally:
+        await s.aclose()

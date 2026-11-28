@@ -18,6 +18,21 @@ Rules covered:
   'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. One
   asset under different venue names is one alt (base_asset: 'kPEPE' = '1000PEPEUSDT' = 'PEPE', 'PUMPFUN' = 'PUMP'). The
   "total open risk <= 3 %" half (open_risk, on the trades open now) sums rule 1's risk and needs stops.
+* 3 — only its second half: the total notional of the open alt positions <= 2 deposits (≈ $20 000). The first
+  half, the liquidation price at least 2x farther than the stop, is not checked: the journal has no liquidation
+  price. Alt as in rule 2 (options ``na``; HIP-3 ``unknown`` and left out of the sum), longs and shorts alike; notional = size x entry, USD at the
+  opening (size is coins on Bybit linear, Binance USD-M, Hyperliquid and journal_add; Bybit inverse rows, tags
+  'inverse' / 'inverse-classic', count USD contracts, so their notional is unknown). ``violated`` only when a lower
+  bound of the open alt notional right after the trade opened, itself included, is over the cap, ``ok`` only when
+  an upper bound is within it (exactly at the cap is within), else ``unknown``; open as in rule 2. Binance and
+  Hyperliquid imports (tags 'binance' / 'hyperliquid' with 'import') store in size everything opened over the round
+  trip (adds, re-entries) dated to the first fill, so their notional is an upper bound only: it can support ``ok``,
+  never a ``violated`` (the lower bound leaves it out). A row without a real opening time (Bybit closed P&L) that
+  closed at or after the moment checked may have been open then: no ``ok`` (no duration limit is assumed), never a
+  ``violated`` by itself; such a row's own notional over the cap violates it (a closed-P&L size is at most the
+  position's), else it is ``unknown``. An open alt without a notional leaves only the lower bound. Known limit: a
+  /trade row and a venue import of the same position are two rows, so that notional counts twice. A pass on this
+  half is not a pass on rule 3: compliance_summary counts rule 3 only when it is violated.
 * 4 — day stop: after 2 losing trades in a row or a day's realized P&L <= -2 % of the deposit, no new trade that
   day. UTC day and closing order as in scripts/journal_rules.py that produced the rule's effect, but "in a row" is
   stricter than that script, which stopped the day after any 2 losses. A trade opened after the stop moment of its
@@ -46,7 +61,8 @@ Rules covered:
   not count; a thesis the owner later writes on that row does), and the journal has no spot or IV at the opening,
   so (b) and (c) stay ``unknown``.
 
-Rules 3, 6 and 7 need data the journal has no column for (liquidation price, the reason for a long, stop moves).
+Rules 6 and 7 and the liquidation half of rule 3 need data the journal has no column for (the reason for a long,
+stop moves, the liquidation price).
 The journal check judges every week against today's deposit, not the deposit of that week.
 """
 
@@ -67,6 +83,7 @@ DEPOSIT_USD = 10_000.0
 RISK_PCT = 1.0  # rule 1, % of the deposit
 MAX_ALT_LONGS = 3  # rule 2
 OPEN_RISK_PCT = 3.0  # rule 2, total risk of the open trades, % of the deposit
+ALT_NOTIONAL_DEPOSITS = 2.0  # rule 3, second half: total notional of the open alt positions, in deposits
 DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 DAY_LOSING_STREAK = 2  # rule 4
 BIG_LOSS_PCT = DAY_LOSS_PCT  # rule 4, 48 h pause: a UTC day's realized P&L <= -this % of the deposit (assumed threshold)
@@ -80,7 +97,7 @@ IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
 ZONE_BAN, ZONE_COND, ZONE_FREE = "under_24h", "1_3_days", "over_3_days"  # rule 8 zones by the time to expiry
 IMPORT_THESIS_PLACEHOLDER = "теза не записана"  # scripts/bybit_import.py: "імпорт з Bybit: теза не записана"
 MAJORS = frozenset({"BTC", "ETH"})
-RULES = (1, 2, 4, 5, 8)
+RULES = (1, 2, 3, 4, 5, 8)  # rule 3: the alt-notional half only
 MIN_CHECKED = 30  # compliance_summary: under this many checked trades the share is descriptive only
 DAY_S = 86400.0
 _EPS = 1e-9
@@ -383,6 +400,8 @@ def _normalize(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         if exp is None and "option" in tags:  # a planned purchase (analytics.check_command) gives the delivery itself
             exp = _num(t.get("expiry_ts"))
         is_opt = exp is not None or "option" in tags
+        size, entry = _num(t.get("size")), _num(t.get("entry"))
+        coins = not is_opt and not any(g.startswith("inverse") for g in tags)  # Bybit inverse: size in USD contracts
         out.append(
             {
                 "i": i,
@@ -395,8 +414,10 @@ def _normalize(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "hip3": is_hip3(symbol),
                 "option": is_opt,
                 "expiry": exp,
-                "size": _num(t.get("size")),
-                "entry": _num(t.get("entry")),
+                "size": size,
+                "entry": entry,
+                "notional": abs(size) * entry if coins and size is not None and entry is not None and entry > 0 else None,
+                "notional_upper": "import" in tags and ("binance" in tags or "hyperliquid" in tags),  # size = all opened
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
                 "thesis": owner_thesis(t.get("thesis"), tags),
@@ -474,6 +495,7 @@ def trade_checks(
     deposit_usd: float = DEPOSIT_USD,
     risk_pct: float = RISK_PCT,
     max_alt_longs: int = MAX_ALT_LONGS,
+    alt_notional_deposits: float = ALT_NOTIONAL_DEPOSITS,
     day_loss_pct: float = DAY_LOSS_PCT,
     streak: int = DAY_LOSING_STREAK,
     min_rr: float = MIN_RR,
@@ -484,8 +506,13 @@ def trade_checks(
     pause_hours: float = PAUSE_HOURS,
 ) -> list[dict[str, Any]]:
     """Each open or closed journal row (pass the owner's real trades: no airdrop, no *-paper rows) with the status of
-    rules 1, 2, 4, 5 and 8: {id, week, opened_ts, pnl, rules: {n: status}, approx: rule 4 judged on the close time,
-    alt_longs: distinct alt longs open right after this one opened (rule 2, or None), buy_zone, buy_conditions,
+    rules 1, 2, 3 (its alt-notional half only), 4, 5 and 8: {id, week, opened_ts, pnl, rules: {n: status}, approx:
+    rule 4 judged on the close time, alt_longs: distinct alt longs open right after this one opened (rule 2, or None),
+    notional: size x entry of this row (USD, None for an option or without the data), alt_notional: the known notional
+    of the alt positions open right after this one opened, itself included (rule 3, or None without a real opening
+    time; the upper bound when nothing is unknown), alt_notional_exact: its part without Binance / Hyperliquid
+    imports (the lower bound), alt_notional_upper: how many of them are such imports, alt_notional_unknown: how many
+    have no notional, alt_maybe_open: rows without an opening time closed at or after it, buy_zone, buy_conditions,
     late_buy, big_premium, wrong_side: a stop or target not on its side of the entry (see wrong_side; rules 1 and 5
     are then ``unknown``), else None, pause: the 48 h pause the opening fell in (in_pause: {day, pnl, start, end}),
     else None}. Rule 4 is violated by an opening after the day stop of its day or inside a pause.
@@ -502,6 +529,8 @@ def trade_checks(
     stops = _day_stops(xs, deposit_usd * day_loss_pct / 100.0, streak)
     pz = _pauses(xs, deposit_usd * big_loss_pct / 100.0, pause_hours * 3600.0)
     alt_n = _alt_long_counts(xs, now_ts)
+    notional_cap = deposit_usd * alt_notional_deposits
+    alt_usd = _alt_notionals(xs, now_ts)
     out = []
     for x in xs:
         r: dict[int, str] = {}
@@ -518,6 +547,18 @@ def trade_checks(
             r[2] = UNKNOWN
         else:
             r[2] = VIOLATED if alt_n[x["i"]][1] else OK
+        # rule 3, the alt-notional half only: violated by a lower bound over the cap, ok by an upper bound within it
+        open_usd, exact_usd, n_upper, n_no_usd, n_maybe = alt_usd.get(x["i"], (None, None, 0, 0, 0))
+        own_exact = None if x["notional_upper"] else x["notional"]
+        over = notional_cap * (1 + _EPS)
+        if x["option"] or not x["base"] or x["base"] in MAJORS:
+            r[3] = NA
+        elif not _is_alt(x):  # HIP-3 (stocks, gold: left out of the sum) or no side
+            r[3] = UNKNOWN
+        elif (own_exact or 0.0) > over or (exact_usd or 0.0) > over:
+            r[3] = VIOLATED
+        else:
+            r[3] = UNKNOWN if open_usd is None or n_no_usd or n_maybe or open_usd > over else OK
         # rule 4: after the day stop of the opening's day, or inside a 48 h pause after a big-loss day
         stop = stops.get(utc_day(x["opened"]))
         pause = in_pause(pz, x["opened"])
@@ -553,6 +594,12 @@ def trade_checks(
                 "rules": r,
                 "approx": r[4] == VIOLATED and not x["open_known"],
                 "alt_longs": alt_n[x["i"]][0] if x["i"] in alt_n else None,
+                "notional": x["notional"],
+                "alt_notional": open_usd,
+                "alt_notional_exact": exact_usd,
+                "alt_notional_upper": n_upper,
+                "alt_notional_unknown": n_no_usd,
+                "alt_maybe_open": n_maybe,
                 "buy_zone": zone,
                 "buy_conditions": conds,
                 "late_buy": late,
@@ -626,6 +673,35 @@ def _alt_long_counts(xs: list[dict[str, Any]], now_ts: float, cap: int = MAX_ALT
     return out
 
 
+def _is_alt(x: Mapping[str, Any]) -> bool:
+    """Rule 3: a non-option position in an alt (any base asset but BTC and ETH; HIP-3 left out), long or short."""
+    return not x["option"] and bool(x["base"]) and x["base"] not in MAJORS and not x["hip3"] and x["side"] in ("long", "short")
+
+
+def _alt_notionals(xs: list[dict[str, Any]], now_ts: float) -> dict[int, tuple[float, float, int, int, int]]:
+    """Rule 3 sweep over alt positions with a real opening time: {row index: (known notional of the alt positions open
+    right after it opened, itself included, USD; its part without upper-bound imports; how many upper-bound imports;
+    how many have no notional; alt rows without an opening time closed at or after it)}. Held as in _alt_long_counts."""
+    alts = sorted((x for x in xs if _is_alt(x) and x["open_known"]), key=lambda x: (x["opened"], x["i"]))
+    untimed = [x["closed"] for x in xs if _is_alt(x) and not x["open_known"]]
+    active: list[tuple[float, float | None, bool, bool]] = []
+    out: dict[int, tuple[float, float, int, int, int]] = {}
+    for x in alts:
+        t = x["opened"]
+        active = [a for a in active if a[0] > t or (a[3] and a[0] >= t)]
+        still_open = x["closed"] is None
+        active.append((max(float(now_ts), t) if still_open else x["closed"], x["notional"], x["notional_upper"], still_open))
+        known = [(n, up) for _, n, up, _ in active if n is not None]
+        out[x["i"]] = (
+            sum(n for n, _ in known),
+            sum(n for n, up in known if not up),
+            sum(1 for _, up in known if up),
+            len(active) - len(known),
+            sum(1 for c in untimed if c >= t),
+        )
+    return out
+
+
 def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **params: Any) -> list[dict[str, Any]]:
     """Rule violations by ISO week of the opening (UTC), newest first: {week, n_trades, rules: {n: {status, violated,
     checked, unknown}}, days_stopped, big_loss_days, paused, approx, max_alt_longs, late_buys, buys_under_24h,
@@ -633,8 +709,8 @@ def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **par
     ``late_buys`` = ``buys_under_24h`` (never buy) + ``buys_cond_failed`` (1-3 days with a check failed). Rule 4:
     ``big_loss_days`` = big-loss days of the week (pauses, by the week of the day itself), ``paused`` = trades with a
     real opening time opened inside a 48 h pause (those without one are in ``approx``).
-    ``checked`` = trades the rule applies to with enough data, ``unknown`` = applies but the data cannot tell.
-    Exact and approximate are kept apart: rule 4's ``violated`` / ``checked`` leave out the flags judged on the close
+    ``checked`` = trades the rule applies to with enough data, ``unknown`` = applies but the data cannot tell; for
+    rule 3 both are about its alt-notional half only (the liquidation distance is never checked). Exact and approximate are kept apart: rule 4's ``violated`` / ``checked`` leave out the flags judged on the close
     time (``approx`` counts those); ``n_violating`` / ``pnl_violating`` are the trades with at least one exact
     violation and their closed P&L, ``n_violating_approx`` / ``pnl_violating_approx`` the trades whose only
     violation is an approximate rule 4 (P&L sums are None when no such trade has a P&L).
@@ -704,7 +780,8 @@ def compliance_summary(
     weekly_violations). Each trade_checks row falls in exactly one class: ``violated`` (at least one exact violation),
     ``approx`` (its only violation is rule 4 judged on the close time), ``unknown`` (no violation, but a rule that
     applies cannot be told: no stop, no target, no opening time; unknown is not compliant) or ``ok`` (every rule that
-    applies was checked and held). {n_trades, n_checked = n_ok + n_violated, n_ok, n_violated, n_unknown, n_approx,
+    applies was checked and held). Rule 3 is only half checked (alt notional, not the liquidation distance), so it
+    counts only when violated: its ``ok`` or ``unknown`` never moves a trade between classes. {n_trades, n_checked = n_ok + n_violated, n_ok, n_violated, n_unknown, n_approx,
     share_ok = n_ok / n_checked (None with nothing checked), enough: n_checked >= min_checked}. A rule-compliance
     count, not a measure of edge. ``params`` are trade_checks' thresholds (deposit_usd, risk_pct, ...)."""
     n_ok = n_bad = n_unknown = n_approx = 0
@@ -714,7 +791,7 @@ def compliance_summary(
             n_bad += 1
         elif c["approx"]:
             n_approx += 1
-        elif UNKNOWN in c["rules"].values():
+        elif any(st == UNKNOWN for n, st in c["rules"].items() if n != 3):  # rule 3: half checked, counts only violated
             n_unknown += 1
         else:
             n_ok += 1

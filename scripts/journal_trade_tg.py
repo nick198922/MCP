@@ -1,4 +1,5 @@
-"""Record a trade in the local journal from the owner's Telegram command and answer with rules 1, 2, 4, 5 and 8 for it.
+"""Record a trade in the local journal from the owner's Telegram command and answer with rules 1-5 and 8 for it (of
+rule 3 only the alt-notional half: open alt notional <= 2 deposits; the liquidation distance is not checked).
 
     uv run python scripts/journal_trade_tg.py --text "/trade BTC long 84000 size 0.1 stop 82000 target 90000 thesis ..."
     uv run python scripts/journal_trade_tg.py --text "..." --db PATH      # another SQLite file
@@ -69,8 +70,8 @@ STATUS_UA = {rc.OK: "✓ виконано", rc.VIOLATED: "✗ порушено",
 SIDE_UA = {"long": "лонг", "short": "шорт"}
 CAVEAT = (
     "Лише запис у локальний журнал: жодних ордерів, ліміти не змінюються. Правила — з депозитом $10 000; "
-    "2 і 4 — за реальними угодами журналу (відкрита — доки не закрито /close; імпорт з бірж може запізнюватися)."
-)
+    "{rules} — за реальними угодами журналу (відкрита — доки не закрито /close; імпорт з бірж може запізнюватися)."
+)  # {rules}: "2, 3 і 4" for an alt (a rule 3 line), else "2 і 4"
 STOP_REASON_UA = {"streak": "2 збиткові поспіль", "day_loss": "−2 % за день", "both": "2 збиткові поспіль і −2 % за день"}
 NO_JOURNAL = "журнал не прочитано"
 
@@ -132,6 +133,38 @@ def _rule2_line(check: dict[str, Any], risk: dict[str, Any] | None) -> str:
         parts.append(f"лонгів в альтах відкрито {check['alt_longs']}" + (" — новий альт понад межу" if alt == rc.VIOLATED else ""))
     elif alt == rc.UNKNOWN:
         parts.append("символ HIP-3 (акції, золото) у ліміт лонгів в альтах не входить")
+    return f"{head}: {STATUS_UA[status]} — {_h('; '.join(parts))}."
+
+
+def rule3_status(check: dict[str, Any], journal_read: bool) -> str:
+    """Rule 3's alt-notional half for a new row: trade_checks' status, but without the journal only a row whose own
+    notional is over the cap is known (violated); anything else is 'unknown', never 'ok'."""
+    st = check["rules"][3]
+    return st if journal_read or st in (rc.VIOLATED, rc.NA) else rc.UNKNOWN
+
+
+def rule3_line(check: dict[str, Any], symbol: str, status: str, journal_read: bool) -> str:
+    """Rule 3 in words, its alt-notional half only (the liquidation distance is not checked): this row's notional
+    (size x entry, USD) and the open alt notional with it, against ALT_NOTIONAL_DEPOSITS deposits."""
+    head = f"Правило 3 · лише номінал альтів ≤ {fmt(rc.ALT_NOTIONAL_DEPOSITS)} депозитів, ліквідацію не перевірено"
+    if status == rc.NA:
+        return f"{head}: {STATUS_UA[status]} (не альт: BTC, ETH чи опціон)."
+    if rc.is_hip3(symbol):
+        return f"{head}: {STATUS_UA[status]} — символ HIP-3 (акції, золото) у номінал альтів не входить."
+    cap = rc.DEPOSIT_USD * rc.ALT_NOTIONAL_DEPOSITS
+    own = check["notional"]
+    parts = [f"номінал цієї {usd(own)}" if own is not None else "номінал цієї не порахувати (немає розміру)"]
+    if not journal_read:
+        parts.append(f"межа {usd(cap)}; {NO_JOURNAL}")
+    else:
+        parts.append(f"разом з відкритими в журналі позиціями в альтах {usd(check['alt_notional'] or 0.0)} при межі {usd(cap)}")
+        if check["alt_notional_upper"]:  # Binance / Hyperliquid imports: size = all opened over the trade
+            parts.append(f"з них {check['alt_notional_upper']} — імпорт Binance/Hyperliquid, номінал лише верхня оцінка")
+        others = check["alt_notional_unknown"] - (1 if own is None else 0)
+        if others:
+            parts.append(f"ще {others} відкритих без номіналу — сума занижена")
+        if check["alt_maybe_open"]:
+            parts.append(f"ще {check['alt_maybe_open']} без часу відкриття, закриті пізніше, — могли бути відкриті")
     return f"{head}: {STATUS_UA[status]} — {_h('; '.join(parts))}."
 
 
@@ -254,10 +287,14 @@ def build_reply(trade: dict[str, Any], trade_id: int, now: float, journal: list[
         lines.append("Тези немає (для купівлі опціону за 1–3 доби до експірації вона обов'язкова).")
     lines.append(_rule1_line(trade, check["rules"][1], rc.DEPOSIT_USD * rc.RISK_PCT / 100.0))
     lines.append(_rule2_line(check, None if others is None else rc.open_risk(rows)))
+    st3 = rule3_status(check, others is not None)
+    if st3 != rc.NA:  # an alt only, as /check shows it
+        lines.append(rule3_line(check, trade["symbol"], st3, others is not None))
     lines.append(_rule4_line(check, None if others is None else rc.day_stops(rows)))
     lines.append(_rule5_line(trade, check["rules"][5]))
     lines.append(_rule8_line(trade, check, rc.DEPOSIT_USD * rc.PREMIUM_PCT / 100.0, now))
-    lines += ["", f"<i>{_h(CAVEAT)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ; не відбулася: /cancel {trade_id}.</i>"]
+    caveat = CAVEAT.format(rules="2, 3 і 4" if st3 != rc.NA else "2 і 4")
+    lines += ["", f"<i>{_h(caveat)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ; не відбулася: /cancel {trade_id}.</i>"]
     return "\n".join(lines)
 
 

@@ -414,6 +414,118 @@ def test_hip3_symbols_are_left_out_of_the_alt_long_count():
     }
 
 
+INVERSE = '["bybit", "import", "inverse"]'
+
+
+def _alt_notional_rows():
+    # rule 3's alt-notional half: cap 2 x $10 000 = $20 000 of open alt positions, longs and shorts alike; own rows
+    # ('[]', not an import), the rows without an opening time closed before the others opened
+    return [
+        _t(1, "SOL", "long", D, D + 10 * H, 1.0, "[]", size=100.0, entry=100.0),  # $10 000
+        _t(2, "DOGE", "short", D + 1 * H, D + 10 * H, 1.0, "[]", size=40.0, entry=250.0),  # + $10 000 = exactly the cap
+        _t(3, "XRP", "long", D + 2 * H, D + 3 * H, 1.0, "[]", size=1.0, entry=1.0),  # + $1 = over the cap
+        _t(4, "ETH", "long", D + 2 * H, D + 3 * H, 1.0, "[]", size=10.0, entry=4000.0),  # a major: not counted
+        _t(5, "xyz:TSLA", "long", D + 1 * H, D + 12 * H, 1.0, size=1000.0, entry=300.0),  # HIP-3: unknown, not counted
+        _t(6, "AVAX", "long", D + 11 * H, D + 12 * H, 1.0, "[]", size=30.0, entry=30.0),  # $900 after the others closed
+        _t(7, "LINKUSDT", "long", D - 2 * H, D - 2 * H, 1.0, BYBIT, size=1000.0, entry=25.0),  # no time, $25 000 alone
+        _t(8, "ADAUSDT", "long", D - 1 * H, D - 1 * H, 1.0, BYBIT, size=100.0, entry=1.0),  # no time, $100
+        _t(9, "BTC-17OCT25-110000-C", "long", D + 2 * H, D + 3 * H, 1.0, BYBIT_OPT, size=100.0, entry=500.0),  # option
+    ]
+
+
+def _alt_notional_lower_rows():
+    # open alts without a notional make the sum a lower bound
+    return [
+        _t(1, "SOL", "long", D, None, None, "[]", size=None, status="open"),  # no size
+        _t(2, "DOGE", "long", D + 1 * H, None, None, "[]", size=15000.0, entry=1.0, status="open"),  # >= $15 000: unknown
+        _t(3, "WIF", "short", D + 2 * H, None, None, "[]", size=6000.0, entry=1.0, status="open"),  # >= $21 000: violated
+        _t(4, "SOLUSD", "long", D - 2 * H, D - H, 1.0, INVERSE, size=50000.0, entry=150.0),  # USD contracts: unknown
+        _t(5, "LTCUSDT", "long", D - 5 * H, D - 5 * H, 1.0, BYBIT, size=200.0, entry=100.0),  # no time, $20 000 = cap
+    ]
+
+
+def test_rule_3_alt_notional_half():
+    c = _by_id(rc.trade_checks(_alt_notional_rows(), now_ts=D + 20 * H))
+    assert {i: c[i]["rules"][3] for i in c} == {
+        1: rc.OK,
+        2: rc.OK,  # exactly at the cap is within
+        3: rc.VIOLATED,
+        4: rc.NA,
+        5: rc.UNKNOWN,
+        6: rc.OK,
+        7: rc.VIOLATED,  # over the cap on its own, opening time or not
+        8: rc.UNKNOWN,  # Bybit linear: no opening time
+        9: rc.NA,
+    }
+    assert [c[i]["alt_notional"] for i in (1, 2, 3, 6)] == [pytest.approx(v) for v in (10000.0, 20000.0, 20001.0, 900.0)]
+    assert c[7]["alt_notional"] is None and c[7]["notional"] == pytest.approx(25000.0) and c[9]["notional"] is None
+    (w,) = rc.weekly_violations(_alt_notional_rows(), now_ts=D + 20 * H)
+    assert w["rules"][3] == {"status": rc.VIOLATED, "violated": 2, "checked": 5, "unknown": 2}
+    # the cap follows the deposit: on $5 000 SOL's $10 000 is the cap itself, DOGE on top breaks it
+    c = _by_id(rc.trade_checks(_alt_notional_rows(), now_ts=D + 20 * H, deposit_usd=5_000.0))
+    assert (c[1]["rules"][3], c[2]["rules"][3]) == (rc.OK, rc.VIOLATED)
+
+
+def test_rule_3_lower_bound_and_unknown_units():
+    c = _by_id(rc.trade_checks(_alt_notional_lower_rows(), now_ts=D + 20 * H))
+    assert {i: c[i]["rules"][3] for i in c} == {1: rc.UNKNOWN, 2: rc.UNKNOWN, 3: rc.VIOLATED, 4: rc.UNKNOWN, 5: rc.UNKNOWN}
+    assert (c[3]["alt_notional"], c[3]["alt_notional_unknown"]) == (pytest.approx(21000.0), 1)
+    assert c[4]["notional"] is None and c[4]["alt_notional_unknown"] == 1  # an inverse row's size is USD, not coins
+
+
+def _alt_notional_bound_rows():
+    # violated only by a lower bound, ok only by an upper bound
+    return [
+        # 1: own $10 000 while two Bybit rows without an opening time closed after it opened: they may have been open
+        _t(1, "SOL", "long", D, D + 2 * H, 1.0, "[]", size=100.0, entry=100.0),
+        _t(2, "ADAUSDT", "long", D + 3 * H, D + 3 * H, 1.0, BYBIT, size=100.0, entry=1.0),  # $100, no time
+        _t(3, "LINKUSDT", "long", D + 3 * H, D + 3 * H, 1.0, BYBIT, size=1000.0, entry=25.0),  # $25 000, no time
+        # Binance / Hyperliquid imports: size = all opened over the trade, an upper bound
+        _t(4, "SOL", "long", D + 10 * H, D + 11 * H, 1.0, HL, size=250.0, entry=100.0),  # $25 000 alone: unknown
+        _t(5, "DOGE", "long", D + 12 * H, D + 16 * H, 1.0, BINANCE, size=15000.0, entry=1.0),  # <= $15 000: ok
+        _t(6, "XRP", "long", D + 13 * H, D + 16 * H, 1.0, "[]", size=6000.0, entry=1.0),  # 6 000 .. 21 000: unknown
+        _t(7, "WIF", "short", D + 14 * H, D + 16 * H, 1.0, "[]", size=14001.0, entry=1.0),  # exact 20 001: violated
+    ]
+
+
+def test_rule_3_violated_only_by_a_lower_bound_ok_only_by_an_upper_bound():
+    c = _by_id(rc.trade_checks(_alt_notional_bound_rows(), now_ts=D + 20 * H))
+    assert {i: c[i]["rules"][3] for i in c} == {
+        1: rc.UNKNOWN,  # not ok: the rows without an opening time may have been open; not violated by LINK's $25 000
+        2: rc.UNKNOWN,
+        3: rc.VIOLATED,  # its own closed-P&L size is at most the position's
+        4: rc.UNKNOWN,  # the upper-bound import alone over the cap is no proof
+        5: rc.OK,
+        6: rc.UNKNOWN,
+        7: rc.VIOLATED,  # the exact rows alone break the cap, the import on top changes nothing
+    }
+    assert (c[1]["alt_maybe_open"], c[1]["alt_notional"]) == (2, pytest.approx(10000.0))
+    assert (c[4]["alt_notional"], c[4]["alt_notional_exact"], c[4]["alt_notional_upper"]) == (pytest.approx(25000.0), 0.0, 1)
+    assert (c[6]["alt_notional"], c[6]["alt_notional_exact"]) == (pytest.approx(21000.0), pytest.approx(6000.0))
+    assert (c[7]["alt_notional"], c[7]["alt_notional_exact"], c[7]["alt_notional_upper"]) == (
+        pytest.approx(35001.0),
+        pytest.approx(20001.0),
+        1,
+    )
+    assert c[7]["alt_maybe_open"] == 0  # the rows without a time closed before it opened
+
+
+def test_rule_3_never_makes_a_trade_compliant_only_a_violation_counts():
+    rows = [
+        _t(1, "SOL", "long", D, D + H, 5.0, "[]", size=10.0, entry=100.0, stop=95.0, target=110.0),  # all ok
+        _t(2, "DOGE", "long", D + 2 * H, D + 3 * H, 5.0, "[]", size=100.0, entry=1.0),  # no stop: 3 ok, still unknown
+        _t(3, "ADA", "long", D + 4 * H, D + 6 * H, 5.0, "[]", size=None),  # no size
+        _t(4, "SOL", "long", D + 5 * H, D + 6 * H, 5.0, "[]", size=10.0, entry=100.0, stop=95.0, target=110.0),
+        _t(5, "SOL", "long", D + 8 * H, D + 9 * H, 5.0, "[]", size=300.0, entry=100.0, stop=99.75, target=100.5),  # $30 000
+    ]
+    c = _by_id(rc.trade_checks(rows, now_ts=D + 10 * H))
+    assert [c[i]["rules"][3] for i in c] == [rc.OK, rc.OK, rc.UNKNOWN, rc.UNKNOWN, rc.VIOLATED]
+    assert c[2]["rules"][1] == rc.UNKNOWN and c[4]["rules"][1] == c[5]["rules"][1] == c[5]["rules"][5] == rc.OK
+    s = rc.compliance_summary(rows, now_ts=D + 10 * H)
+    # 1 ok; 2 stays unknown despite rule 3 ok; 4 stays ok despite rule 3 unknown (half checked); 5 only breaks rule 3
+    assert (s["n_ok"], s["n_unknown"], s["n_violated"], s["n_checked"]) == (2, 2, 1, 3)
+
+
 def _option_rows():
     return [
         # bought 1.83 days before the 10.10 08:00 delivery, $20 premium; an import: no thesis, no target

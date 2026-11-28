@@ -77,8 +77,16 @@ def test_rule_8_zones(journal_db, text, rule8, phrase):
 
 def test_a_linear_trade_rules_1_and_5():
     out = rp.build_reply(rp.parse_check_command("/check SOL long 180 stop 170 target 200 risk 90", NOW)["check"], NOW, [])
-    assert statuses(out) == {"1": "✓ виконано", "2": "✓ виконано", "4": "✓ виконано", "5": "✓ виконано", "8": "— не стосується"}
-    assert out.startswith("<b>Перевірка перед угодою: ✓ виконано: 1, 2, 4, 5</b>")
+    assert statuses(out) == {
+        "1": "✓ виконано",
+        "2": "✓ виконано",
+        "3": "✓ виконано",
+        "4": "✓ виконано",
+        "5": "✓ виконано",
+        "8": "— не стосується",
+    }
+    assert out.startswith("<b>Перевірка перед угодою: ✓ виконано: 1, 2, 4, 5</b>")  # rule 3's half: never a pass
+    assert "лише номінал альтів ≤ 2 депозитів, ліквідацію не перевірено" in out and "номінал цієї $1 620" in out
     out = rp.build_reply(rp.parse_check_command("/check BTC long 84000", NOW)["check"], NOW, [])
     assert statuses(out)["1"] == statuses(out)["5"] == "? невідомо" and "додайте stop" in out
     out = rp.build_reply(rp.parse_check_command("/check BTC long 84000 stop 82000 target 85000 size 0.1", NOW)["check"], NOW, [])
@@ -116,9 +124,37 @@ def test_rule_4_48h_pause_after_a_big_loss_day():
     assert statuses(rp.build_reply(check, NOW, small))["4"] == "✓ виконано"
 
 
+def test_rule_3_alt_notional_half_with_the_open_alts():
+    # SOL by risk and stop: size 90 / 10 = 9, $1 620; open DOGE short $18 380 -> exactly $20 000, within the cap
+    check = rp.parse_check_command("/check SOL long 180 stop 170 target 200 risk 90", NOW)["check"]
+    doge = _row(1, "DOGE", "short", NOW - 5 * H, tags="[]", size=18380.0, entry=1.0, stop=1.001)
+    old = _row(2, "ADAUSDT", "long", NOW - 2 * H, NOW - 2 * H, 1.0, tags='["bybit", "import", "linear"]', size=100.0)
+    out = rp.build_reply(check, NOW, [doge, old])  # a closed row without an opening time, closed before now: no effect
+    assert statuses(out)["3"] == "✓ виконано" and "разом з відкритими в журналі позиціями в альтах $20 000 при межі $20 000" in out
+    assert "2, 3 і 4 — за реальними угодами журналу" in out
+    # $1 more is over it: the verdict names rule 3
+    out = rp.build_reply(check, NOW, [{**doge, "size": 18381.0}])
+    assert statuses(out)["3"] == "✗ порушено" and "✗ порушено: 3" in out.split("\n")[0]
+    # the same as a Hyperliquid import: its size is an upper bound, no proof of a violation, and the line says why
+    out = rp.build_reply(check, NOW, [{**doge, "size": 18381.0, "tags": '["hyperliquid", "import", "perp"]'}])
+    assert statuses(out)["3"] == "? невідомо" and "з них 1 — імпорт Binance/Hyperliquid, номінал лише верхня оцінка" in out
+    # an open alt without a size: a lower bound, unknown (not in the verdict), until it alone breaks the cap
+    out = rp.build_reply(check, NOW, [{**doge, "size": None}])
+    assert statuses(out)["3"] == "? невідомо" and "ще 1 відкритих без номіналу — сума занижена" in out
+    assert "3" not in out.split("\n")[0]
+    # no journal: unknown, unless the planned trade alone is over the cap
+    assert statuses(rp.build_reply(check, NOW, None))["3"] == "? невідомо"
+    big = rp.parse_check_command("/check SOL long 180 size 120", NOW)["check"]  # $21 600
+    assert statuses(rp.build_reply(big, NOW, None))["3"] == "✗ порушено"
+    # BTC and options: the line is left out
+    out = rp.build_reply(rp.parse_check_command("/check BTC long 84000 size 1", NOW)["check"], NOW, [doge])
+    assert "3" not in statuses(out) and "Правило 3" not in out and "2 і 4 — за реальними угодами журналу" in out
+
+
 def test_an_unreadable_journal_makes_rules_2_and_4_unknown(tmp_path):
     out = rp.handle("/check SOL long 180 stop 170 target 200 risk 90", tmp_path / "missing.sqlite", NOW)
-    assert statuses(out)["2"] == statuses(out)["4"] == "? невідомо" and out.count("журнал не прочитано") == 2
+    assert statuses(out)["2"] == statuses(out)["3"] == statuses(out)["4"] == "? невідомо"
+    assert out.count("журнал не прочитано") == 3
     assert statuses(out)["1"] == "✓ виконано" and "? невідомо: 2, 4" in out.split("\n")[0]
     assert not (tmp_path / "missing.sqlite").exists()  # never created
 

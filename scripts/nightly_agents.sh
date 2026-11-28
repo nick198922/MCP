@@ -381,10 +381,11 @@ if [[ -n "$WEEK" ]] && awk -v w="$WEEK" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w 
   PROMPT="$PROMPT
 
 BUDGET: the weekly plan usage is ${WEEK}% (>= ${OWNER_ONLY_AT}%). Take only step p, skipping cards with the line «Темп: за графіком», or the CONTINUE work."
-fi
 # Ahead of the weekly pace the loop runs a step only for the owner's priority cards (scripts/agents_loop.sh, owner
-# 27.10), and says so in TRADEDESK_AGENTS_OWNER_ONLY.
-if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" && "$PROMPT" != *"BUDGET:"* ]]; then
+# 27.10), and says so in TRADEDESK_AGENTS_OWNER_ONLY. An `elif`, never a search of the prompt for "BUDGET:":
+# .claude/nightly.md itself contains that word, so this note was never added below OWNER_ONLY_AT and the standing card
+# spent the reserve (27-28.11: about 18 points of the week).
+elif [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" ]]; then
   PROMPT="$PROMPT
 
 BUDGET: the agents are ${TRADEDESK_AGENTS_OWNER_ONLY}; the owner lets them work on his priority cards anyway, up to the 97 % pause. Take only step p, skipping cards with the line «Темп: за графіком», or the CONTINUE work."
@@ -454,6 +455,10 @@ ALLOWED=(
   # of a branch main already has.
   "Bash(git --version)" "Bash(git -P log:*)" "Bash(git -P status:*)" "Bash(git -c core.quotepath=off diff:*)"
   "Bash(git cherry -v:*)"
+  # Read-only (28.11): status with quotepath off in its other spelling, file attributes, the MCP service's state and
+  # the update unit's log.
+  "Bash(git -c core.quotepath=false status:*)" "Bash(git check-attr:*)" "Bash(systemctl status tradedesk-mcp:*)"
+  "Bash(journalctl -u tradedesk-update:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and

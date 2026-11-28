@@ -1,7 +1,9 @@
 """Coinalyze daily history of BTC/ETH perps per venue into SQLite (table ``coinalyze_history``).
 
 Series: open interest in USD (``convert_to_usd=true``), funding (decimal fraction per funding interval: Coinalyze sends
-percent, divided by 100) and the long/short account ratio (ratio, long/short shares in [0, 1]), for ``BTCUSDT_PERP.A``
+percent, divided by 100), the long/short account ratio (ratio, long/short shares in [0, 1]) and, from 2026-11-28,
+long and short liquidations in USD per day (metric ``liq_usd``, columns ``liq_long_usd`` / ``liq_short_usd``,
+``convert_to_usd=true``; see the caveats below), for ``BTCUSDT_PERP.A``
 and ``ETHUSDT_PERP.A`` (Binance, the default) and, with ``TRADEDESK_COLLECT_COINALYZE_HISTORY_VENUES=binance,bybit``,
 also ``BTCUSDT.6`` and ``ETHUSDT.6`` (Bybit USDT perps). The suffix is the exchange code in Coinalyze, NOT an
 all-exchange aggregate (``.A`` = Binance, docs/reviews/2026-10-18-doubletop-parity-1b.md; ``.6`` = Bybit,
@@ -20,10 +22,11 @@ Only closed UTC days are stored, and a day is first asked :data:`SETTLE_SECONDS`
 next day), so a bar Coinalyze still finishes in the first minutes after midnight is not frozen half-built: the job
 never re-reads a stored day. A repeated bar is rewritten in place (PRIMARY KEY (symbol, metric, ts)). Each run asks
 at most :data:`CHUNK_DAYS` days per series, resuming the day after the last stored bar; with nothing stored it starts
-``backfill_days`` ago (at least 1; never older than the retention window when one is set). Per venue 2 symbols x 3
-metrics = at most 6 requests per run (12 with Bybit), all through the provider's 40/min limiter, and none once the
+``backfill_days`` ago (at least 1; never older than the retention window when one is set). Per venue 2 symbols x 4
+metrics = at most 8 requests per run (16 with Bybit), all through the provider's 40/min limiter, and none once the
 series is up to date (the next one goes out after 02:00 UTC). A venue switched on later backfills on its own: each
-series resumes from its own last stored bar.
+series resumes from its own last stored bar; so does a metric added later (``liq_usd`` on a database that already
+holds the other three backfills from ``backfill_days`` ago while they keep resuming from their own last bar).
 
 An empty answer is logged as a warning every time. When the empty window lies wholly in the past (it ends before the
 last settled day) an in-memory cursor moves past it, so a range Coinalyze has no data for is not asked again until a
@@ -41,6 +44,19 @@ USD per series), and the guard stays: an OI series whose MEDIAN close looks like
 refused and lands in ``missing`` rather than being stored as USD; single bars below it in a USD series (a zero or a
 gap filled by the aggregator) are dropped with a warning and the rest is stored.
 
+Liquidations (``liq_usd``): rows are parsed by the same ``summarise`` as the ``liquidations_history`` tool
+(analytics/liquidations_agg.py); a row with a missing side, a negative, non-finite or absurd (above ``MAX_ABS``)
+value or a bad time is dropped whole and counted like the other series (a repeated day keeps the last row). USD is
+Coinalyze's conversion = coins x the day's close (the tool's check of 2026-10-25), not each liquidation at its own
+price, so on crash days the USD sums are shifted against the coin counts (long liquidations of a crash day fill above
+its close and are understated). The Binance and OKX streams send at most one liquidation per instrument per second
+(docs/verification/2026-11-12-liquidation-stream-gaps.md), so exchange-reported liquidations can be lower bounds; how
+Coinalyze builds its numbers was not checked. Read a row as one venue's reported flow, never a market-wide total;
+venues stay separate rows (sum ``.A`` + ``.6`` per day yourself, only on days both have). A day with zero on both
+sides is stored as zeros; a day the API omits is not stored and is NOT a zero day: read it as unknown. No unit guard
+as for OI: a quiet day is legitimately small or zero, so a magnitude test would refuse real days; the USD unit rests
+on ``convert_to_usd=true`` in the request. Not reconciled with the venues (Bybit / Binance) yet.
+
 Off by default: TRADEDESK_COLLECT_COINALYZE_HISTORY_ENABLED=1 (and the collector); without COINALYZE_API_KEY the job
 logs one warning and does nothing.
 """
@@ -48,12 +64,13 @@ logs one warning and does nothing.
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ..analytics.coinalyze_series import FUNDING_PCT_TO_DECIMAL, long_short_series, ohlc_series
-from ..analytics.liquidations_agg import aggregated_symbol, api_interval, exchange_symbol, parse_exchanges
+from ..analytics.coinalyze_series import FUNDING_PCT_TO_DECIMAL, MAX_ABS, long_short_series, ohlc_series
+from ..analytics.liquidations_agg import aggregated_symbol, api_interval, exchange_symbol, parse_exchanges, summarise
 from ..core.envelope import Builder, Fetched
 from .bad_rows import note_bad_rows
 
@@ -68,7 +85,7 @@ DAY = 86_400
 CHUNK_DAYS = 120  # per series per run; the tools read up to 365 daily bars in one request, so this is well inside
 BASES = ("BTC", "ETH")
 SYMBOLS = tuple(aggregated_symbol(b) or "" for b in BASES)  # BTCUSDT_PERP.A, ETHUSDT_PERP.A (Binance, the default)
-METRICS = ("oi_usd", "funding", "long_short")
+METRICS = ("oi_usd", "funding", "long_short", "liq_usd")
 # Binance and Bybit BTC/ETH perp OI is billions of USD; in coins it is ~1e5 BTC / ~2e6 ETH (Bybit BTC ~6e4 BTC on
 # 2026-10-25). A median close below this is not USD.
 MIN_OI_USD = 1e7
@@ -121,8 +138,9 @@ def plan_window(now_ts: int, last_ts: int | None, cursor: int | None, backfill_d
 
 def history_rows(metric: str, history: Any, start: int, end: int) -> list[dict[str, Any]]:
     """Raw Coinalyze ``history`` rows -> store rows of ``metric`` with ``start <= ts < end``. Units: ``funding`` decimal
-    per funding interval (API percent / 100); ``oi_usd`` as sent; ``long_short`` ratio and shares in [0, 1]. Malformed
-    rows are dropped by the shared parsers (analytics/coinalyze_series.py)."""
+    per funding interval (API percent / 100); ``oi_usd`` as sent; ``long_short`` ratio and shares in [0, 1];
+    ``liq_usd`` long / short liquidations of the day, USD as sent. Malformed rows are dropped by the shared parsers
+    (analytics/coinalyze_series.py, analytics/liquidations_agg.summarise)."""
     return [r for r in parse_history(metric, history) if start <= r["ts"] < end]
 
 
@@ -141,6 +159,16 @@ def parse_history(metric: str, history: Any) -> list[dict[str, Any]]:
         rows = [
             {"ts": r["ts"], "open": r["open"], "high": r["high"], "low": r["low"], "close": r["close"]} for r in (s or {}).get("rows", [])
         ]
+    elif metric == "liq_usd":
+        # The tool's parser (time range, both sides present, no negatives); it keeps NaN / inf / 1e308 and repeated
+        # days, so those are dropped here as ohlc_series does (``MAX_ABS``, a repeated day keeps the last row).
+        s = summarise(hist, "daily")
+        by_ts = {
+            r["ts"]: {"ts": r["ts"], "liq_long_usd": r["long"], "liq_short_usd": r["short"]}
+            for r in (s or {}).get("rows", [])
+            if all(math.isfinite(v) and v <= MAX_ABS for v in (r["long"], r["short"]))
+        }
+        rows = [by_ts[t] for t in sorted(by_ts)]
     else:
         raise ValueError(f"unknown metric {metric!r}")
     return rows
@@ -169,6 +197,8 @@ def _fetch(rt: "Runtime", metric: str, symbol: str, start: int, end: int) -> "Aw
         return rt.coinalyze.open_interest_history(symbol, iv, start, end - 1, convert_to_usd=True)
     if metric == "funding":
         return rt.coinalyze.funding_rate_history(symbol, iv, start, end - 1)
+    if metric == "liq_usd":
+        return rt.coinalyze.liquidation_history(symbol, iv, start, end - 1, convert_to_usd=True)
     return rt.coinalyze.long_short_ratio_history(symbol, iv, start, end - 1)
 
 

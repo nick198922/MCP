@@ -455,9 +455,12 @@ async def test_option_legs_corrupt_fields_are_null(tmp_path, monkeypatch, value)
     assert got == ref, _diff(got, ref)
 
 
-# ---------- coinalyze_history: daily OI / funding / long-short bars ----------
+# ---------- coinalyze_history: daily OI / funding / long-short bars and liquidations ----------
 
-CZ_FIELDS = {"time": {"oi_usd": "t", "funding": "t", "long_short": "t"}, "value": {"oi_usd": "c", "funding": "h", "long_short": "r"}}
+CZ_FIELDS = {
+    "time": {"oi_usd": "t", "funding": "t", "long_short": "t", "liq_usd": "t"},
+    "value": {"oi_usd": "c", "funding": "h", "long_short": "r", "liq_usd": "l"},
+}
 CZ_CASES = {f"{kind}-{k}": (kind, v) for kind in CZ_FIELDS for k, v in (BAD_TS if kind == "time" else BAD).items()}
 
 
@@ -492,8 +495,8 @@ async def test_coinalyze_history_drops_corrupt_bars(tmp_path, case, caplog):
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
         n, got = await _cz_rows(tmp_path, "bad", kind, value)  # a 1e308 close overflowed the stdev out of the job
-    assert (n, got) == (n_ref, ref) and n == 21
-    assert caplog.text.count("dropped 1 malformed or repeated bar(s)") == 3  # BTC oi_usd, funding, long_short
+    assert (n, got) == (n_ref, ref) and n == 28
+    assert caplog.text.count("dropped 1 malformed or repeated bar(s)") == 4  # BTC oi_usd, funding, long_short, liq_usd
 
 
 async def test_clean_samples_log_no_malformed_rows(tmp_path, monkeypatch, caplog):

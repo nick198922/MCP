@@ -43,6 +43,10 @@ Coinalyze's (``long_share_corr``: the side test stays informative for the Binanc
 assignments tie when ours is below both Coinalyze sides), and our Bybit rows throttled to the last row of each second
 (``throttle_per_second``) against Coinalyze Bybit, i.e. what a Binance-like one-push-per-second stream would keep.
 
+Added 2026-11-28 with the Binance parser fix (card item 4d): Binance rows are counted by parser (``qty_src`` NULL =
+old parser, last fill ``l``; ``z`` / ``q`` = fixed parser; ``binance_parser_split``) and a warning is printed when
+both are in the window, since the comparisons pool them. Works on a database with or without the column.
+
 Peak RSS is printed in the progress lines; the full result goes to ``--out`` (JSON) and its printed lines next to it
 (``.txt``).
 """
@@ -123,10 +127,34 @@ def fmt(x: Any, p: str = ".3f") -> str:
 
 
 # ---- ours ----------------------------------------------------------------------------------------------------------
+def binance_parser_split(con: sqlite3.Connection, start: int, end: int) -> dict[str, Any]:
+    """Binance rows in [start, end) per base, split by parser (item 4d, 2026-11-28): ``old`` = ``qty_src`` NULL (the
+    old parser stored the last fill ``l``, understated several times), ``new`` = marked ``z`` / ``q``, with the first
+    and last ts of the new rows. Without the column (schema < 46) every row is old. Read-only. The comparisons below
+    still pool both kinds: a day that holds new rows cannot be compared with days before the deploy."""
+    has_col = any(r[1] == "qty_src" for r in con.execute("PRAGMA table_info(liquidations)").fetchall())
+    venue = VENUES["binance"][0]
+    out: dict[str, Any] = {"has_qty_src": has_col, "by_base": {}}
+    for base in BASES:
+        args = (venue, f"{base}USDT", start, end)
+        where = "WHERE venue = ? AND symbol = ? AND ts >= ? AND ts < ?"
+        if has_col:
+            old, new, lo, hi = con.execute(
+                "SELECT SUM(qty_src IS NULL), SUM(qty_src IS NOT NULL), MIN(CASE WHEN qty_src IS NOT NULL THEN ts END), "
+                f"MAX(CASE WHEN qty_src IS NOT NULL THEN ts END) FROM liquidations {where}",
+                args,
+            ).fetchone()
+        else:
+            old, new, lo, hi = con.execute(f"SELECT COUNT(*), 0, NULL, NULL FROM liquidations {where}", args).fetchone()
+        out["by_base"][base] = {"old": old or 0, "new": new or 0, "new_first_ts": lo, "new_last_ts": hi}
+    return out
+
+
 def read_ours(db: str, start: int, end: int) -> dict[str, Any]:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     out: dict[str, Any] = {"hours": {}, "events": {}, "dups": {}, "table": []}
     try:
+        out["binance_parser"] = binance_parser_split(con, start, end)
         for ex in VENUES:
             rows = con.execute("SELECT hour_ts, connected_s FROM liquidation_stream_hour WHERE exchange = ?", (ex,)).fetchall()
             out["hours"][ex] = hour_coverage(rows)
@@ -293,6 +321,18 @@ async def main_async(a: argparse.Namespace) -> dict[str, Any]:
         emit(f"  {ex}: qualifying days {len(qd)} ({', '.join(day(d)[5:] for d in qd)}); fully connected hours {len(qh)}")
     for (ex, base), ev in ours["events"].items():
         emit(f"  ours {ex} {base}: {len(ev)} rows, exact duplicate rows {ours['dups'][(ex, base)]}")
+    bp = res["binance_parser"] = ours["binance_parser"]
+    for base, c in bp["by_base"].items():
+        emit(
+            f"  ours binance {base} by parser: old (qty_src NULL, last fill l) {c['old']}, new (z / q) {c['new']}"
+            + (f" from {time.strftime('%m-%d %H:%M', time.gmtime(c['new_first_ts']))} UTC" if c["new_first_ts"] is not None else "")
+            + ("" if bp["has_qty_src"] else " (no qty_src column: schema < 46, all rows old)")
+        )
+    if any(c["new"] and c["old"] for c in bp["by_base"].values()):
+        emit(
+            "  WARNING: Binance rows of both parsers in the window; the comparisons below pool them, so days after the "
+            "deploy (new rows ~ Coinalyze) must not be pooled with days before it (old rows ~ 0.2 of Coinalyze)"
+        )
     res["table_liq_usd"] = [
         {"symbol": s, "rows": n, "first": day(lo), "last": day(hi), "fetched_min": fmin, "fetched_max": fmax}
         for s, n, lo, hi, fmin, fmax in ours["table"]

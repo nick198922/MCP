@@ -22,8 +22,9 @@ ALLOWED_EXCHANGES = "allowed: 'binance' (code '.A') and 'bybit' (code '.6', USDT
 USD_NOTE = (
     "USD values are Coinalyze's own conversion: coins x the close of the interval (checked on daily liquidations "
     "2026-10-25: coins x the day's Binance USD-M close), not each value at its own price, so on crash days the USD "
-    "figures are shifted against the coin counts. Exact USD liquidation sums: liquidations_summary (our own live "
-    "stream)."
+    "figures are shifted against the coin counts. Each liquidation at its own price: liquidations_summary (our own "
+    "live stream, last 24 h; its Binance rows written by the old parser, before the 2026-11-28 fix was deployed, are "
+    "understated several times)."
 )
 
 Interval = Annotated[Literal["daily", "hourly"], Field(description="Bucket size (UTC-aligned).")]
@@ -145,13 +146,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "total, net = long - short, long_share in [0, 1]; plus totals and the peak interval. Units: USD by "
             "default, or base-asset coins with in_usd=false. USD in Coinalyze = coins x the close of the day "
             "(interval), not each liquidation at its own price, so on crash days the USD sums are shifted (long "
-            "liquidations fill above the close, so they are understated); exact USD sums come from "
-            "liquidations_summary (our own live-collected stream). Intervals are UTC-aligned daily or hourly. "
+            "liquidations fill above the close, so they are understated); USD of each liquidation at its own price "
+            "comes from liquidations_summary (our own live-collected stream, same public venue feeds, so also a lower "
+            "bound on Binance; its Binance rows written by the old parser, before the 2026-11-28 fix was deployed, are "
+            "understated several times). Intervals are UTC-aligned daily or hourly. "
             "Coinalyze keeps hourly data only for a limited recent window (older ranges come back empty). "
             "Liquidation counts are exchange-reported and understate forced closes on venues that publish only the "
             "largest order per second. Do not read the totals as market-wide liquidations. "
             "When to pick it: history beyond the last 24 hours (up to 365 days daily, 30 days hourly); for the last "
-            "minutes to 24 hours with exact per-liquidation USD and Binance / Bybit / OKX use liquidations_summary."
+            "minutes to 24 hours with each liquidation's own USD and Binance / Bybit / OKX use liquidations_summary."
         ),
     )
     async def liquidations_history(

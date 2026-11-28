@@ -13,6 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..analytics.liquidation_rows import binance_understated, binance_understated_note
+
 if TYPE_CHECKING:
     from ..store import Store
 
@@ -120,16 +122,24 @@ def build_metrics(ctx: MetricContext) -> dict[str, Callable[..., Any]]:
         series = await ctx.store.basis_series(currency, expiry, 0, ctx.now_ts)
         return await _latest_from_series(series, "annualized_simple", notes, f"basis_annualized({currency!r}, {expiry!r})")
 
+    def _note_understated(name: str, args: tuple[Any, ...], rows: list[dict[str, Any]]) -> None:
+        # Binance rows written by the old parser (before its fix was deployed): the value rests on understated USD (item 4d). No counts
+        # in the text, so the alerts job (which logs each distinct note once per rule) does not log it on every tick.
+        if binance_understated(rows):
+            notes.append(f"{name}{args!r}: {binance_understated_note()}")
+
     async def liquidations_total(window_minutes: float, venue: str | None = None, symbol: str | None = None) -> float | None:
         since = ctx.now_ts - int(window_minutes * 60)
         rows = await ctx.store.liquidations_in_window(since_ts=since, until_ts=ctx.now_ts, venue=venue, symbol=symbol)
         if not rows:
             return 0.0
+        _note_understated("liquidations_total", (window_minutes, venue, symbol), rows)
         return sum(float(r["notional_usd"]) for r in rows)
 
     async def liquidations_imbalance(window_minutes: float, venue: str | None = None, symbol: str | None = None) -> float | None:
         since = ctx.now_ts - int(window_minutes * 60)
         rows = await ctx.store.liquidations_in_window(since_ts=since, until_ts=ctx.now_ts, venue=venue, symbol=symbol)
+        _note_understated("liquidations_imbalance", (window_minutes, venue, symbol), rows)
         if not rows:
             return None
         buys = sum(float(r["notional_usd"]) for r in rows if r["side"] == "buy")

@@ -189,6 +189,126 @@ def test_fill_share_full_fill_is_above_the_passport():
     assert (f["verdict"], f["side"]) == (cp.NO, "вище")
 
 
+def test_fill_share_does_not_count_a_missed_row_with_its_placement_time_as_filled():
+    """Item 501: the demo trader writes ``opened_ts`` at the placement too, so a live ``missed`` row has one (28.11: both
+    missed S28 rows); the share showed 4 / 4 = 100 % for 2 fills of 4. The status decides, not ``opened_ts``."""
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    filled = [_trade(i, "S28", -0.9, rest_until=V9 + H) for i in range(2)]
+    base = {"setup": "S28", "timeframe": "4h", "signal_ts": V9 - 8 * H, "rest_until": V9 + H, "closed_ts": V9 + H}
+    missed = [base | {"link_id": f"m{i}", "status": "missed", "opened_ts": V9 - 4 * H} for i in range(2)]
+    f = cp.fill_forward(s28, filled + missed, NOW)
+    assert f["n"] == 4 and f["metric"] == pytest.approx(0.5)
+    # no fill at all: 0 %, not 100 %; a pending row with a placement time stays out of the share either way
+    pending = base | {"link_id": "p", "status": "pending", "opened_ts": V9 - 4 * H}
+    f0 = cp.fill_forward(s28, [*missed, pending], NOW)
+    assert f0["n"] == 2 and f0["metric"] == pytest.approx(0.0)
+    assert any("pending з минулим строком" in x for x in f0["notes"])
+
+
+def test_fill_share_counts_a_resting_limit_whose_fill_left_no_position():
+    """Review of item 501, blocker 1: ``demo_trader._complete_entry`` marks a fill without a position afterwards
+    ``missed`` and appends «; no position after the fill» to the note (empty note: the text starts with «; »). A resting
+    limit gets there only after a fill, so it is filled; an expired untouched limit stays unfilled."""
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    base = {"setup": "S28", "timeframe": "4h", "signal_ts": V9 - 8 * H, "rest_until": V9 + H, "closed_ts": V9 + H, "status": "missed"}
+    base |= {"opened_ts": V9 - 4 * H}  # the placement time, as the live missed rows have
+    lost = [base | {"link_id": "l0", "note": "; no position after the fill"}]
+    lost.append(base | {"link_id": "l1", "note": "the venue reported Filled; no position after the fill"})
+    expired = base | {"link_id": "e", "note": "the resting limit expired untouched"}
+    filled = [_trade(0, "S28", -0.9, rest_until=V9 + H)]
+    f = cp.fill_forward(s28, [*lost, expired, *filled], NOW)
+    assert f["n"] == 4 and f["metric"] == pytest.approx(0.75)  # 2 lost + 1 closed of 4
+    note = next(x for x in f["notes"] if x.startswith("заповнені, але позиції вже не було"))
+    assert note.endswith(": 2") and "у середньому R і в перших 30 заповнених не враховані" in note
+    only_expired = cp.fill_forward(s28, [expired], NOW)
+    assert only_expired["metric"] == pytest.approx(0.0) and not any("позиції вже не було" in x for x in only_expired["notes"])
+    # the S28 first-30 rule is unchanged: a lost fill (no R) is not one of the first 30 filled trades
+    first = [_trade(i, "S28", -0.5, rest_until=V9, opened=V9 + i * H) for i in range(30)]
+    early_lost = lost[0] | {"opened_ts": V9 - 2 * H}
+    main = cp.demo_forward(s28, [early_lost, *first], NOW)[0]
+    assert any("за часом входу: -0.500" in x for x in main["notes"])
+
+
+def test_demo_row_names_a_fill_without_position_outside_its_sample():
+    """Review of item 501, remark N2 (S12 HYPE, 22.11): a ``missed`` row with «no position after the fill» has no P&L,
+    so it is outside n and mean R; the row says so and names it, the sample and the label are unchanged."""
+    s12 = next(s for s in cp.DEMO if s.setup == "S12")
+    rows = [_trade(i, "S12", 0.2, version="v9") for i in range(30)]
+    hype = {"link_id": "h", "setup": "S12", "timeframe": "4h", "status": "missed", "symbol": "HYPE/USDT:USDT", "version": "v9"}
+    hype |= {"signal_ts": cp._ms(2026, 11, 1, 4), "opened_ts": V9 + H, "closed_ts": V9 + 2 * H, "note": "; no position after the fill"}
+    plain = hype | {"link_id": "p", "symbol": "ADA/USDT:USDT", "note": "price ran 0.40R from the planned entry (> 0.25R)"}
+    base = cp.demo_forward(s12, rows, NOW)[0]
+    r = cp.demo_forward(s12, [*rows, hype, plain], NOW)[0]
+    note = next(x for x in r["notes"] if x.startswith("поза вибіркою (n і середній R)"))
+    assert ": 1 — HYPE (сигнал 2026-11-01);" in note and "ADA" not in note and "підтвердити за аудитом" in note
+    assert (r["n"], r["metric"], r["verdict"]) == (base["n"], base["metric"], base["verdict"])
+    assert not any(x.startswith("поза вибіркою (n і") for x in base["notes"])
+    # a row closed after the report date is not named yet
+    later = cp.demo_forward(s12, [*rows, hype | {"closed_ts": NOW + H}], NOW)[0]
+    assert not any(x.startswith("поза вибіркою (n і") for x in later["notes"])
+
+
+def test_s28_first_30_filled_skips_pending_rows_with_a_placement_time():
+    """Item 501: a ``pending`` S28 limit has ``opened_ts`` (its placement) but no fill: it is not one of the first 30."""
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    first = [_trade(i, "S28", -0.5, rest_until=V9, opened=V9 + i * H) for i in range(30)]
+    early_pending = {"link_id": "p0", "setup": "S28", "timeframe": "4h", "status": "pending", "signal_ts": V9 - 9 * H}
+    early_pending |= {"opened_ts": V9 - H, "rest_until": NOW + DAY}  # placed before every fill, not filled
+    main = cp.demo_forward(s28, [early_pending, *first], NOW)[0]
+    assert any("за часом входу: -0.500" in x for x in main["notes"])  # checked on the 30 fills
+    assert not any("ще відкрито" in x for x in main["notes"])
+
+
+def test_s28_row_names_the_score1_band_it_does_not_apply():
+    """Item 501: S28 trades after 10.11 are score >= 1, whose band and the -0.501R threshold (Q-20261118-1) the row's
+    code does not hold; the row says so and keeps its label. Trades before 10.11 get no such note."""
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    now = cp._ms(2026, 11, 28)
+    late = [_trade(i, "S28", -0.9, opened=cp._ms(2026, 11, 14) + i * H) for i in range(2)]
+    r = cp.demo_forward(s28, late, now)[0]
+    note = next(x for x in r["notes"] if x.startswith("смуга й поріг"))
+    assert "−0.501R (Q-20261118-1" in note and "−0.797 … +0.278" in note and "із сигналом після 10.11: 2 з 2" in note
+    assert r["verdict"] == cp.EARLY and r["band"]["iid"] == (-0.438, 0.247)  # label and band unchanged
+    early = cp.demo_forward(s28, [_trade(0, "S28", -0.9)], now)[0]  # signal 31.10: score >= 2 era
+    assert not any(x.startswith("смуга й поріг") for x in early["notes"])
+
+
+def test_open_questions_parse_and_note():
+    """Item 501: the report lists the owner's open questions; answered ones and a heading without status are left out."""
+    text = (
+        "# Питання\n\nФормат:\n```\n## Q-20261101-1: приклад у блоці формату\nСтатус: open | answered\n```\n\n"
+        "## Q-20261127-1: S12 — тримати?\nСтатус: open\nКонтекст: x\n\n"
+        "## Q-20261118-1: S28 поріг\nСтатус: answered (22.11)\n\n## Q-20261126-2: carry B — зупинити?\nСтатус: open\n\n"
+        "## Q-20261120-4: жирний статус\n**Статус:** open\n\n"
+        "## Q-20261101-9: без статусу\nКонтекст: y\n"
+    )
+    qs = cp.open_questions(text)
+    # the fenced format example is not a question; the bold status line is read; answered / no status left out
+    assert qs == [("Q-20261127-1", "S12 — тримати?"), ("Q-20261126-2", "carry B — зупинити?"), ("Q-20261120-4", "жирний статус")]
+    qs = qs[:2]
+    note = cp.open_questions_note(qs)
+    assert ": 2 — Q-20261127-1 — S12 — тримати?; Q-20261126-2 — carry B — зупинити?" in note
+    assert "не прочитано" in cp.open_questions_note(None)
+    assert "немає" in cp.open_questions_note([])
+
+
+def test_script_names_unreadable_questions_file(tmp_path):
+    assert script.load_questions(tmp_path / "absent.md") is None
+    (q := tmp_path / "q.md").write_text("## Q-20261127-1: S12\nСтатус: open\n", encoding="utf-8")
+    assert script.load_questions(q) == [("Q-20261127-1", "S12")]
+    rep = script.build_report({"questions": None}, NOW)
+    assert any("QUESTIONS.md не прочитано" in x for x in rep["notes"])
+    assert "Примітка: docs/QUESTIONS.md не прочитано" in cp.render(rep)
+    assert not any("питань власника" in x for x in script.build_report({}, NOW)["notes"])  # demo_status's build: none
+    # the repository's own file (extra check): as many questions as open status lines outside the code fences
+    live = script.load_questions()
+    lines, fenced, n_open = script.QUESTIONS.read_text(encoding="utf-8").splitlines(), False, 0
+    for line in lines:
+        fenced = not fenced if line.startswith("```") else fenced
+        n_open += not fenced and line.lstrip("*").startswith("Статус:") and line.split(":", 1)[1].lstrip("* ").startswith("open")
+    assert live is not None and len(live) == n_open and all(q.startswith("Q-") for q, _ in live)
+
+
 # ------------------------------------------------------------------------------------------------------ carry
 
 
@@ -427,6 +547,51 @@ def test_carry_e_frozen_leg_note_claims_no_more_than_was_checked():
     assert "можлива ознака завмерлої ноги perp; колізію не виключено, перевірити обсяг барів" in note
     assert "делістинг перевірено" not in note and "а не колізії" not in note and "−21 %" not in note
     assert "за утримання 4.32 %, до завмирання 0.31 % (поріг 0.5 %)" in note and r["verdict"] == cp.NO
+
+
+BIRB_TID = "B:BIRB/USDT:USDT:1792627200000"  # the first BIRB entry of carry B, reviewed 19.11 (item 383)
+
+
+def test_carry_e_cites_the_19_11_review_for_the_reviewed_entries_only():
+    """Review of item 501, remark N1: (е) of B fails on BIRB, whose leg gap was investigated on 19.11 (market, no engine
+    defect); the row cites that instead of asking for a review, keeps the criterion failed, and still asks for any
+    entry the review did not see: another trade id, rows after the review, or another failure kind."""
+    gap_rows = [(1.008, 1.0)] * 3 + [(1.009, 1.0)] * 2  # |median gap| 0.8 %, no frozen leg (fewer than 6 equal rows)
+    until = cp.E_REVIEWED_GAPS[BIRB_TID]
+
+    def run(trade_id, rows=gap_rows):
+        pos, logs, cyc = _frozen_case("BIRB", rows, "B", trade_id=trade_id)
+        return cp.carry_forward("B", pos, logs, cyc, BENCH["B"]["bench"], NOW), cyc
+
+    # the reviewed trade with its rows dated inside the review: cited, nothing left to review
+    r, cyc = run(BIRB_TID)
+    last = max(int(c["cycle_ts"]) for c in cyc if any(x.get("symbol") == "BIRB/USDT:USDT" for x in c["payload"].get("candidates") or []))
+    assert last <= until  # T (18.10) + 4 cycles: before 23.10 16:05
+    assert (
+        _crit_of(r, "е")["status"] == cp.FAIL
+        and r["verdict"] == cp.NO
+        and "(е)" in next(x for x in r["notes"] if x.startswith("не пройдено"))
+    )
+    note = next(x for x in r["notes"] if x.startswith("(е) розрив цін ніг > 0.5 % у входах"))
+    assert f"BIRB/USDT:USDT (вхід {cp._ymd_s(T // 1000)})" in note and "розібрано 19.11" in note and "дефекту рушія немає" in note
+    assert "вердикт (е) за реєстрацією не змінюється" in note
+    assert not any(x.startswith("(е) → баг рушія") for x in r["notes"])
+    # another BIRB entry (a new trade id): still to review, named with its entry date, no citation
+    r, _ = run(f"B:BIRB/USDT:USDT:{cp._ms(2026, 11, 27)}")
+    assert any(x.startswith("(е) → баг рушія") and f"BIRB/USDT:USDT (вхід {cp._ymd_s(T // 1000)})" in x for x in r["notes"])
+    assert not any(x.startswith("(е) розрив цін ніг") for x in r["notes"])
+    # the reviewed trade, but holding rows after the review's last one: not covered
+    long_rows = [(1.008, 1.0), (1.009, 1.0)] * 10  # 20 cycles of 8 h from 18.10: to 24.10, after 23.10 16:05
+    r, _ = run(BIRB_TID, long_rows)
+    assert any(x.startswith("(е) → баг рушія") and "BIRB/USDT:USDT" in x for x in r["notes"])
+    assert not any(x.startswith("(е) розрив цін ніг") for x in r["notes"])
+    # pure: another failure kind of a reviewed symbol stays to review, the gap is still cited
+    e = {
+        "gap_entries": [{"trade_id": BIRB_TID, "symbol": "BIRB/USDT:USDT", "opened_ts": T, "last_ts": T}],
+        "other_symbols": ["BIRB/USDT:USDT"],
+    }
+    note, rest = cp.gap_review(e)
+    assert note is not None and rest == ["BIRB/USDT:USDT"]
 
 
 def test_carry_e_frozen_leg_note_only_for_a_gap_failure_with_six_rows():

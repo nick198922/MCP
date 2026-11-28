@@ -55,7 +55,14 @@ Coinalyze builds its numbers was not checked. Read a row as one venue's reported
 venues stay separate rows (sum ``.A`` + ``.6`` per day yourself, only on days both have). A day with zero on both
 sides is stored as zeros; a day the API omits is not stored and is NOT a zero day: read it as unknown. No unit guard
 as for OI: a quiet day is legitimately small or zero, so a magnitude test would refuse real days; the USD unit rests
-on ``convert_to_usd=true`` in the request. Not reconciled with the venues (Bybit / Binance) yet.
+on ``convert_to_usd=true`` in the request. The stored ``liq_usd`` rows are NOT reconciled yet (neither with the tool
+nor with the venues), and older years are not checked: do not use them for a research verdict until they are. Only
+the ``liquidations_history`` tool's answers over 2026-11-13..27 (BTC / ETH) were checked against our own WebSocket rows
+(docs/verification/2026-11-28-coinalyze-liq-check.md): Bybit ``.6`` matches the public Bybit stream on pooled sums
+(in coins, ours / (coverage x Coinalyze) = 0.96-1.01, sides match), approximately on single days / hours (4 of 8
+series pass, 4 approximate); Binance ``.A`` = the public, throttled Binance stream's accumulated qty ``z`` (one raw hour matched
+exactly), a lower bound whose day-to-day shape is not verified; USD = coins x the day's close on 17 of 17 days;
+closed bars unchanged over 1.5 h, later revisions not checked yet.
 
 Off by default: TRADEDESK_COLLECT_COINALYZE_HISTORY_ENABLED=1 (and the collector); without COINALYZE_API_KEY the job
 logs one warning and does nothing.

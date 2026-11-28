@@ -1,0 +1,10 @@
+{
+  "_source": "Live capture from the Contabo server 2026-11-28 01:42:54-03:01:51 UTC of wss://fstream.binance.com/market/ws/!forceOrder@arr (file ~/.cache/tradedesk-agents/coinalyze-liq/binance_force_raw_hour.json, 2948 messages; docs/verification/2026-11-28-coinalyze-liq-check.md). The capture kept these fields of each message's `o` object plus the event time `E`; the event type 'forceOrder' and the order type / time in force were not saved, so tests wrap each item as {\"e\": \"forceOrder\", \"E\": E, \"o\": item}. Picked 2026-11-28: for BTCUSDT and ETHUSDT, SELL and BUY, the message with the largest z / l in the capture, plus one SOLUSDT message with l == z. In the whole capture X = FILLED and z = q in 2948 of 2948, l != z in 1945; no (symbol, T) and no (symbol, side, q, p) within 2 s repeats.",
+  "messages": [
+    {"s": "BTCUSDT", "S": "SELL", "q": "1.149", "l": "0.010", "z": "1.149", "X": "FILLED", "p": "59786.50", "ap": "60014.70", "T": 1795833266123, "E": 1795833267082},
+    {"s": "BTCUSDT", "S": "BUY", "q": "0.696", "l": "0.007", "z": "0.696", "X": "FILLED", "p": "60383.00", "ap": "60169.60", "T": 1795831212159, "E": 1795831213107},
+    {"s": "ETHUSDT", "S": "SELL", "q": "0.331", "l": "0.001", "z": "0.331", "X": "FILLED", "p": "1655.89", "ap": "1662.40", "T": 1795834012250, "E": 1795834013256},
+    {"s": "ETHUSDT", "S": "BUY", "q": "2.163", "l": "0.009", "z": "2.163", "X": "FILLED", "p": "1676.47", "ap": "1669.99", "T": 1795830747054, "E": 1795830748058},
+    {"s": "SOLUSDT", "S": "BUY", "q": "0.84", "l": "0.84", "z": "0.84", "X": "FILLED", "p": "72.4800", "ap": "72.1200", "T": 1795830447110, "E": 1795830448118}
+  ]
+}

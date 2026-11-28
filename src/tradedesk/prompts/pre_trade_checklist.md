@@ -31,7 +31,7 @@
 ## 3. Позиціонування в деривативах
 - `perps_funding_compare(base)`: funding > 20 % річних у бік угоди → ⚠ натовп уже там.
 - `perps_open_interest(base)`, `perps_oi_history`, `perps_long_short_ratio`: хто тримає позиції і куди росте OI.
-- `liquidations_summary`: чи щойно був каскад ліквідацій (вхід після нього — інша угода, ніж до нього).
+- `liquidations_summary`: чи щойно був каскад ліквідацій (вхід після нього — інша угода, ніж до нього). Binance — нижня межа; якщо `warnings` каже про рядки старого парсера (до деплою виправлення 28.11) — USD занижені в кілька разів, а imbalance зміщений до шортів: так і написати.
 - `perps_basis_compare(base)`; для BTC/ETH також `deribit_oi_by_strike` і `deribit_gamma_exposure` (евристика).
 
 ## 4. Волатильність і шум

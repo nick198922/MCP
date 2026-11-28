@@ -37,6 +37,8 @@ PACE_SLACK="${TRADEDESK_AGENTS_PACE_SLACK:-3}"  # weekly % the agents may run ah
 MAX_OPEN="${TRADEDESK_AGENTS_MAX_OPEN:-2}"
 WAIT_REVIEW="${TRADEDESK_AGENTS_REVIEW_WAIT_SECONDS:-1800}"
 WAIT_IDLE="${TRADEDESK_AGENTS_IDLE_WAIT_SECONDS:-1800}"
+# In owner-only mode an idle run costs the owner's reserve and the next one finds the same (28.11: two in 100 min).
+WAIT_OWNER_IDLE="${TRADEDESK_AGENTS_OWNER_IDLE_WAIT_SECONDS:-10800}"
 GAP="${TRADEDESK_AGENTS_GAP_SECONDS:-300}"
 REPORT_HOUR="${TRADEDESK_AGENTS_REPORT_HOUR:-9}"
 DOCTOR_MAX="${TRADEDESK_DOCTOR_MAX_PER_DAY:-4}"
@@ -137,6 +139,12 @@ boost_on() {
   [[ -n "$u" ]] && ((u > $(date +%s)))
 }
 
+# True when the step takes only the owner's cards: ahead of the weekly pace, or past OWNER_ONLY_AT without a boost.
+owner_only_mode() {
+  [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" ]] || { ! boost_on && [[ -n "${week:-}" ]] &&
+    awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; }
+}
+
 # Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
 work_branch() { cut -d' ' -f1 "$LOG_DIR/work.state" 2>/dev/null || true; }
 # Owner-priority cards on main that still need work (accepted, testing or proposed). Cards with the line
@@ -223,8 +231,7 @@ idle_check() { # idle_check <1 = idle run | 0 = real work>
   # Owner-only mode (ahead of the weekly pace or past OWNER_ONLY_AT, no boost): idling is the owner's brake (03.11:
   # the standing card follows the pace and the reserve is his), so a doctor run would only spend that reserve looking
   # for work the brake holds back on purpose (02-03.11: three idle doctors in 12 h, all in owner-only mode).
-  if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" ]] || { ! boost_on && [[ -n "${week:-}" ]] &&
-    awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; }; then
+  if owner_only_mode; then
     idles=0
     log "idle under the pace brake (owner-only mode): no idle doctor"
     return 0
@@ -243,15 +250,20 @@ idle_check() { # idle_check <1 = idle run | 0 = real work>
 # Idle wait that ends early once an agent branch is merged (owner 30.10: the agents idled half an hour while the S3
 # passport waited 15 min for the trader review; the card it held is free as soon as it merges).
 # Also ends when main gets new work: a card or an answer in docs/ideas/ or docs/QUESTIONS.md (owner 31.10: his new card
-# from the chat session waited half an hour, it is not an agent branch).
+# from the chat session waited half an hour, it is not an agent branch). And when the owner switches the boost on.
 work_tree() { git -C "$REPO" rev-parse -q origin/main:docs/ideas origin/main:docs/QUESTIONS.md 2>/dev/null | tr '\n' ' '; }
 idle_wait() { # idle_wait <seconds>
-  local left="$1" before now tree
+  local left="$1" before now tree boosted=0
   before="$(open_branches | wc -l)"
   tree="$(work_tree)"
+  boost_on && boosted=1
   while ((left > 0)); do
     sleep 60
     left=$((left - 60))
+    if ((boosted == 0)) && boost_on; then
+      log "the owner's boost is on: next step now"
+      return 0
+    fi
     git -C "$REPO" fetch -q --prune --no-write-fetch-head origin 2>/dev/null || continue
     now="$(open_branches | wc -l)"
     if ((now < before)); then
@@ -458,10 +470,12 @@ while true; do
       sleep "$GAP"
       ;;
     3)
-      log "nothing to do; waiting ${WAIT_IDLE}s"
+      wait_idle="$WAIT_IDLE"
+      owner_only_mode && wait_idle="$WAIT_OWNER_IDLE"
+      log "nothing to do; waiting ${wait_idle}s"
       idle_check 1 2
-      loop_state "роботи немає, наступна перевірка о $(at "$WAIT_IDLE") або одразу після злиття гілки агентів"
-      idle_wait "$WAIT_IDLE"
+      loop_state "роботи немає, наступна перевірка о $(at "$wait_idle") або одразу після злиття гілки агентів"
+      idle_wait "$wait_idle"
       ;;
     4)
       log "work continues; next run after ${GAP}s"

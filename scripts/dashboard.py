@@ -1149,6 +1149,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     "j_rules": (
         "За правилами",
         "Частка перевірених на правила 1, 2, 4, 5 і 8 реальних угод без жодного порушення, %.",
+        "Правило 3 перевірено лише наполовину (номінал альтів, не ліквідація), тож воно входить сюди тільки як порушення. "
         "Перевірена — коли кожне правило, що стосується угоди, вдалося оцінити, або коли хоч одне точно порушено. "
         "«Невідомо» — порушень не видно, але даних не вистачає (в імпорті з бірж немає стопу й цілі): це не «за правилами», "
         "у частку не входить. Угоди, де єдине порушення — денний стоп за часом закриття (наближено), теж окремо. "
@@ -1159,8 +1160,8 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "rules_week": (
         "Порушення правил за тиждень",
-        "Скільки твоїх реальних угод за тиждень відкриття порушили правила 1, 2, 4, 5 і 8, нові зверху.",
-        "«2 з 8» — порушили 2 з 8 угод, які вдалося перевірити; «невідомо» — правило стосується, але даних нема (стопу "
+        "Скільки твоїх реальних угод за тиждень відкриття порушили правила 1–5 і 8, нові зверху.",
+        "Правило 3 — лише половина: номінал відкритих альтів ≤ 2 депозитів; ліквідацію не перевірено. «2 з 8» — порушили 2 з 8 угод, які вдалося перевірити; «невідомо» — правило стосується, але даних нема (стопу "
         "в імпорті з бірж немає, Bybit не дає часу відкриття). «P&L цих угод» — результат угод, що точно порушили хоч "
         "одне правило; «наближено» — угоди, де єдине порушення — денний стоп, оцінений за часом закриття (окремо). "
         "Правило 8: «< 24 год» — куплено в останню добу до експірації; «1–3 доби без умов» — без тези й цілі (імпорт "
@@ -8058,12 +8059,13 @@ def flows_page(query: str = "", now: float | None = None) -> str:
 # ---------------------------------------------------------------- the owner's rules (docs/knowledge/trading-strategy.md, 18.10)
 #
 # Stdlib copies of analytics.rules_check (pre_trade_option, trade_checks, weekly_violations, compliance_summary; tests compare each pair on
-# the same inputs): rules 1 and 8 before an option trade («Опціони»), rules 1, 2, 4, 5 and 8 week by week on the
+# the same inputs): rules 1 and 8 before an option trade («Опціони»), rules 1, 2, 3 (alt-notional half), 4, 5 and 8 week by week on the
 # owner's real trades («Журнал»). Statuses: ok / violated / unknown (the data cannot tell) / na (does not apply).
 
 RULES_DEPOSIT = 10_000.0  # the card: deposit ≈ $10 000, 1 % = $100 (the journal has no deposit column)
 RULES_RISK_PCT = 1.0  # rule 1, % of the deposit
 RULES_MAX_ALT_LONGS = 3  # rule 2
+RULES_ALT_NOTIONAL_DEPOSITS = 2.0  # rule 3, its alt-notional half only: open alt notional <= this many deposits
 RULES_DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 RULES_STREAK = 2  # rule 4: losing trades in a row
 RULES_BIG_LOSS_PCT = RULES_DAY_LOSS_PCT  # rule 4, 48 h pause: a UTC day's realized P&L <= -this % (assumed threshold)
@@ -8077,7 +8079,7 @@ RULES_IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
 RULES_ZONE_BAN, RULES_ZONE_COND, RULES_ZONE_FREE = "under_24h", "1_3_days", "over_3_days"
 RULES_IMPORT_THESIS_PLACEHOLDER = "теза не записана"  # what scripts/bybit_import.py writes as an import's thesis
 RULES_MAJORS = frozenset({"BTC", "ETH"})
-RULES_NUMS = (1, 2, 4, 5, 8)
+RULES_NUMS = (1, 2, 3, 4, 5, 8)  # rule 3: the alt-notional half only
 RULES_WEEKS = 12  # newest ISO weeks in the journal table
 RULES_MIN_CHECKED = 30  # «За правилами»: under this many checked trades the share is descriptive only
 RULES_OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
@@ -8095,6 +8097,7 @@ RULE_STATUS_UA = {
 RULES_WEEK_HEAD = (
     (1, "1 · ризик ≤ 1 %"),
     (2, "2 · ≤ 3 лонги в альтах"),
+    (3, "3 · лише номінал альтів ≤ 2 депозитів (ліквідацію не перевірено)"),
     (4, "4 · денний стоп"),
     (5, "5 · R:R ≥ 2"),
     (8, "8 · опціони"),
@@ -8108,6 +8111,16 @@ RULES_WEEK_NOTE = (
     "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; той самий актив під "
     "іменами різних бірж — один альт (kPEPE = 1000PEPE = PEPE, PUMPFUN = PUMP); рядки Bybit без часу "
     "відкриття — «невідомо», як і символи HIP-3 Hyperliquid (xyz:TSLA — акції, золото, не крипто-альти). "
+    "3 — перевірено лише половину: сумарний номінал відкритих позицій в альтах (лонги й шорти, розмір × вхід) після "
+    "відкриття угоди понад 2 депозити ($20 000); «ціна ліквідації вдвічі далі за стоп» не перевіряється — у журналі "
+    "немає ціни ліквідації. «Порушено» — лише коли межу перевищує нижня оцінка суми, «виконано» — коли в межі верхня. "
+    "Імпорти Binance і Hyperliquid пишуть у розмір усе відкрите за угоду (доливки, повторні входи) з часу першого "
+    "fill, тож їхній номінал — лише верхня оцінка: до порушення не зараховується, понад межу — «невідомо». Рядок Bybit "
+    "без часу відкриття, закритий після відкриття угоди, міг бути тоді відкритим: угода — «невідомо», не «виконано». "
+    "Угода, номінал якої сам понад межу, — порушення й без часу відкриття; інакше рядки без часу відкриття й суми з "
+    "позицією без розміру (зокрема інверсні контракти Bybit у $) — «невідомо». Відоме обмеження: рядок /trade та імпорт "
+    "з біржі тієї самої позиції — два рядки, номінал рахується двічі. «Виконано» тут — лише ця половина, тож у «За "
+    "правилами» правило 3 враховано тільки як порушення. "
     "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття), "
     "або в 48 год перерви після дня з великим збитком: порогу в правилі немає, тож це день UTC із закритим P&L ≤ −2 % "
     "депозиту, а перерва — від 00:00 UTC наступного дня до +48 год (припущення до рішення власника); "
@@ -8116,7 +8129,7 @@ RULES_WEEK_NOTE = (
     "8 — куплений опціон: премія > 1 % депозиту; менше 24 год до експірації (08:00 UTC) — порушено завжди; за 1–3 доби — "
     "лише з тезою й ціллю, беззбитком у межах 1σ руху за реалізованою волою і IV ≤ 1.2 × RV: в імпорті з бірж тези й цілі "
     "немає, тож такі купівлі — «порушено», а спота й IV на час відкриття журнал не має (ці дві умови — «невідомо»). "
-    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6 і 7 з журналу не перевіряються."
+    "Депозит — сьогоднішні $10 000 для всіх тижнів. 6, 7 і ліквідаційна половина 3 з журналу не перевіряються."
 )
 
 
@@ -8367,6 +8380,8 @@ def _rules_normalize(rows: list[dict]) -> list[dict]:
         exp = rules_option_expiry_ts(symbol)
         tags = journal_tags(t.get("tags"))
         is_opt = exp is not None or "option" in tags
+        size, entry = _num(t.get("size")), _num(t.get("entry"))
+        coins = not is_opt and not any(g.startswith("inverse") for g in tags)  # Bybit inverse: size in USD contracts
         out.append(
             {
                 "i": i,
@@ -8379,8 +8394,10 @@ def _rules_normalize(rows: list[dict]) -> list[dict]:
                 "hip3": rules_is_hip3(symbol),
                 "option": is_opt,
                 "expiry": exp,
-                "size": _num(t.get("size")),
-                "entry": _num(t.get("entry")),
+                "size": size,
+                "entry": entry,
+                "notional": abs(size) * entry if coins and size is not None and entry is not None and entry > 0 else None,
+                "notional_upper": "import" in tags and ("binance" in tags or "hyperliquid" in tags),  # size = all opened
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
                 "thesis": rules_owner_thesis(t.get("thesis"), tags),
@@ -8457,6 +8474,34 @@ def _rules_alt_counts(xs: list[dict], now_ts: float) -> dict[int, tuple[int, boo
     return out
 
 
+def _rules_is_alt(x: dict) -> bool:
+    """Copy of analytics.rules_check._is_alt: rule 3, a non-option alt position (no HIP-3), long or short."""
+    return not x["option"] and bool(x["base"]) and x["base"] not in RULES_MAJORS and not x["hip3"] and x["side"] in ("long", "short")
+
+
+def _rules_alt_notionals(xs: list[dict], now_ts: float) -> dict[int, tuple[float, float, int, int, int]]:
+    """Copy of analytics.rules_check._alt_notionals: {row index: (known open alt notional with it, USD; its part
+    without upper-bound imports; upper-bound imports; rows without a notional; rows without an opening time closed at or after it)}."""
+    alts = sorted((x for x in xs if _rules_is_alt(x) and x["open_known"]), key=lambda x: (x["opened"], x["i"]))
+    untimed = [x["closed"] for x in xs if _rules_is_alt(x) and not x["open_known"]]
+    active: list[tuple[float, float | None, bool, bool]] = []
+    out: dict[int, tuple[float, float, int, int, int]] = {}
+    for x in alts:
+        t = x["opened"]
+        active = [a for a in active if a[0] > t or (a[3] and a[0] >= t)]
+        still_open = x["closed"] is None
+        active.append((max(float(now_ts), t) if still_open else x["closed"], x["notional"], x["notional_upper"], still_open))
+        known = [(n, up) for _, n, up, _ in active if n is not None]
+        out[x["i"]] = (
+            sum(n for n, _ in known),
+            sum(n for n, up in known if not up),
+            sum(1 for _, up in known if up),
+            len(active) - len(known),
+            sum(1 for c in untimed if c >= t),
+        )
+    return out
+
+
 def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) -> list[dict]:
     """Copy of analytics.rules_check.trade_checks with the card's thresholds."""
     xs = _rules_normalize(rows)
@@ -8464,6 +8509,8 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
     stops = _rules_day_stops(xs, dep * RULES_DAY_LOSS_PCT / 100.0)
     pz = _rules_pauses(xs, dep * RULES_BIG_LOSS_PCT / 100.0)
     alt_n = _rules_alt_counts(xs, now_ts)
+    notional_cap = dep * RULES_ALT_NOTIONAL_DEPOSITS
+    alt_usd = _rules_alt_notionals(xs, now_ts)
     out = []
     for x in xs:
         r: dict[int, str] = {}
@@ -8482,6 +8529,17 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
             r[2] = "unknown"
         else:
             r[2] = "violated" if alt_n[x["i"]][1] else "ok"
+        open_usd, exact_usd, n_upper, n_no_usd, n_maybe = alt_usd.get(x["i"], (None, None, 0, 0, 0))
+        own_exact = None if x["notional_upper"] else x["notional"]
+        over = notional_cap * (1 + 1e-9)
+        if x["option"] or not x["base"] or x["base"] in RULES_MAJORS:
+            r[3] = "na"
+        elif not _rules_is_alt(x):  # HIP-3 (left out of the sum) or no side
+            r[3] = "unknown"
+        elif (own_exact or 0.0) > over or (exact_usd or 0.0) > over:  # violated by a lower bound only
+            r[3] = "violated"
+        else:  # ok by an upper bound only
+            r[3] = "unknown" if open_usd is None or n_no_usd or n_maybe or open_usd > over else "ok"
         stop = stops.get(_rules_day(x["opened"]))
         pause = _rules_in_pause(pz, x["opened"])
         r[4] = "violated" if (stop is not None and x["opened"] > stop["ts"]) or pause is not None else "ok"
@@ -8514,6 +8572,12 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
                 "rules": r,
                 "approx": r[4] == "violated" and not x["open_known"],
                 "alt_longs": alt_n[x["i"]][0] if x["i"] in alt_n else None,
+                "notional": x["notional"],
+                "alt_notional": open_usd,
+                "alt_notional_exact": exact_usd,
+                "alt_notional_upper": n_upper,
+                "alt_notional_unknown": n_no_usd,
+                "alt_maybe_open": n_maybe,
                 "buy_zone": zone,
                 "buy_conditions": conds,
                 "late_buy": late,
@@ -8588,7 +8652,7 @@ def rules_compliance(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT
             n_bad += 1
         elif c["approx"]:
             n_approx += 1
-        elif "unknown" in c["rules"].values():
+        elif any(st == "unknown" for n, st in c["rules"].items() if n != 3):  # rule 3: half checked, counts only violated
             n_unknown += 1
         else:
             n_ok += 1

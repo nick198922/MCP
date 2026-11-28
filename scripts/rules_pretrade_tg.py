@@ -11,9 +11,13 @@ topic it serves, and sends the printed Telegram HTML back. The text is untrusted
 strictly into a hypothetical journal row (as_journal_row). The rules are analytics.rules_check with its default
 thresholds (deposit $10 000), the same calls as the /trade answer: trade_checks on that row among the owner's real
 trades (no airdrop, no *-paper rows), open_risk and day_stops with the row included, so a line /trade would record
-gets the same statuses here (an option sale, which /trade records, is refused). Rules 1, 5 and 8 depend on the row only; 2 and 4 on the journal, read over a
-``mode=ro`` connection (rules_weekly_tg.load_journal), so they are 'unknown' when it cannot be read. 'unknown' is
-never 'ok'. At most 8 lines: the verdict, the trade, rules 1, 2, 4, 5, 8 and one disclaimer line.
+gets the same statuses here (an option sale, which /trade records, is refused). Rules 1, 5 and 8 depend on the row only; 2, 3 and 4 on the journal, read over a
+``mode=ro`` connection (rules_weekly_tg.load_journal), so they are 'unknown' when it cannot be read (rule 3 is still
+'violated' when the planned notional alone is over its cap). 'unknown' is
+never 'ok'. At most 9 lines: the verdict, the trade, rules 1, 2, 4, 5, 8 and one disclaimer line, plus for an alt
+rule 3's alt-notional half (open alt notional with the planned one, size x entry, <= 2 deposits; the size of a
+risk-and-stop line is risk / |entry - stop|, as check_command derives it). The liquidation half of rule 3 is not
+checked; rule 3 enters the verdict only when violated.
 
 Rule 8 (b) and (c) in the 1-3 day zone come from the assistant snapshot (``--snapshot``, the dashboard's file, read
 with dashboard.load_snapshot): a dated option symbol whose expiry is the snapshot's ``chain_near`` and whose strike
@@ -40,12 +44,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dashboard as db  # noqa: E402
 import rules_weekly_tg as rw  # noqa: E402
-from journal_trade_tg import SIDE_UA, STATUS_UA, _h, fmt, rule4_why, usd  # noqa: E402
+from journal_trade_tg import SIDE_UA, STATUS_UA, _h, fmt, rule3_line, rule3_status, rule4_why, usd  # noqa: E402
 
 from tradedesk.analytics import rules_check as rc  # noqa: E402
 from tradedesk.analytics.check_command import CHECK_ID, MAX_THESIS, as_journal_row, parse_check_command  # noqa: E402
 
-RULES = (1, 2, 4, 5, 8)
+RULES = (1, 2, 3, 4, 5, 8)
+HALF_RULE = 3  # only its alt-notional half is checked: in the verdict only when violated, never as a pass
 RIGHT_UA = {"call": "кол", "put": "пут"}
 NO_JOURNAL = "журнал не прочитано"
 USAGE = (
@@ -86,8 +91,9 @@ ERRORS_UA = {
     "size_and_risk": "вкажіть size або risk, не обидва",
     "risk_needs_stop": "risk рахується до стопу: додайте stop",
 }
+# {rules}: "2, 3 і 4" for an alt (a rule 3 line), else "2 і 4"
 DISCLAIMER = (
-    "Статистика дотримання правил, не порада: нічого не записано, жодних ордерів; депозит $10 000, 2 і 4 — за реальними угодами журналу."
+    "Статистика дотримання правил, не порада: нічого не записано, жодних ордерів; депозит $10 000, {rules} — за реальними угодами журналу."
 )
 VERDICT_UA = {rc.VIOLATED: "✗ порушено", rc.UNKNOWN: "? невідомо", rc.OK: "✓ виконано"}
 MARK = {rc.OK: "✓", rc.VIOLATED: "✗", rc.UNKNOWN: "?"}
@@ -341,7 +347,7 @@ def evaluate(
 ) -> dict[str, Any]:
     """Rule statuses of the planned trade: {statuses: {n: status}, check: its trade_checks row, risk: open_risk or
     None, stops: day_stops or None, conditions: rule8_conditions or None}. ``journal`` = all journal rows (None = not
-    read: rules 2 and 4 'unknown'); ``market`` = market_inputs (None = no snapshot: rule 8 (b), (c) 'unknown').
+    read: rules 2 and 4 'unknown', rule 3 too unless the row alone is over the cap);``market`` = market_inputs (None = no snapshot: rule 8 (b), (c) 'unknown').
     Pure: analytics.rules_check on the hypothetical row among the real trades, as journal_trade_tg.build_reply; in the
     1-3 day zone with snapshot inputs rule 8 is pre_trade_option's on the bought leg."""
     row = as_journal_row(check, now)
@@ -351,6 +357,7 @@ def evaluate(
     risk = None if others is None else rc.open_risk(rows)
     stops = None if others is None else rc.day_stops(rows)
     st = dict(c["rules"])
+    st[3] = rule3_status(c, others is not None)
     if others is None:
         st[2] = st[4] = rc.UNKNOWN
     else:
@@ -365,15 +372,19 @@ def evaluate(
 
 
 def verdict_text(st: dict[int, str]) -> str:
-    """'✗ порушено: 8 · ? невідомо: 2, 4' or '✓ виконано: 1, 2, 4, 8': violated first, unknown never counted as ok."""
-    groups = {s: [str(n) for n in RULES if st[n] == s] for s in (rc.VIOLATED, rc.UNKNOWN, rc.OK)}
+    """'✗ порушено: 8 · ? невідомо: 2, 4' or '✓ виконано: 1, 2, 4, 8': violated first, unknown never counted as ok.
+    Rule 3 (HALF_RULE) shows only when violated: half checked, its pass or unknown is not a verdict on the rule."""
+    groups = {
+        s: [str(n) for n in RULES if st.get(n) == s and (n != HALF_RULE or s == rc.VIOLATED)] for s in (rc.VIOLATED, rc.UNKNOWN, rc.OK)
+    }
     if not groups[rc.VIOLATED] and not groups[rc.UNKNOWN]:
         return VERDICT_UA[rc.OK] + ": " + (", ".join(groups[rc.OK]) or "—")
     return " · ".join(f"{VERDICT_UA[s]}: {', '.join(groups[s])}" for s in (rc.VIOLATED, rc.UNKNOWN) if groups[s])
 
 
 def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]] | None, market: dict[str, Any] | None = None) -> str:
-    """Telegram HTML, at most 8 lines: verdict, the trade, rules 1, 2, 4, 5, 8, one disclaimer. Pure (time passed in)."""
+    """Telegram HTML, at most 9 lines: verdict, the trade, rules 1, 2, 3 (its alt-notional half; only for an alt),
+    4, 5, 8, one disclaimer. Pure (time passed in)."""
     ev = evaluate(check, now, journal, market)
     st, c = ev["statuses"], ev["check"]
     verdict = verdict_text(st)
@@ -382,10 +393,11 @@ def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]]
         _what_line(check, now),
         _rule1(check, st[1]),
         _rule2(c, ev["risk"], st[2]),
+        *([rule3_line(c, check["symbol"], st[3], journal is not None)] if st[3] != rc.NA else []),
         _rule4(ev["stops"], st[4], now, c["pause"]),
         _rule5(check, st[5]),
         _rule8(check, c, st[8], ev["conditions"], market),
-        f"<i>{_h(DISCLAIMER)}</i>",
+        f"<i>{_h(DISCLAIMER.format(rules='2, 3 і 4' if st[3] != rc.NA else '2 і 4'))}</i>",
     ]
     return "\n".join(lines)
 

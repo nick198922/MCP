@@ -9,7 +9,7 @@ Read-only and offline: the rows come from the ``journal`` table (schema v3) over
 never from the network. Only the owner's real trades count (no airdrop, no *-paper rows: dashboard.journal_kind), and
 the numbers are analytics.rules_check.weekly_violations with its default thresholds (deposit $10 000), the function
 the dashboard's «Порушення правил за тиждень» block mirrors with a tested stdlib copy, so the message and the panel
-agree. Rules 1, 2, 4, 5 and 8; the week is the ISO week (UTC) of the opening. As on the panel, a rule 4 flag judged on
+agree. Rules 1, 2, 4, 5, 8 and the alt-notional half of 3 (not its liquidation half); the week is the ISO week (UTC) of the opening. As on the panel, a rule 4 flag judged on
 the close time (a row without an opening time) is approximate: shown apart and left out of the "violated" count and
 its P&L. Short: a title, up to five lines, one caveat sentence (at most 8 lines).
 
@@ -42,6 +42,7 @@ from tradedesk.analytics import rules_check as rc  # noqa: E402
 
 CAVEAT = (
     "Не порада: звіт лише читає журнал і нічого не торгує; правила 1 і 5 потребують стопу (в імпорті з бірж його немає), "
+    "з правила 3 перевірено лише номінал альтів (ліквідацію — ні), "
     "депозит — сьогоднішні $10 000 для всіх тижнів, повна таблиця — на панелі."
 )
 RULE_NAMES = dict(db.RULES_WEEK_HEAD)  # {1: "1 · ризик ≤ 1 %", ...}: the panel's column names

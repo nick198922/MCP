@@ -184,7 +184,19 @@ def test_rules_2_4_5_broken_by_the_journal_and_the_new_row(journal_db):
     assert "Правило 4 · денний стоп: ✗ порушено — сьогодні спрацював о 09:00 UTC (2 збиткові поспіль)" in out
     assert "Правило 5 · ціль ≥ 2 × стоп: ✗ порушено — R:R 1." in out
     assert "Правило 1 · ризик ≤ 1 % депозиту: ✓ виконано — ризик до стопу $100 при межі $100." in out
+    # rule 3, its alt-notional half only: SOL $540 + DOGE $120 + XRP $150 + ADA $1 000 (the demo bot left out)
+    assert (
+        "Правило 3 · лише номінал альтів ≤ 2 депозитів, ліквідацію не перевірено: ✓ виконано — номінал цієї $1 000; "
+        "разом з відкритими в журналі позиціями в альтах $1 810 при межі $20 000." in out
+    )
+    assert "2, 3 і 4 — за реальними угодами журналу" in out
     assert len(rows(journal_db)) == 8
+    # an alt short over the cap breaks it; BTC gets no rule 3 line
+    assert "Правило 3 · лише номінал альтів ≤ 2 депозитів, ліквідацію не перевірено: ✗ порушено" in jt.handle(
+        "/trade SOL short 180 size 120", journal_db, NOW
+    )
+    btc = jt.handle("/trade BTC long 84000 size 0.1", journal_db, NOW)
+    assert "Правило 3" not in btc and "2 і 4 — за реальними угодами журналу" in btc
 
 
 def test_rule_4_48h_pause_after_a_big_loss_day(journal_db):

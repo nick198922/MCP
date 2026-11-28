@@ -40,6 +40,7 @@ and of the weekly timer's directory (``TRADEDESK_LADDER_DIR``, default ``/var/li
 are read for the Bybit leg's 2x position limit (files only, no network). The carry B row notes the recorded Bybit
 funding-interval mismatches (``interval_mismatches`` in the cycle payload, written from the 26.11 00:00 UTC cycle on)
 and how many missed-payment flags fall on a mismatched symbol (``checkpoint.interval_mismatch_notes``, item 477).
+A closing note lists the owner's open questions of ``docs/QUESTIONS.md`` (as the file is at the run, item 501).
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 
@@ -69,6 +70,8 @@ from tradedesk.analytics.checkpoint import (  # noqa: E402
     build,
     condor_final_ms,
     forward_cards,
+    open_questions,
+    open_questions_note,
     orphaned_note,  # pure, shared with the demo_status MCP tool (item 409)
     render,
 )
@@ -83,6 +86,7 @@ LADDER = ROOT / "docs" / "paper" / "ladder"  # dated Bybit ladder snapshots (scr
 # Weekly snapshots of the user timer deploy/user-units/tradedesk-ladder-weekly.* (outside git); TRADEDESK_LADDER_DIR overrides.
 LADDER_SERVER = "/var/lib/tradedesk-mcp/ladder"
 IDEAS = ROOT / "docs" / "ideas"
+QUESTIONS = ROOT / "docs" / "QUESTIONS.md"
 CARRY_KINDS = ("side", "funding", "mark", "close", "event")
 # Every table a forward block reads. The migrations create them all, so an absent one means an older schema or another
 # DB file: the report names it instead of showing the block as if it merely had no rows yet.
@@ -539,12 +543,23 @@ def journal_row(
 
 def build_report(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     """``checkpoint.build`` plus the row of the cards' own journals (``journal_row``) and the orphaned demo trades
-    (``orphaned_note``)."""
+    (``orphaned_note``) and, when ``load_inputs`` read them, the owner's open questions (``questions``: (id, title) list,
+    None = the file unread; item 501). Without the key (the demo-only build of ``demo_status``) no question note."""
     rep = build(inputs, now_ms)
     rep["forwards"].append(journal_row(inputs.get("idea_cards") or [], inputs.get("journals"), inputs.get("plans") or [], now_ms))
     if note := orphaned_note(inputs.get("demo_trades") or [], now_ms):
         rep["notes"].append(note)
+    if "questions" in inputs:
+        rep["notes"].append(open_questions_note(inputs["questions"]))
     return rep
+
+
+def load_questions(path: Path = QUESTIONS) -> list[tuple[str, str]] | None:
+    """The owner's open questions of ``docs/QUESTIONS.md`` (``checkpoint.open_questions``); None when unreadable."""
+    try:
+        return open_questions(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def load_idea_cards(ideas: Path = IDEAS) -> list[dict[str, Any]]:
@@ -626,6 +641,7 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
         inp["errors"].append("знімків ladder Bybit не знайдено: (є) для Bybit-ноги — без даних")
     inp["paper_state"] = load_paper_state(db)
     inp["idea_cards"] = load_idea_cards()
+    inp["questions"] = load_questions()
     try:
         con = connect_ro(db)
     except (sqlite3.Error, OSError) as e:

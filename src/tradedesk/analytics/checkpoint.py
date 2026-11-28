@@ -118,6 +118,31 @@ MIN_DEMO = 30
 S3_FINAL_N = 100  # Q-20261030-3: the decision to drop S3 only on 100 trades
 S28_FLOOR_30 = -0.438  # Q-20261030-2: i.i.d. p5 of n 30, only on the check at the first 30 filled trades
 OLD_BE_VERSIONS = frozenset({"v1", "v2"})  # break-even at +30 % ROE (before v3): S3 descriptive split only
+# A limit entry that filled. ``opened_ts`` alone does not say so: the demo trader writes it at the placement and again
+# at the fill (``execution.demo_trader``, «the placement; set again to the fill time»), so a ``missed`` or ``pending``
+# row keeps its placement time there (live 28.11: both missed S28 rows; item 501).
+FILLED_STATUSES = frozenset({"open", "closing", "closed", "orphaned"})
+# ``demo_trader._complete_entry``: the venue reported a fill, but the next step found no position -> ``missed`` with this
+# text appended to the note (``"; no position after the fill"``), no P&L and ``opened_ts`` still the placement. A resting
+# limit (``rest_until``) reaches it only after a fill (``Filled`` or ``cumExecQty > 0``), so that row is a filled
+# placement; for other entries the market chase may have been rejected (S38 BILL / BEAT / HUMA), so it proves nothing.
+FILL_LOST = "no position after the fill"
+
+
+def _fill_lost(t: Mapping[str, Any]) -> bool:
+    """A ``missed`` row whose note says the venue's fill left no position (``FILL_LOST``)."""
+    return t.get("status") == "missed" and FILL_LOST in str(t.get("note") or "")
+
+
+# S28 from 10.11 takes score >= 1 (ADR 0007 addendum 10.11): its band and the drop threshold -0.501R for those trades
+# (Q-20261118-1, decided 22.11; docs/verification/2026-11-18-s28-band-score1.md) are not in ``DEMO`` below, which keeps
+# the score >= 2 band of 02.11. The row only says so (item 501); the label rule is not changed here.
+S28_SCORE1_MS = _ms(2026, 11, 10)
+S28_SCORE1_NOTE = (
+    "смуга й поріг −0.438 цього рядка — для балу ≥ 2 (до 10.11); для угод після 10.11 (бал ≥ 1) CHECKPOINT («Факти на "
+    "17.11», п. 5) дає смугу рішення n 30 −0.797 … +0.278 (i.i.d. −0.501 … +0.177), поріг зняття на 30 заповнених "
+    "−0.501R (Q-20261118-1, рішення 22.11); у коді звіту їх не оновлено, вердикт рядка — за старою смугою"
+)
 # An ``orphaned`` trade (filled, its close never found) closed at its initial stop: P&L = -risk_usd, since the demo's
 # risk already holds both taker fees (``demo_trader._risk``). A scenario only; stop slippage would make it worse.
 ORPHAN_STOP_R = -1.0
@@ -262,6 +287,19 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
     notes: list[str] = row["notes"]
     if other:
         notes.append(f"закритих угод інших версій (не входять): {other}")
+    # review of item 501, remark N2: a fill reported by the venue that left no position has no P&L, so it is outside n
+    lost = [t for t in cur if _fill_lost(t) and (c := _num(t.get("closed_ts"))) is not None and c <= now_ms]
+    if lost:
+        sig = [_num(t.get("signal_ts")) for t in lost]
+        names = ", ".join(
+            f"{str(t.get('symbol') or t.get('link_id')).split('/')[0]} (сигнал {'—' if s is None else _ymd_s(int(s) // 1000)})"
+            for t, s in zip(lost, sig, strict=True)
+        )
+        notes.append(
+            f"поза вибіркою (n і середній R) — missed з нотаткою «{FILL_LOST}», P&L не записано: {len(lost)} — {names}; "
+            "для резервної лімітки це заповнення, для іншого входу біржа могла відхилити ринковий ордер, тож заповнення "
+            "підтвердити за аудитом чи біржею; вибірку, n, середній R і вердикт не змінено"
+        )
     if mean is None or n < MIN_DEMO:
         notes.append(f"рано: {n} з {MIN_DEMO} закритих угод")
     else:
@@ -314,9 +352,12 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
     if spec.setup == "S28":
         # the first 30 filled trades by entry time (review of item 1, minor 1), closed or not; checked once all are closed
         filled = sorted(
-            (t for t in cur if t.get("status") != "missed" and (o := _num(t.get("opened_ts"))) is not None and o <= now_ms),
+            (t for t in cur if t.get("status") in FILLED_STATUSES and (o := _num(t.get("opened_ts"))) is not None and o <= now_ms),
             key=lambda t: (_num(t.get("opened_ts")) or 0.0, str(t.get("link_id"))),
         )[:MIN_DEMO]
+        after = sum(1 for t in closed if (s := _num(t.get("signal_ts"))) is not None and s >= S28_SCORE1_MS)
+        if after:
+            notes.append(f"{S28_SCORE1_NOTE}; закритих угод рядка із сигналом після 10.11: {after} з {n}")
         closed_ids = {id(t) for t in closed}
         still = sum(1 for t in filled if id(t) not in closed_ids)
         if len(filled) == MIN_DEMO and still:
@@ -344,15 +385,21 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
 def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
     """Fill share of a limit setup over placements whose deadline (``rest_until``) has passed: «ні» when the 95 % Wilson
     CI on >= 30 such placements does not contain the passport share. A ``closing`` or ``orphaned`` trade is filled (the
-    demo trader orphans only a filled trade whose position and close it can no longer find); a ``pending`` one past its deadline (not reconciled
+    demo trader orphans only a filled trade whose position and close it can no longer find), and so is a ``missed`` one
+    whose fill left no position (``FILL_LOST``, counted in a note); a ``pending`` one past its deadline (not reconciled
     yet) stays out of the share and is counted in a note."""
 
     def past(t: Mapping[str, Any]) -> bool:
         return (ru := _num(t.get("rest_until"))) is not None and ru <= now_ms
 
-    done = [t for t in trades if t.get("status") in ("open", "closing", "closed", "orphaned", "missed") and past(t)]
+    done = [t for t in trades if t.get("status") in (*FILLED_STATUSES, "missed") and past(t)]
     stale = sum(1 for t in trades if t.get("status") == "pending" and past(t))
-    filled = sum(1 for t in done if (o := _num(t.get("opened_ts"))) is not None and o <= now_ms)
+    # a missed row keeps its placement time in opened_ts (FILLED_STATUSES): the status decides, opened_ts only dates it;
+    # a missed resting limit whose fill left no position (FILL_LOST) did fill (review of item 501, blocker 1)
+    lost = sum(1 for t in done if _fill_lost(t) and t.get("rest_until") is not None)
+    filled = lost + sum(
+        1 for t in done if t.get("status") in FILLED_STATUSES and (o := _num(t.get("opened_ts"))) is not None and o <= now_ms
+    )
     n = len(done)
     p = spec.fill_share or 0.0
     lo, hi = wilson_ci(filled, n)
@@ -370,6 +417,11 @@ def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
             row["notes"].append("post-only лімітка заповнюється гірше за модель «пройшла крізь рівень»")
     if stale:
         row["notes"].append(f"pending з минулим строком (ще не звірені, поза часткою): {stale}")
+    if lost:
+        row["notes"].append(
+            f"заповнені, але позиції вже не було (missed, «{FILL_LOST}»; у частці — заповнені; R невідомий, у середньому R "
+            f"і в перших 30 заповнених не враховані): {lost}"
+        )
     return row
 
 
@@ -615,6 +667,8 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
     its candidate row, the exclusion list is complete (``excluded`` is capped at 500) and the gap has enough rows."""
     fails: dict[str, list[str]] = {}
     frozen: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []  # the entries failing on the leg gap (``gap_review``)
+    other: set[str] = set()  # symbols failing on anything else
     checked = no_cand = few_rows = no_price = no_interval = 0
     widest: float | None = None
     worst_gap: float | None = None
@@ -653,6 +707,13 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
                 why.add("price")
         for w in why:
             fails.setdefault(w, []).append(sym)
+        if "gap" in why:
+            ts = e.get("held_ts") or []
+            gaps.append(
+                {"trade_id": str(e.get("trade_id")), "symbol": sym, "opened_ts": e.get("opened_ts"), "last_ts": max(ts, default=None)}
+            )
+        if why - {"gap"}:
+            other.add(sym)
         if "gap" in why and (fr := _frozen_leg(strategy, e.get("held") or [], e.get("held_ts") or [])) is not None:
             frozen.append(fr | {"symbol": sym, "trade_id": e.get("trade_id"), "gap": med})
         if why:  # a violation counts whatever else is missing (an excluded symbol has no candidate row)
@@ -678,7 +739,9 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
     )
     if checked < MIN_E_ENTRIES:
         return _crit("е", UNVERIFIABLE, txt + f"; мінімум {MIN_E_ENTRIES} вхід")
-    return _crit("е", FAIL if fails else PASS, txt) | {"symbols": sorted({s for v in fails.values() for s in v}), "frozen": frozen}
+    return _crit("е", FAIL if fails else PASS, txt) | {
+        "symbols": sorted({s for v in fails.values() for s in v}), "frozen": frozen, "gap_entries": gaps, "other_symbols": sorted(other),
+    }  # fmt: skip
 
 
 def frozen_leg_note(fr: Mapping[str, Any]) -> str:
@@ -701,6 +764,41 @@ def frozen_leg_note(fr: Mapping[str, Any]) -> str:
     if confirmed is not None:
         return txt + f"; {confirmed}; вердикт (е) за реєстрацією не змінюється, це лише названа причина"
     return txt + "; вердикт (е) за реєстрацією не змінюється, це лише можлива причина"
+
+
+# (e) leg-gap failures already investigated (docs/verification/2026-11-19-carry-b-leg-gap.md, item 383): trade id -> the
+# last candidate row the investigation saw (BIRB: the whole holding; INIT 11.11: rows as of 17.11, the open position
+# then). A failure is cited as reviewed only for these trades and only while its holding rows end by then; any other
+# entry, a later row of the same trade or another failure kind still asks for a review (item 501).
+E_REVIEWED_GAPS = {
+    "B:BIRB/USDT:USDT:1792627200000": _ms(2026, 10, 23, 16, 5),
+    "B:BIRB/USDT:USDT:1792771200000": _ms(2026, 10, 24, 8, 5),
+    "B:INIT/USDT:USDT:1794412800000": _ms(2026, 11, 18) - 1,
+}
+E_REVIEWED_NOTE = (
+    "розібрано 19.11 (verification/2026-11-19-carry-b-leg-gap.md): ринок, дефекту рушія немає (ціна кожної ноги дорівнює "
+    "закриттю 4h-бару своєї біржі, завмерлих ніг немає; розрив справжній); вердикт (е) за реєстрацією не змінюється, "
+    "розбір стосується лише цих входів"
+)
+
+
+def gap_review(e_crit: Mapping[str, Any]) -> tuple[str | None, list[str]]:
+    """(note on the (e) leg-gap failures already investigated, the failures still to review) of a failed (e)
+    (``carry_universe``): a gap failure of a trade in ``E_REVIEWED_GAPS`` whose last holding row is no later than the
+    investigation's is cited; every other gap failure (named with its entry date) and every symbol failing on another
+    kind stays in the list to review. Item 501: the report asked to review BIRB after it had been reviewed."""
+    seen, rest = [], set(e_crit.get("other_symbols") or [])
+    for g in e_crit.get("gap_entries") or []:
+        until = E_REVIEWED_GAPS.get(str(g.get("trade_id")))
+        last, opened = _num(g.get("last_ts")), _num(g.get("opened_ts"))
+        when = "—" if opened is None else _ymd_s(int(opened) // 1000)
+        name = f"{g['symbol']} (вхід {when})"
+        if until is not None and last is not None and last <= until:
+            seen.append(name)
+        else:
+            rest.add(name)
+    note = f"(е) розрив цін ніг > 0.5 % у входах {', '.join(seen)} — {E_REVIEWED_NOTE}" if seen else None
+    return note, sorted(rest)
 
 
 def _bybit_id(symbol: str) -> str:
@@ -1106,7 +1204,7 @@ def carry_forward(
     # (e) universe purity and (ye) capacity on the entries, from the engine's own records (no network)
     entries = _carry_entries(pos, side_rows, cyc)
     e_crit = carry_universe(strategy, entries)
-    crit.append({k: v for k, v in e_crit.items() if k not in ("symbols", "frozen")})
+    crit.append({k: v for k, v in e_crit.items() if k not in ("symbols", "frozen", "gap_entries", "other_symbols")})
     crit.append(carry_capacity(entries, ladder, now_ms))
 
     crit.append(_crit("а", NOT_HERE, f"входів {len(pos)}; еквівалентність рішень — окремою перевіркою (повторний прогін коду бектесту)"))
@@ -1127,7 +1225,11 @@ def carry_forward(
         if any(c["id"] == "в" for c in fails):
             row["notes"].append("(в) → розбір funding-даних і рушія, не «вбити»")
         if any(c["id"] == "е" for c in fails):
-            row["notes"].append(f"(е) → баг рушія (реєстрація): розібрати входи {', '.join(e_crit.get('symbols', []))}")
+            reviewed, rest = gap_review(e_crit)
+            if reviewed:
+                row["notes"].append(reviewed)
+            if rest:
+                row["notes"].append(f"(е) → баг рушія (реєстрація): розібрати входи {', '.join(rest)}")
             row["notes"] += [frozen_leg_note(fr) for fr in e_crit.get("frozen") or []]
         if any(c["id"] == "є" for c in fails):
             row["notes"].append(
@@ -1519,6 +1621,42 @@ def forward_cards(texts: Mapping[str, str]) -> list[dict[str, Any]]:
             continue
         out.append({"slug": m.group(1), "tags": frozenset({f"idea:{m.group(1)}", *_IDEA_TAG.findall(text)})})
     return sorted(out, key=lambda c: c["slug"])
+
+
+_QUESTION = re.compile(r"^## (Q-\d{8}-\d+):\s*(.+?)\s*$")
+_Q_STATUS = re.compile(r"^\**Статус:\**\s*(.*)$")  # «Статус: open», also «**Статус:** open»
+
+
+def open_questions(text: str) -> list[tuple[str, str]]:
+    """(id, title) of every question of ``docs/QUESTIONS.md`` whose status line, the first one after its ``## Q-…``
+    heading, starts with ``open`` (item 501: the report named none of the owner's open decisions); file order. Lines in
+    a code fence (the file's format block) are skipped."""
+    out: list[tuple[str, str]] = []
+    head: tuple[str, str] | None = None
+    fenced = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif fenced:
+            continue
+        elif m := _QUESTION.match(line):
+            head = (m.group(1), m.group(2))
+        elif head is not None and (s := _Q_STATUS.match(line)):
+            if s.group(1).strip().startswith("open"):
+                out.append(head)
+            head = None
+    return out
+
+
+def open_questions_note(questions: Sequence[tuple[str, str]] | None) -> str:
+    """The report's note on the owner's open questions; None (the file unread) is said, not hidden."""
+    where = "docs/QUESTIONS.md"
+    if questions is None:
+        return f"{where} не прочитано: відкритих питань власника звіт не показує"
+    if not questions:
+        return f"відкритих питань власника в {where} немає (стан файлу на момент прогону, не на дату звіту)"
+    items = "; ".join(f"{q} — {title}" for q, title in questions)
+    return f"відкриті питання власника ({where}, стан файлу на момент прогону, не на дату звіту): {len(questions)} — {items}"
 
 
 def _tags(x: Any) -> set[str]:
